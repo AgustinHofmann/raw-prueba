@@ -15,7 +15,7 @@ type HistoryEntry =
   | { type: 'add';  obj: fabric.FabricObject }
   | { type: 'fill'; obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
 
-// ── Catmull-Rom spline → SVG cubic bezier ───────────────────────────────────
+// ── Catmull-Rom → SVG cubic bezier ──────────────────────────────────────────
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
   if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`
@@ -39,24 +39,24 @@ function straightPathStr(pts: fabric.Point[]): string {
 }
 
 export default function EditorScreen({ project, onBack, onSave }: Props) {
-  const canvasEl       = useRef<HTMLCanvasElement>(null)
-  const fc             = useRef<fabric.Canvas | null>(null)
-  const mockupObjects  = useRef<fabric.FabricObject[]>([])
-  const clipPath       = useRef<fabric.Group | null>(null)
-  const undoHistory    = useRef<HistoryEntry[]>([])
-  const colorRef       = useRef('#ff6b00')
-  const brushSizeRef   = useRef(8)
-  const isMouseDown    = useRef(false)
+  const canvasEl      = useRef<HTMLCanvasElement>(null)
+  const fc            = useRef<fabric.Canvas | null>(null)
+  const mockupObjects = useRef<fabric.FabricObject[]>([])
+  const clipPath      = useRef<fabric.Group | null>(null)
+  const undoHistory   = useRef<HistoryEntry[]>([])
+  const colorRef      = useRef('#ff6b00')
+  const brushSizeRef  = useRef(8)
+  const isMouseDown   = useRef(false)
 
   const [tool, setTool]           = useState<Tool>('select')
   const [color, setColor]         = useState('#ff6b00')
   const [brushSize, setBrushSize] = useState(8)
   const [saved, setSaved]         = useState(false)
 
-  useEffect(() => { colorRef.current    = color     }, [color])
+  useEffect(() => { colorRef.current     = color     }, [color])
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
 
-  // ── Init canvas ────────────────────────────────────────────────────────────
+  // ── Canvas init ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasEl.current) return
     let cancelled = false
@@ -75,12 +75,9 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       const objs = objects.filter(Boolean) as fabric.FabricObject[]
       mockupObjects.current = objs
 
-      objs.forEach(obj => {
-        obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
-        canvas.add(obj)
-      })
+      objs.forEach(obj => obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' }))
+      objs.forEach(obj => canvas.add(obj))
 
-      // Compute scale / offset
       const allL = objs.map(o => o.left ?? 0)
       const allT = objs.map(o => o.top  ?? 0)
       const allR = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
@@ -98,7 +95,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         scaleY: (obj.scaleY ?? 1) * sc,
       }))
 
-      // Build clip path (second SVG load, same transform)
       const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
       if (cancelled) return
       const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[]).map(obj => {
@@ -114,7 +110,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       cg.absolutePositioned = true
       clipPath.current = cg
 
-      // Track free-draw paths in undo history
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current
         undoHistory.current.push({ type: 'add', obj: e.path })
@@ -127,7 +122,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     return () => { cancelled = true; canvas.dispose() }
   }, [project.mockupId])
 
-  // ── Tool switching ─────────────────────────────────────────────────────────
+  // ── Tool switching ──────────────────────────────────────────────────────────
   useEffect(() => {
     const _c = fc.current
     if (!_c) return
@@ -141,21 +136,66 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
     const offs: (() => void)[] = []
 
+    // ── Free draw ────────────────────────────────────────────────────────────
     if (tool === 'draw') {
       canvas.isDrawingMode = true
       const brush = new fabric.PencilBrush(canvas)
       brush.color = colorRef.current
       brush.width = brushSizeRef.current
       canvas.freeDrawingBrush = brush
+
+      // Brush preview cursor
+      canvas.defaultCursor = 'none'
+      const cur = new fabric.Circle({
+        radius: brushSizeRef.current / 2,
+        fill: 'transparent',
+        stroke: 'rgba(255,255,255,0.7)',
+        strokeWidth: 1,
+        strokeDashArray: [3, 3],
+        selectable: false, evented: false,
+        originX: 'center', originY: 'center',
+        left: -200, top: -200,
+      })
+      canvas.add(cur)
+
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        const p = e.scenePoint
+        cur.set({ left: p.x, top: p.y, radius: brushSizeRef.current / 2 })
+        canvas.bringObjectToFront(cur)
+        canvas.requestRenderAll()
+      }
+      canvas.on('mouse:move', onMove)
+
+      offs.push(() => {
+        canvas.off('mouse:move', onMove)
+        canvas.remove(cur)
+        canvas.defaultCursor = 'default'
+        canvas.requestRenderAll()
+      })
     }
 
     // ── Pen / Curve ──────────────────────────────────────────────────────────
     if (tool === 'pen' || tool === 'curve') {
       canvas.selection = false
-      const pts: fabric.Point[] = []
+      canvas.defaultCursor = 'none'
+
+      // Stroke-width preview cursor
+      const cur = new fabric.Circle({
+        radius: brushSizeRef.current / 2,
+        fill: 'transparent',
+        stroke: 'rgba(255,255,255,0.7)',
+        strokeWidth: 1,
+        strokeDashArray: [3, 3],
+        selectable: false, evented: false,
+        originX: 'center', originY: 'center',
+        left: -200, top: -200,
+      })
+      canvas.add(cur)
+
+      const pts: fabric.Point[]   = []
       const dots: fabric.Circle[] = []
       let preview: fabric.Line | null = null
-      let skipNext = false    // suppress mousedown that belongs to dblclick
+      let lastClickTime = 0
 
       const commit = () => {
         if (preview) { canvas.remove(preview); preview = null }
@@ -163,7 +203,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         dots.length = 0
 
         if (pts.length >= 2) {
-          const d   = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
+          const d = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
           const path = new fabric.Path(d, {
             stroke: colorRef.current,
             strokeWidth: brushSizeRef.current,
@@ -180,24 +220,29 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         canvas.requestRenderAll()
       }
 
-      const onMove = (e: fabric.TPointerEventInfo) => {
-        if (pts.length === 0) return
-        const p = e.scenePoint
-        if (preview) canvas.remove(preview)
-        const last = pts[pts.length - 1]
-        preview = new fabric.Line([last.x, last.y, p.x, p.y], {
-          stroke: colorRef.current, strokeWidth: 1,
-          strokeDashArray: [5, 4], opacity: 0.5,
-          selectable: false, evented: false,
-        })
-        canvas.add(preview)
-        canvas.bringObjectToFront(preview)
-        canvas.requestRenderAll()
-      }
-
       const onDown = (e: fabric.TPointerEventInfo) => {
-        if (skipNext) return
+        const now = Date.now()
+        const isDbl = now - lastClickTime < 350
+        lastClickTime = now
+
+        if (isDbl) {
+          // Double-click: finish path without adding this point
+          commit()
+          return
+        }
+
         const p = e.scenePoint
+
+        // Close path if clicking near first dot
+        if (pts.length >= 2) {
+          const first = pts[0]
+          if (Math.hypot(p.x - first.x, p.y - first.y) < 12) {
+            pts.push(new fabric.Point(first.x, first.y))
+            commit()
+            return
+          }
+        }
+
         pts.push(p)
         const dot = new fabric.Circle({
           left: p.x - 4, top: p.y - 4, radius: 4,
@@ -210,36 +255,46 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         canvas.requestRenderAll()
       }
 
-      const onDbl = () => {
-        skipNext = true
-        // Remove the point added by the 2nd mousedown of the dblclick
-        pts.pop()
-        const d = dots.pop()
-        if (d) canvas.remove(d)
-        commit()
-        setTimeout(() => { skipNext = false }, 300)
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        const p = e.scenePoint
+
+        // Update cursor preview
+        cur.set({ left: p.x, top: p.y, radius: Math.max(brushSizeRef.current / 2, 4) })
+        canvas.bringObjectToFront(cur)
+
+        if (pts.length === 0) { canvas.requestRenderAll(); return }
+        if (preview) canvas.remove(preview)
+        const last = pts[pts.length - 1]
+        preview = new fabric.Line([last.x, last.y, p.x, p.y], {
+          stroke: colorRef.current, strokeWidth: 1,
+          strokeDashArray: [5, 4], opacity: 0.5,
+          selectable: false, evented: false,
+        })
+        canvas.add(preview)
+        canvas.bringObjectToFront(cur)
+        canvas.requestRenderAll()
       }
 
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Enter') { commit(); return }
         if (e.key === 'Escape') {
-          if (preview) canvas.remove(preview)
+          if (preview) { canvas.remove(preview); preview = null }
           dots.forEach(d => canvas.remove(d))
           dots.length = 0; pts.length = 0
           canvas.requestRenderAll()
         }
       }
 
-      canvas.on('mouse:move',     onMove)
-      canvas.on('mouse:down',     onDown)
-      canvas.on('mouse:dblclick', onDbl)
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
       window.addEventListener('keydown', onKey)
 
       offs.push(() => {
-        canvas.off('mouse:move',     onMove)
-        canvas.off('mouse:down',     onDown)
-        canvas.off('mouse:dblclick', onDbl)
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
         window.removeEventListener('keydown', onKey)
+        canvas.defaultCursor = 'default'
+        canvas.remove(cur)
         if (preview) canvas.remove(preview)
         dots.forEach(d => canvas.remove(d))
         canvas.requestRenderAll()
@@ -249,23 +304,62 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     // ── Eraser ───────────────────────────────────────────────────────────────
     if (tool === 'eraser') {
       canvas.selection = false
+      canvas.defaultCursor = 'none'
+
+      // Visual eraser cursor
+      const cursor = new fabric.Circle({
+        radius: brushSizeRef.current,
+        fill: 'rgba(255,255,255,0.08)',
+        stroke: 'rgba(255,255,255,0.6)',
+        strokeWidth: 1,
+        strokeDashArray: [3, 3],
+        selectable: false, evented: false,
+        originX: 'center', originY: 'center',
+        left: -100, top: -100,
+      })
+      canvas.add(cursor)
+
       const onDown = () => { isMouseDown.current = true }
       const onUp   = () => { isMouseDown.current = false }
+
       const onMove = (e: fabric.TPointerEventInfo) => {
-        if (!isMouseDown.current) return
-        const target = canvas.findTarget(e.e)
-        if (target && !mockupObjects.current.includes(target)) {
-          canvas.remove(target)
-          canvas.requestRenderAll()
+        const p = e.scenePoint
+        const r = brushSizeRef.current
+
+        // Move visual cursor
+        cursor.set({ left: p.x, top: p.y, radius: r })
+        canvas.bringObjectToFront(cursor)
+
+        if (isMouseDown.current) {
+          const bounds = { left: p.x - r, top: p.y - r, right: p.x + r, bottom: p.y + r }
+          const toRemove = canvas.getObjects().filter(obj => {
+            if (mockupObjects.current.includes(obj)) return false
+            if (obj === cursor) return false
+            const b = obj.getBoundingRect()
+            return (
+              b.left   < bounds.right  &&
+              b.left + b.width  > bounds.left &&
+              b.top    < bounds.bottom &&
+              b.top  + b.height > bounds.top
+            )
+          })
+          toRemove.forEach(obj => canvas.remove(obj))
         }
+
+        canvas.requestRenderAll()
       }
+
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:up',   onUp)
       canvas.on('mouse:move', onMove)
+
       offs.push(() => {
         canvas.off('mouse:down', onDown)
         canvas.off('mouse:up',   onUp)
         canvas.off('mouse:move', onMove)
+        canvas.remove(cursor)
+        canvas.defaultCursor = 'default'
+        canvas.requestRenderAll()
       })
     }
 
@@ -274,9 +368,9 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       const onDown = (e: fabric.TPointerEventInfo) => {
         const target = e.target
         if (target && mockupObjects.current.includes(target)) {
-          const prevFill = target.fill
+          const prevFill = target.fill as fabric.TFiller | string | null
           target.set({ fill: colorRef.current })
-          undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
+          undoHistory.current.push({ type: 'fill', obj: target, prevFill })
           canvas.requestRenderAll()
         }
       }
@@ -295,7 +389,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     canvas.freeDrawingBrush.width = brushSize
   }, [color, brushSize, tool])
 
-  // ── Undo (Ctrl+Z) — handles both drawn objects and fill changes ────────────
+  // ── Undo (Ctrl+Z) ───────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key !== 'z') return
@@ -332,6 +426,8 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     a.click()
   }
 
+  const showSizeSlider = tool === 'draw' || tool === 'pen' || tool === 'curve' || tool === 'eraser'
+
   return (
     <div className="editor">
       <header className="editor-topbar">
@@ -347,27 +443,29 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
       <div className="editor-body">
         <aside className="editor-toolbar">
-          <ToolBtn icon="↖" label="Seleccionar"    active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon="✏" label="Pincel libre"   active={tool === 'draw'}   onClick={() => setTool('draw')} />
-          <ToolBtn icon="🖊" label="Pluma"          active={tool === 'pen'}    onClick={() => setTool('pen')} />
-          <ToolBtn icon="∿" label="Curvatura"      active={tool === 'curve'}  onClick={() => setTool('curve')} />
-          <ToolBtn icon="◻" label="Goma"           active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon="▣" label="Relleno"        active={tool === 'fill'}   onClick={() => setTool('fill')} />
+          <ToolBtn icon="↖" label="Seleccionar"  active={tool === 'select'} onClick={() => setTool('select')} />
+          <ToolBtn icon="✏" label="Pincel libre" active={tool === 'draw'}   onClick={() => setTool('draw')} />
+          <ToolBtn icon="🖊" label="Pluma"        active={tool === 'pen'}    onClick={() => setTool('pen')} />
+          <ToolBtn icon="∿" label="Curvatura"    active={tool === 'curve'}  onClick={() => setTool('curve')} />
+          <ToolBtn icon="◻" label="Goma"         active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <ToolBtn icon="▣" label="Relleno"      active={tool === 'fill'}   onClick={() => setTool('fill')} />
 
           <div className="editor-toolbar-divider" />
 
-          <div className="editor-color-wrap" title="Color activo">
-            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="editor-color-input" />
-            <div className="editor-color-swatch" style={{ background: color }} />
-          </div>
+          {tool !== 'eraser' && (
+            <div className="editor-color-wrap" title="Color activo">
+              <input type="color" value={color} onChange={e => setColor(e.target.value)} className="editor-color-input" />
+              <div className="editor-color-swatch" style={{ background: color }} />
+            </div>
+          )}
 
-          {(tool === 'draw' || tool === 'pen' || tool === 'curve') && (
+          {showSizeSlider && (
             <div className="editor-brush-wrap">
               <input
-                type="range" min={1} max={50} value={brushSize}
+                type="range" min={1} max={80} value={brushSize}
                 onChange={e => setBrushSize(Number(e.target.value))}
                 className="editor-brush-slider"
-                title={`Grosor: ${brushSize}px`}
+                title={tool === 'eraser' ? `Radio: ${brushSize}px` : `Grosor: ${brushSize}px`}
               />
               <span className="editor-brush-label">{brushSize}</span>
             </div>
@@ -381,7 +479,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <canvas ref={canvasEl} />
           {(tool === 'pen' || tool === 'curve') && (
             <div className="editor-pen-hint">
-              Click · agregar punto &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
+              Click · agregar &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
             </div>
           )}
         </main>
