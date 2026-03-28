@@ -11,11 +11,14 @@ interface Props {
 
 type Tool = 'select' | 'draw' | 'pen' | 'curve' | 'eraser' | 'fill'
 
-// ── Catmull-Rom → SVG cubic bezier ──────────────────────────────────────────
-function catmullRomToBezier(pts: { x: number; y: number }[]): string {
+type HistoryEntry =
+  | { type: 'add';  obj: fabric.FabricObject }
+  | { type: 'fill'; obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
+
+// ── Catmull-Rom spline → SVG cubic bezier ───────────────────────────────────
+function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
   if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`
-
   let d = `M ${pts[0].x} ${pts[0].y}`
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[Math.max(0, i - 1)]
@@ -31,27 +34,26 @@ function catmullRomToBezier(pts: { x: number; y: number }[]): string {
   return d
 }
 
-function straightPath(pts: { x: number; y: number }[]): string {
-  if (pts.length < 2) return ''
+function straightPathStr(pts: fabric.Point[]): string {
   return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
 }
 
 export default function EditorScreen({ project, onBack, onSave }: Props) {
-  const canvasEl        = useRef<HTMLCanvasElement>(null)
-  const fc              = useRef<fabric.Canvas | null>(null)
-  const mockupObjects   = useRef<fabric.FabricObject[]>([])
-  const mockupClipPath  = useRef<fabric.Group | null>(null)
-  const colorRef        = useRef('#ff6b00')
-  const brushSizeRef    = useRef(8)
-  const isMouseDownRef  = useRef(false)
+  const canvasEl       = useRef<HTMLCanvasElement>(null)
+  const fc             = useRef<fabric.Canvas | null>(null)
+  const mockupObjects  = useRef<fabric.FabricObject[]>([])
+  const clipPath       = useRef<fabric.Group | null>(null)
+  const undoHistory    = useRef<HistoryEntry[]>([])
+  const colorRef       = useRef('#ff6b00')
+  const brushSizeRef   = useRef(8)
+  const isMouseDown    = useRef(false)
 
   const [tool, setTool]           = useState<Tool>('select')
   const [color, setColor]         = useState('#ff6b00')
   const [brushSize, setBrushSize] = useState(8)
   const [saved, setSaved]         = useState(false)
 
-  // Keep refs in sync with state (so event handler closures can read current values)
-  useEffect(() => { colorRef.current    = color    }, [color])
+  useEffect(() => { colorRef.current    = color     }, [color])
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
 
   // ── Init canvas ────────────────────────────────────────────────────────────
@@ -60,8 +62,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     let cancelled = false
 
     const canvas = new fabric.Canvas(canvasEl.current, {
-      width: 600,
-      height: 600,
+      width: 600, height: 600,
       backgroundColor: '',
       selection: true,
     })
@@ -71,7 +72,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
     fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
       if (cancelled) return
-
       const objs = objects.filter(Boolean) as fabric.FabricObject[]
       mockupObjects.current = objs
 
@@ -80,46 +80,44 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         canvas.add(obj)
       })
 
-      const allLeft   = objs.map(o => o.left ?? 0)
-      const allTop    = objs.map(o => o.top  ?? 0)
-      const allRight  = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
-      const allBottom = objs.map(o => (o.top  ?? 0) + (o.height ?? 0) * (o.scaleY ?? 1))
-      const bx = Math.min(...allLeft);  const by = Math.min(...allTop)
-      const bw = Math.max(...allRight) - bx;  const bh = Math.max(...allBottom) - by
-      const scale   = Math.min(500 / bw, 500 / bh)
-      const offsetX = (600 - bw * scale) / 2 - bx * scale
-      const offsetY = (600 - bh * scale) / 2 - by * scale
+      // Compute scale / offset
+      const allL = objs.map(o => o.left ?? 0)
+      const allT = objs.map(o => o.top  ?? 0)
+      const allR = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
+      const allB = objs.map(o => (o.top  ?? 0) + (o.height ?? 0) * (o.scaleY ?? 1))
+      const bx = Math.min(...allL), by = Math.min(...allT)
+      const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
+      const sc = Math.min(500 / bw, 500 / bh)
+      const ox = (600 - bw * sc) / 2 - bx * sc
+      const oy = (600 - bh * sc) / 2 - by * sc
 
-      objs.forEach(obj => {
-        obj.set({
-          left:   (obj.left   ?? 0) * scale + offsetX,
-          top:    (obj.top    ?? 0) * scale + offsetY,
-          scaleX: (obj.scaleX ?? 1) * scale,
-          scaleY: (obj.scaleY ?? 1) * scale,
-        })
-      })
+      objs.forEach(obj => obj.set({
+        left:   (obj.left   ?? 0) * sc + ox,
+        top:    (obj.top    ?? 0) * sc + oy,
+        scaleX: (obj.scaleX ?? 1) * sc,
+        scaleY: (obj.scaleY ?? 1) * sc,
+      }))
 
-      // Build clip path
+      // Build clip path (second SVG load, same transform)
       const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
       if (cancelled) return
-      const clipObjs = clipRaw.filter(Boolean) as fabric.FabricObject[]
-      clipObjs.forEach(obj => {
+      const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[]).map(obj => {
         obj.set({
-          left:   (obj.left   ?? 0) * scale + offsetX,
-          top:    (obj.top    ?? 0) * scale + offsetY,
-          scaleX: (obj.scaleX ?? 1) * scale,
-          scaleY: (obj.scaleY ?? 1) * scale,
+          left:   (obj.left   ?? 0) * sc + ox,
+          top:    (obj.top    ?? 0) * sc + oy,
+          scaleX: (obj.scaleX ?? 1) * sc,
+          scaleY: (obj.scaleY ?? 1) * sc,
         })
+        return obj
       })
-      const clipGroup = new fabric.Group(clipObjs)
-      clipGroup.absolutePositioned = true
-      mockupClipPath.current = clipGroup
+      const cg = new fabric.Group(clipObjs)
+      cg.absolutePositioned = true
+      clipPath.current = cg
 
-      // Clip free-draw paths
+      // Track free-draw paths in undo history
       canvas.on('path:created', (e: { path: fabric.Path }) => {
-        if (mockupClipPath.current) {
-          e.path.clipPath = mockupClipPath.current
-        }
+        if (clipPath.current) e.path.clipPath = clipPath.current
+        undoHistory.current.push({ type: 'add', obj: e.path })
         canvas.renderAll()
       })
 
@@ -129,20 +127,20 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     return () => { cancelled = true; canvas.dispose() }
   }, [project.mockupId])
 
-  // ── Tool logic ─────────────────────────────────────────────────────────────
+  // ── Tool switching ─────────────────────────────────────────────────────────
   useEffect(() => {
     const _c = fc.current
     if (!_c) return
-    const canvas: fabric.Canvas = _c   // narrowed non-null for closures
+    const canvas: fabric.Canvas = _c
 
-    // Reset canvas state
     canvas.isDrawingMode = false
-    canvas.selection = tool === 'select'
-    mockupObjects.current.forEach(obj => obj.set({ evented: tool === 'fill', selectable: false }))
+    canvas.selection     = tool === 'select'
+    mockupObjects.current.forEach(obj =>
+      obj.set({ evented: tool === 'fill', selectable: false })
+    )
 
-    const cleanups: (() => void)[] = []
+    const offs: (() => void)[] = []
 
-    // ── Free draw ──
     if (tool === 'draw') {
       canvas.isDrawingMode = true
       const brush = new fabric.PencilBrush(canvas)
@@ -151,150 +149,145 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       canvas.freeDrawingBrush = brush
     }
 
-    // ── Pen / Curve ──
+    // ── Pen / Curve ──────────────────────────────────────────────────────────
     if (tool === 'pen' || tool === 'curve') {
       canvas.selection = false
-      const pts: { x: number; y: number }[] = []
+      const pts: fabric.Point[] = []
       const dots: fabric.Circle[] = []
-      let previewLine: fabric.Path | fabric.Line | null = null
-      let isDblClick = false
+      let preview: fabric.Line | null = null
+      let skipNext = false    // suppress mousedown that belongs to dblclick
 
-      function finalize() {
-        if (previewLine) { canvas.remove(previewLine); previewLine = null }
+      const commit = () => {
+        if (preview) { canvas.remove(preview); preview = null }
         dots.forEach(d => canvas.remove(d))
         dots.length = 0
 
         if (pts.length >= 2) {
-          const d = tool === 'curve' ? catmullRomToBezier(pts) : straightPath(pts)
+          const d   = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
           const path = new fabric.Path(d, {
             stroke: colorRef.current,
             strokeWidth: brushSizeRef.current,
-            fill: '',
+            strokeLineCap: 'round',
+            strokeLineJoin: 'round',
+            fill: null,
             selectable: true,
-            evented: true,
           })
-          if (mockupClipPath.current) path.clipPath = mockupClipPath.current
+          if (clipPath.current) path.clipPath = clipPath.current
           canvas.add(path)
+          undoHistory.current.push({ type: 'add', obj: path })
         }
         pts.length = 0
-        canvas.renderAll()
+        canvas.requestRenderAll()
       }
 
-      function onMouseMove(e: fabric.TPointerEventInfo) {
+      const onMove = (e: fabric.TPointerEventInfo) => {
         if (pts.length === 0) return
-        const p = canvas.getPointer(e.e)
-        if (previewLine) canvas.remove(previewLine)
+        const p = e.scenePoint
+        if (preview) canvas.remove(preview)
         const last = pts[pts.length - 1]
-        const preview = new fabric.Line([last.x, last.y, p.x, p.y], {
-          stroke: colorRef.current,
-          strokeWidth: 1,
-          strokeDashArray: [5, 4],
-          selectable: false,
-          evented: false,
-          opacity: 0.6,
+        preview = new fabric.Line([last.x, last.y, p.x, p.y], {
+          stroke: colorRef.current, strokeWidth: 1,
+          strokeDashArray: [5, 4], opacity: 0.5,
+          selectable: false, evented: false,
         })
-        previewLine = preview
         canvas.add(preview)
         canvas.bringObjectToFront(preview)
-        canvas.renderAll()
+        canvas.requestRenderAll()
       }
 
-      function onMouseDown(e: fabric.TPointerEventInfo) {
-        if (isDblClick) return
-        const p = canvas.getPointer(e.e)
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        if (skipNext) return
+        const p = e.scenePoint
         pts.push(p)
         const dot = new fabric.Circle({
           left: p.x - 4, top: p.y - 4, radius: 4,
-          fill: colorRef.current, stroke: '#fff', strokeWidth: 1,
+          fill: colorRef.current, stroke: '#fff', strokeWidth: 1.5,
           selectable: false, evented: false,
         })
         dots.push(dot)
         canvas.add(dot)
         canvas.bringObjectToFront(dot)
-        canvas.renderAll()
+        canvas.requestRenderAll()
       }
 
-      function onDblClick() {
-        isDblClick = true
-        // Remove last point — it was added by the 2nd mousedown of the dblclick
+      const onDbl = () => {
+        skipNext = true
+        // Remove the point added by the 2nd mousedown of the dblclick
         pts.pop()
-        const lastDot = dots.pop()
-        if (lastDot) canvas.remove(lastDot)
-        finalize()
-        setTimeout(() => { isDblClick = false }, 300)
+        const d = dots.pop()
+        if (d) canvas.remove(d)
+        commit()
+        setTimeout(() => { skipNext = false }, 300)
       }
 
-      function onKeyDown(e: KeyboardEvent) {
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Enter') { commit(); return }
         if (e.key === 'Escape') {
-          if (previewLine) canvas.remove(previewLine)
+          if (preview) canvas.remove(preview)
           dots.forEach(d => canvas.remove(d))
           dots.length = 0; pts.length = 0
-          canvas.renderAll()
+          canvas.requestRenderAll()
         }
-        if (e.key === 'Enter') finalize()
       }
 
-      canvas.on('mouse:move', onMouseMove)
-      canvas.on('mouse:down', onMouseDown)
-      canvas.on('mouse:dblclick', onDblClick)
-      window.addEventListener('keydown', onKeyDown)
+      canvas.on('mouse:move',     onMove)
+      canvas.on('mouse:down',     onDown)
+      canvas.on('mouse:dblclick', onDbl)
+      window.addEventListener('keydown', onKey)
 
-      cleanups.push(() => {
-        canvas.off('mouse:move', onMouseMove)
-        canvas.off('mouse:down', onMouseDown)
-        canvas.off('mouse:dblclick', onDblClick)
-        window.removeEventListener('keydown', onKeyDown)
-        if (previewLine) canvas.remove(previewLine)
+      offs.push(() => {
+        canvas.off('mouse:move',     onMove)
+        canvas.off('mouse:down',     onDown)
+        canvas.off('mouse:dblclick', onDbl)
+        window.removeEventListener('keydown', onKey)
+        if (preview) canvas.remove(preview)
         dots.forEach(d => canvas.remove(d))
-        canvas.renderAll()
+        canvas.requestRenderAll()
       })
     }
 
-    // ── Eraser ──
+    // ── Eraser ───────────────────────────────────────────────────────────────
     if (tool === 'eraser') {
       canvas.selection = false
-
-      function onMouseDown() { isMouseDownRef.current = true }
-      function onMouseUp()   { isMouseDownRef.current = false }
-
-      function onMouseMove(e: fabric.TPointerEventInfo) {
-        if (!isMouseDownRef.current) return
-        const p = canvas.getPointer(e.e)
-        const toRemove = canvas.getObjects().filter(obj =>
-          !mockupObjects.current.includes(obj) && obj.containsPoint(p)
-        )
-        toRemove.forEach(obj => canvas.remove(obj))
-        if (toRemove.length) canvas.renderAll()
+      const onDown = () => { isMouseDown.current = true }
+      const onUp   = () => { isMouseDown.current = false }
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        if (!isMouseDown.current) return
+        const target = canvas.findTarget(e.e)
+        if (target && !mockupObjects.current.includes(target)) {
+          canvas.remove(target)
+          canvas.requestRenderAll()
+        }
       }
-
-      canvas.on('mouse:down', onMouseDown)
-      canvas.on('mouse:up',   onMouseUp)
-      canvas.on('mouse:move', onMouseMove)
-
-      cleanups.push(() => {
-        canvas.off('mouse:down', onMouseDown)
-        canvas.off('mouse:up',   onMouseUp)
-        canvas.off('mouse:move', onMouseMove)
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:up',   onUp)
+      canvas.on('mouse:move', onMove)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:up',   onUp)
+        canvas.off('mouse:move', onMove)
       })
     }
 
-    // ── Fill ──
+    // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
-      function onMouseDown(e: fabric.TPointerEventInfo) {
+      const onDown = (e: fabric.TPointerEventInfo) => {
         const target = e.target
         if (target && mockupObjects.current.includes(target)) {
+          const prevFill = target.fill
           target.set({ fill: colorRef.current })
-          canvas.renderAll()
+          undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
+          canvas.requestRenderAll()
         }
       }
-      canvas.on('mouse:down', onMouseDown)
-      cleanups.push(() => canvas.off('mouse:down', onMouseDown))
+      canvas.on('mouse:down', onDown)
+      offs.push(() => canvas.off('mouse:down', onDown))
     }
 
-    return () => cleanups.forEach(fn => fn())
+    return () => offs.forEach(fn => fn())
   }, [tool])
 
-  // ── Sync brush color/size live ─────────────────────────────────────────────
+  // Sync brush live
   useEffect(() => {
     const canvas = fc.current
     if (!canvas || tool !== 'draw' || !canvas.freeDrawingBrush) return
@@ -302,34 +295,30 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     canvas.freeDrawingBrush.width = brushSize
   }, [color, brushSize, tool])
 
-  // ── Undo (Ctrl+Z) ──────────────────────────────────────────────────────────
+  // ── Undo (Ctrl+Z) — handles both drawn objects and fill changes ────────────
   useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-        e.preventDefault()
-        const canvas = fc.current
-        if (!canvas) return
-        const objs = canvas.getObjects()
-        // Remove last non-mockup object
-        for (let i = objs.length - 1; i >= 0; i--) {
-          if (!mockupObjects.current.includes(objs[i])) {
-            canvas.remove(objs[i])
-            canvas.renderAll()
-            break
-          }
-        }
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== 'z') return
+      e.preventDefault()
+      const canvas = fc.current
+      if (!canvas) return
+      const entry = undoHistory.current.pop()
+      if (!entry) return
+      if (entry.type === 'add') {
+        canvas.remove(entry.obj)
+      } else {
+        entry.obj.set({ fill: entry.prevFill as string })
       }
+      canvas.requestRenderAll()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // ── Actions ────────────────────────────────────────────────────────────────
   function handleSave() {
     const canvas = fc.current
     if (!canvas) return
-    const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
-    onSave(thumbnail)
+    onSave(canvas.toDataURL({ format: 'png', multiplier: 0.3 }))
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -337,9 +326,8 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   function handleExport() {
     const canvas = fc.current
     if (!canvas) return
-    const url = canvas.toDataURL({ format: 'png', multiplier: 2 })
     const a = document.createElement('a')
-    a.href = url
+    a.href = canvas.toDataURL({ format: 'png', multiplier: 2 })
     a.download = `${project.name}.png`
     a.click()
   }
@@ -353,24 +341,22 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <button className="editor-btn-save" onClick={handleSave}>
             {saved ? '✓ Guardado' : 'Guardar'}
           </button>
-          <button className="editor-btn-export" onClick={handleExport}>
-            Exportar PNG
-          </button>
+          <button className="editor-btn-export" onClick={handleExport}>Exportar PNG</button>
         </div>
       </header>
 
       <div className="editor-body">
         <aside className="editor-toolbar">
-          <ToolBtn icon="↖"  label="Seleccionar (V)"   active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon="✏"  label="Pincel libre (B)"  active={tool === 'draw'}   onClick={() => setTool('draw')} />
-          <ToolBtn icon="🖊"  label="Pluma (P)"         active={tool === 'pen'}    onClick={() => setTool('pen')} />
-          <ToolBtn icon="∿"  label="Curvatura (C)"     active={tool === 'curve'}  onClick={() => setTool('curve')} />
-          <ToolBtn icon="◻"  label="Goma (E)"          active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon="▣"  label="Relleno (F)"       active={tool === 'fill'}   onClick={() => setTool('fill')} />
+          <ToolBtn icon="↖" label="Seleccionar"    active={tool === 'select'} onClick={() => setTool('select')} />
+          <ToolBtn icon="✏" label="Pincel libre"   active={tool === 'draw'}   onClick={() => setTool('draw')} />
+          <ToolBtn icon="🖊" label="Pluma"          active={tool === 'pen'}    onClick={() => setTool('pen')} />
+          <ToolBtn icon="∿" label="Curvatura"      active={tool === 'curve'}  onClick={() => setTool('curve')} />
+          <ToolBtn icon="◻" label="Goma"           active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <ToolBtn icon="▣" label="Relleno"        active={tool === 'fill'}   onClick={() => setTool('fill')} />
 
           <div className="editor-toolbar-divider" />
 
-          <div className="editor-color-wrap" title="Color">
+          <div className="editor-color-wrap" title="Color activo">
             <input type="color" value={color} onChange={e => setColor(e.target.value)} className="editor-color-input" />
             <div className="editor-color-swatch" style={{ background: color }} />
           </div>
@@ -395,7 +381,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <canvas ref={canvasEl} />
           {(tool === 'pen' || tool === 'curve') && (
             <div className="editor-pen-hint">
-              Click para agregar puntos · Doble click o Enter para terminar · Esc para cancelar
+              Click · agregar punto &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
             </div>
           )}
         </main>
