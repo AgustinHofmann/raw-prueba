@@ -197,6 +197,28 @@
   overflow: hidden;
 }
 
-.editor-canvas-area canvas {
-  /* sin borde ni sombra — prenda sola sobre el fondo */
+.editor-canvas-area {
+  position: relative;
+}
+
+.editor-pen-hint {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.6);
+  color: #aaa;
+  font-size: 11px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.editor-hint {
+  font-size: 9px;
+  color: #444;
+  text-align: center;
+  line-height: 1.5;
+  margin-top: 4px;
 }
