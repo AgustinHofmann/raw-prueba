@@ -15,6 +15,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   const canvasEl = useRef<HTMLCanvasElement>(null)
   const fc = useRef<fabric.Canvas | null>(null)
   const mockupObjects = useRef<fabric.FabricObject[]>([])
+  const mockupClipPath = useRef<fabric.Group | null>(null)
 
   const [tool, setTool] = useState<Tool>('select')
   const [color, setColor] = useState('#ff6b00')
@@ -24,59 +25,87 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   // Init canvas
   useEffect(() => {
     if (!canvasEl.current) return
+    let cancelled = false
+
     const canvas = new fabric.Canvas(canvasEl.current, {
       width: 600,
       height: 600,
-      backgroundColor: '#2a2a2a',
+      backgroundColor: '',        // transparent — prenda sola sobre el fondo del editor
       selection: true,
     })
     fc.current = canvas
 
-    // Load SVG mockup
-    fabric.loadSVGFromURL(`/mockups/${project.mockupId}.svg`).then(({ objects }) => {
+    const svgUrl = `/mockups/${project.mockupId}.svg`
+
+    // Load display SVG
+    fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
+      if (cancelled) return
+
       const objs = objects.filter(Boolean) as fabric.FabricObject[]
       mockupObjects.current = objs
 
       objs.forEach(obj => {
-        obj.set({
-          selectable: false,
-          evented: true,
-          hoverCursor: 'crosshair',
-        })
+        obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
         canvas.add(obj)
       })
 
-      // Center and scale mockup — compute bounds from objects
-      const allLeft = objs.map(o => o.left ?? 0)
-      const allTop  = objs.map(o => o.top  ?? 0)
+      // Compute bounds and scale to fit 500px inside 600px canvas
+      const allLeft   = objs.map(o => o.left ?? 0)
+      const allTop    = objs.map(o => o.top  ?? 0)
       const allRight  = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
       const allBottom = objs.map(o => (o.top  ?? 0) + (o.height ?? 0) * (o.scaleY ?? 1))
       const bx = Math.min(...allLeft)
       const by = Math.min(...allTop)
       const bw = Math.max(...allRight)  - bx
       const bh = Math.max(...allBottom) - by
-      const scale = Math.min(500 / bw, 500 / bh)
+      const scale   = Math.min(500 / bw, 500 / bh)
       const offsetX = (600 - bw * scale) / 2 - bx * scale
       const offsetY = (600 - bh * scale) / 2 - by * scale
 
       objs.forEach(obj => {
         obj.set({
-          left: (obj.left ?? 0) * scale + offsetX,
-          top: (obj.top ?? 0) * scale + offsetY,
+          left:   (obj.left   ?? 0) * scale + offsetX,
+          top:    (obj.top    ?? 0) * scale + offsetY,
           scaleX: (obj.scaleX ?? 1) * scale,
           scaleY: (obj.scaleY ?? 1) * scale,
         })
+      })
+
+      // Build clip path: load SVG again, apply same transform, group with absolutePositioned
+      const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
+      if (cancelled) return
+
+      const clipObjs = clipRaw.filter(Boolean) as fabric.FabricObject[]
+      clipObjs.forEach(obj => {
+        obj.set({
+          left:   (obj.left   ?? 0) * scale + offsetX,
+          top:    (obj.top    ?? 0) * scale + offsetY,
+          scaleX: (obj.scaleX ?? 1) * scale,
+          scaleY: (obj.scaleY ?? 1) * scale,
+        })
+      })
+      const clipGroup = new fabric.Group(clipObjs)
+      clipGroup.absolutePositioned = true
+      mockupClipPath.current = clipGroup
+
+      // Clip every new drawn path to the mockup shape
+      canvas.on('path:created', (e: { path: fabric.Path }) => {
+        if (mockupClipPath.current) {
+          e.path.clipPath = mockupClipPath.current
+          canvas.renderAll()
+        }
       })
 
       canvas.renderAll()
     })
 
     return () => {
+      cancelled = true
       canvas.dispose()
     }
   }, [project.mockupId])
 
-  // Sync tool changes to canvas
+  // Sync tool to canvas
   useEffect(() => {
     const canvas = fc.current
     if (!canvas) return
@@ -90,24 +119,17 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     } else {
       canvas.isDrawingMode = false
     }
-
-    if (tool === 'select') {
-      mockupObjects.current.forEach(obj => { obj.set({ selectable: false }) })
-      canvas.selection = true
-    }
   }, [tool, color, brushSize])
 
-  // Sync brush color/size when they change in draw mode
+  // Sync brush color/size live
   useEffect(() => {
     const canvas = fc.current
-    if (!canvas || tool !== 'draw') return
-    if (canvas.freeDrawingBrush) {
-      canvas.freeDrawingBrush.color = color
-      canvas.freeDrawingBrush.width = brushSize
-    }
+    if (!canvas || tool !== 'draw' || !canvas.freeDrawingBrush) return
+    canvas.freeDrawingBrush.color = color
+    canvas.freeDrawingBrush.width = brushSize
   }, [color, brushSize, tool])
 
-  // Fill tool: click mockup zone to fill
+  // Fill tool
   useEffect(() => {
     const canvas = fc.current
     if (!canvas) return
@@ -115,8 +137,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     function handleMouseDown(e: fabric.TPointerEventInfo) {
       if (tool !== 'fill') return
       const target = e.target
-      if (!target) return
-      if (mockupObjects.current.includes(target)) {
+      if (target && mockupObjects.current.includes(target)) {
         target.set({ fill: color })
         canvas!.renderAll()
       }
@@ -147,11 +168,8 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
   return (
     <div className="editor">
-      {/* Top bar */}
       <header className="editor-topbar">
-        <button className="editor-back" onClick={onBack}>
-          <span>←</span> RAW
-        </button>
+        <button className="editor-back" onClick={onBack}>← RAW</button>
         <span className="editor-project-name">{project.name}</span>
         <div className="editor-topbar-actions">
           <button className="editor-btn-save" onClick={handleSave}>
@@ -164,33 +182,22 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       </header>
 
       <div className="editor-body">
-        {/* Left toolbar */}
         <aside className="editor-toolbar">
           <ToolBtn icon="↖" label="Seleccionar" active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon="✏" label="Dibujar" active={tool === 'draw'} onClick={() => setTool('draw')} />
-          <ToolBtn icon="▣" label="Rellenar" active={tool === 'fill'} onClick={() => setTool('fill')} />
+          <ToolBtn icon="✏" label="Dibujar"     active={tool === 'draw'}   onClick={() => setTool('draw')} />
+          <ToolBtn icon="▣" label="Rellenar"    active={tool === 'fill'}   onClick={() => setTool('fill')} />
 
           <div className="editor-toolbar-divider" />
 
-          {/* Color picker */}
           <div className="editor-color-wrap" title="Color">
-            <input
-              type="color"
-              value={color}
-              onChange={e => setColor(e.target.value)}
-              className="editor-color-input"
-            />
+            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="editor-color-input" />
             <div className="editor-color-swatch" style={{ background: color }} />
           </div>
 
-          {/* Brush size — only relevant in draw mode */}
           {tool === 'draw' && (
             <div className="editor-brush-wrap">
               <input
-                type="range"
-                min={1}
-                max={50}
-                value={brushSize}
+                type="range" min={1} max={50} value={brushSize}
                 onChange={e => setBrushSize(Number(e.target.value))}
                 className="editor-brush-slider"
                 title={`Tamaño: ${brushSize}px`}
@@ -200,7 +207,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           )}
         </aside>
 
-        {/* Canvas */}
         <main className="editor-canvas-area">
           <canvas ref={canvasEl} />
         </main>
@@ -211,11 +217,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
 function ToolBtn({ icon, label, active, onClick }: { icon: string; label: string; active: boolean; onClick: () => void }) {
   return (
-    <button
-      className={`editor-tool-btn ${active ? 'active' : ''}`}
-      onClick={onClick}
-      title={label}
-    >
+    <button className={`editor-tool-btn ${active ? 'active' : ''}`} onClick={onClick} title={label}>
       {icon}
     </button>
   )
