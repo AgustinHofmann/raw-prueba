@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 450" width="400" height="450">
+  <!-- T-Shirt flat mockup -->
+  <!-- Body -->
+  <path id="body" d="M 100 120 L 60 140 L 40 220 L 90 230 L 90 420 L 310 420 L 310 230 L 360 220 L 340 140 L 300 120 Z"
+    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
+  <!-- Left sleeve -->
+  <path id="sleeve-left" d="M 100 120 L 60 140 L 40 220 L 90 230 L 90 160 Z"
+    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
+  <!-- Right sleeve -->
+  <path id="sleeve-right" d="M 300 120 L 340 140 L 360 220 L 310 230 L 310 160 Z"
+    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
+  <!-- Collar -->
+  <path id="collar" d="M 160 120 Q 200 145 240 120 Q 220 100 200 98 Q 180 100 160 120 Z"
+    fill="#AAAAAA" stroke="#999999" stroke-width="1.5"/>
+  <!-- Shoulder seam left -->
+  <line x1="100" y1="120" x2="160" y2="120" stroke="#999999" stroke-width="1.5"/>
+  <!-- Shoulder seam right -->
+  <line x1="240" y1="120" x2="300" y2="120" stroke="#999999" stroke-width="1.5"/>
+</svg>

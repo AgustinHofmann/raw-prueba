@@ -1,0 +1,72 @@
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  background: #252525;
+  border-right: 1px solid #333;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.logo {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #fff;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #333;
+  margin-bottom: 8px;
+}
+
+.section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.mockup-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mockup-thumb:hover {
+  background: #333;
+}
+
+.mockup-thumb img {
+  width: 60px;
+  height: 70px;
+  object-fit: contain;
+  filter: brightness(0.85);
+}
+
+.mockup-thumb span {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a1a;
+}
+
+.placeholder {
+  color: #444;
+  font-size: 14px;
+}
