@@ -1,0 +1,162 @@
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  width: 420px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #333;
+}
+
+.modal-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 3px;
+  transition: color 0.1s;
+}
+
+.modal-close:hover {
+  color: #ccc;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.modal-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.modal-input {
+  width: 100%;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 9px 12px;
+  font-size: 14px;
+  color: #e0e0e0;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.modal-input:focus {
+  border-color: #ff6b00;
+}
+
+.modal-mockup-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.modal-mockup-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.modal-mockup-item:hover {
+  background: #333;
+}
+
+.modal-mockup-item.selected {
+  border-color: #ff6b00;
+  background: #2e1a0d;
+}
+
+.modal-mockup-item img {
+  width: 64px;
+  height: 72px;
+  object-fit: contain;
+  filter: brightness(0.8);
+}
+
+.modal-mockup-item.selected img {
+  filter: brightness(1);
+}
+
+.modal-mockup-item span {
+  font-size: 11px;
+  color: #888;
+}
+
+.modal-mockup-item.selected span {
+  color: #ff6b00;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid #333;
+}
+
+.modal-btn-cancel {
+  background: none;
+  border: 1px solid #3a3a3a;
+  color: #888;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.modal-btn-cancel:hover {
+  border-color: #555;
+  color: #ccc;
+}
+
+.modal-btn-create {
+  background: #ff6b00;
+  border: none;
+  color: #fff;
+  border-radius: 4px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.modal-btn-create:hover {
+  background: #e55f00;
+}
