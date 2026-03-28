@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Project } from './types/project'
 import HomeScreen from './screens/HomeScreen'
 import NewProjectModal from './screens/NewProjectModal'
+import EditorScreen from './screens/EditorScreen'
 
 type Screen = 'home' | 'editor'
 
@@ -61,15 +62,17 @@ export default function App() {
       )}
 
       {screen === 'editor' && activeProject && (
-        <div style={{ color: '#888', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', flexDirection: 'column', gap: 16 }}>
-          <p style={{ fontSize: 14 }}>Editor — {activeProject.name}</p>
-          <button
-            onClick={() => setScreen('home')}
-            style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '6px 14px', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
-          >
-            ← Volver al inicio
-          </button>
-        </div>
+        <EditorScreen
+          project={activeProject}
+          onBack={() => setScreen('home')}
+          onSave={(thumbnail) => {
+            setProjects(prev => prev.map(p =>
+              p.id === activeProject.id
+                ? { ...p, thumbnail, updatedAt: Date.now() }
+                : p
+            ))
+          }}
+        />
       )}
 
       {showNewModal && (
