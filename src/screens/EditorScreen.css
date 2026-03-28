@@ -198,5 +198,5 @@
 }
 
 .editor-canvas-area canvas {
-  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.5);
+  /* sin borde ni sombra — prenda sola sobre el fondo */
 }
