@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" width="400" height="500">
+  <!-- Pants flat mockup -->
+  <!-- Waistband -->
+  <rect id="waistband" x="80" y="40" width="240" height="35" rx="3"
+    fill="#AAAAAA" stroke="#999999" stroke-width="2"/>
+  <!-- Belt loops -->
+  <rect x="115" y="35" width="12" height="20" rx="2" fill="#999999"/>
+  <rect x="194" y="35" width="12" height="20" rx="2" fill="#999999"/>
+  <rect x="273" y="35" width="12" height="20" rx="2" fill="#999999"/>
+  <!-- Main body -->
+  <path id="body" d="M 80 75 L 80 260 L 155 260 L 200 310 L 245 260 L 320 260 L 320 75 Z"
+    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
+  <!-- Left leg -->
+  <path id="leg-left" d="M 80 260 L 155 260 L 165 460 L 70 460 Z"
+    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
+  <!-- Right leg -->
+  <path id="leg-right" d="M 245 260 L 320 260 L 330 460 L 235 460 Z"
+    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
+  <!-- Crotch seam -->
+  <path d="M 155 260 Q 200 290 245 260" fill="none" stroke="#999999" stroke-width="1.5"/>
+  <!-- Center fly -->
+  <line x1="200" y1="75" x2="200" y2="230" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <!-- Left leg seam -->
+  <line x1="115" y1="260" x2="108" y2="460" stroke="#999999" stroke-width="1" stroke-dasharray="4,3"/>
+  <!-- Right leg seam -->
+  <line x1="285" y1="260" x2="292" y2="460" stroke="#999999" stroke-width="1" stroke-dasharray="4,3"/>
+  <!-- Left hem -->
+  <line x1="70" y1="448" x2="165" y2="448" stroke="#999999" stroke-width="2"/>
+  <!-- Right hem -->
+  <line x1="235" y1="448" x2="330" y2="448" stroke="#999999" stroke-width="2"/>
+  <!-- Pocket left -->
+  <path d="M 95 90 Q 88 140 95 170" fill="none" stroke="#999999" stroke-width="1.5"/>
+  <!-- Pocket right -->
+  <path d="M 305 90 Q 312 140 305 170" fill="none" stroke="#999999" stroke-width="1.5"/>
+</svg>

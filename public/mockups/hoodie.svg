@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" width="400" height="500">
+  <!-- Hoodie flat mockup -->
+  <!-- Body -->
+  <path id="body" d="M 95 150 L 50 175 L 30 270 L 85 280 L 85 460 L 315 460 L 315 280 L 370 270 L 350 175 L 305 150 Z"
+    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
+  <!-- Left sleeve -->
+  <path id="sleeve-left" d="M 95 150 L 50 175 L 30 270 L 85 280 L 85 185 Z"
+    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
+  <!-- Right sleeve -->
+  <path id="sleeve-right" d="M 305 150 L 350 175 L 370 270 L 315 280 L 315 185 Z"
+    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
+  <!-- Hood -->
+  <path id="hood" d="M 145 150 Q 150 80 200 70 Q 250 80 255 150 Q 230 130 200 128 Q 170 130 145 150 Z"
+    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
+  <!-- Hood inner -->
+  <path id="hood-inner" d="M 155 150 Q 160 95 200 85 Q 240 95 245 150 Q 225 138 200 136 Q 175 138 155 150 Z"
+    fill="#AAAAAA" stroke="#999999" stroke-width="1"/>
+  <!-- Kangaroo pocket -->
+  <rect id="pocket" x="145" y="320" width="110" height="70" rx="5"
+    fill="#BBBBBB" stroke="#999999" stroke-width="1.5"/>
+  <!-- Zipper line -->
+  <line x1="200" y1="150" x2="200" y2="460" stroke="#999999" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <!-- Shoulder seam left -->
+  <line x1="95" y1="150" x2="145" y2="150" stroke="#999999" stroke-width="1.5"/>
+  <!-- Shoulder seam right -->
+  <line x1="255" y1="150" x2="305" y2="150" stroke="#999999" stroke-width="1.5"/>
+  <!-- Ribbed bottom -->
+  <rect x="85" y="445" width="230" height="15" rx="0" fill="#AAAAAA" stroke="#999999" stroke-width="1"/>
+  <!-- Ribbed cuff left -->
+  <rect x="30" y="255" width="55" height="15" rx="0" fill="#AAAAAA" stroke="#999999" stroke-width="1"/>
+  <!-- Ribbed cuff right -->
+  <rect x="315" y="255" width="55" height="15" rx="0" fill="#AAAAAA" stroke="#999999" stroke-width="1"/>
+</svg>
