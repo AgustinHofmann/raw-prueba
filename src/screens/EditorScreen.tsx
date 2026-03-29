@@ -120,21 +120,31 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     fc.current = canvas
 
     // ── Illustrator-like selection style ────────────────────────────────────
-    canvas.selectionColor       = 'rgba(74, 158, 255, 0.04)'
-    canvas.selectionBorderColor = '#4A9EFF'
+    // Rubber-band (drag to select): dashed blue border, near-transparent fill
+    canvas.selectionColor       = 'rgba(29, 119, 224, 0.06)'
+    canvas.selectionBorderColor = '#1D77E0'
     canvas.selectionLineWidth   = 1
-    ;(canvas as any).uniformScaling = false   // free scale; Shift = proportional
+    ;(canvas as any).selectionDashArray = [4, 3]
+    ;(canvas as any).uniformScaling     = false   // free resize; Shift = proportional
 
+    // Per-object bounding box + handles
+    // Illustrator: thin blue outline, small white squares with blue border
     Object.assign(fabric.FabricObject.prototype, {
-      borderColor:        '#4A9EFF',
+      borderColor:        '#1D77E0',   // thin blue outline around selected object
       borderScaleFactor:  1,
-      cornerColor:        '#4A9EFF',
-      cornerStrokeColor:  '#ffffff',
+      cornerColor:        '#ffffff',   // white-filled square handles
+      cornerStrokeColor:  '#1D77E0',  // blue border on each handle
       cornerSize:         7,
       cornerStyle:        'rect',
       transparentCorners: false,
-      padding:            4,
+      padding:            2,
     })
+
+    // Hide rotation handle — Illustrator triggers rotation by cursor proximity to corners,
+    // not via an explicit handle. The mtr dot-on-a-stick looks nothing like Illustrator.
+    try {
+      fabric.FabricObject.prototype.controls.mtr.visible = false
+    } catch (_) { /* controls may not be enumerable in all Fabric builds */ }
 
     const svgUrl = `/mockups/${project.mockupId}.svg`
 
@@ -549,13 +559,26 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     setPropSWidth(val)
   }
 
-  // ── Undo (Ctrl+Z) ───────────────────────────────────────────────────────────
+  // ── Undo (Ctrl+Z) + Delete selected ────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== 'z') return
-      e.preventDefault()
       const canvas = fc.current
       if (!canvas) return
+
+      // Delete / Backspace → remove active object
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const active = canvas.getActiveObject()
+        if (active && !mockupObjects.current.includes(active)) {
+          e.preventDefault()
+          canvas.remove(active)
+          canvas.discardActiveObject()
+          canvas.requestRenderAll()
+          return
+        }
+      }
+
+      if (!(e.ctrlKey || e.metaKey) || e.key !== 'z') return
+      e.preventDefault()
       const entry = undoHistory.current.pop()
       if (!entry) return
       if (entry.type === 'add') {
