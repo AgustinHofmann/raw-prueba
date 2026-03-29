@@ -222,3 +222,146 @@
   line-height: 1.5;
   margin-top: 4px;
 }
+
+/* ── Size cursor preview ── */
+.editor-size-cursor {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+  box-sizing: border-box;
+  display: none;
+}
+
+/* ── Right properties panel ── */
+.editor-props {
+  width: 192px;
+  flex-shrink: 0;
+  background: #252525;
+  border-left: 1px solid #2e2e2e;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.editor-props-empty {
+  font-size: 11px;
+  color: #444;
+  text-align: center;
+  margin-top: 40px;
+  line-height: 1.7;
+}
+
+.prop-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #2e2e2e;
+  margin-bottom: 2px;
+}
+
+.prop-section:last-child {
+  border-bottom: none;
+}
+
+.prop-label {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prop-row-slider {
+  gap: 7px;
+}
+
+.prop-color-wrap {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.prop-color-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  padding: 0;
+  border: none;
+}
+
+.prop-color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: 2px solid #444;
+  pointer-events: none;
+}
+
+.prop-none-btn {
+  background: none;
+  border: 1px solid #3a3a3a;
+  color: #666;
+  border-radius: 3px;
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.prop-none-btn:hover {
+  color: #e05555;
+  border-color: #e05555;
+}
+
+.prop-add-btn {
+  background: none;
+  border: 1px dashed #444;
+  color: #666;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.prop-add-btn:hover {
+  color: #ccc;
+  border-color: #888;
+}
+
+.prop-slider-label {
+  font-size: 10px;
+  color: #555;
+  min-width: 36px;
+}
+
+.prop-slider {
+  flex: 1;
+  accent-color: #ff6b00;
+  cursor: pointer;
+}
+
+.prop-slider-val {
+  font-size: 10px;
+  color: #777;
+  min-width: 22px;
+  text-align: right;
+}

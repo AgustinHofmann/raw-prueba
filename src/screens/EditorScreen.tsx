@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project } from '../types/project'
 import './EditorScreen.css'
@@ -15,7 +15,6 @@ type HistoryEntry =
   | { type: 'add';  obj: fabric.FabricObject }
   | { type: 'fill'; obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
 
-// ── Catmull-Rom → SVG cubic bezier ──────────────────────────────────────────
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
   if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`
@@ -38,8 +37,13 @@ function straightPathStr(pts: fabric.Point[]): string {
   return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
 }
 
+// Pen-nib cursor — tip at (2, 18) in the 20×20 image
+const PEN_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3C/svg%3E") 2 18, crosshair`
+
 export default function EditorScreen({ project, onBack, onSave }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
+  const canvasAreaRef = useRef<HTMLElement>(null)
+  const cursorRef     = useRef<HTMLDivElement>(null)
   const fc            = useRef<fabric.Canvas | null>(null)
   const mockupObjects = useRef<fabric.FabricObject[]>([])
   const clipPath      = useRef<fabric.Group | null>(null)
@@ -47,14 +51,61 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   const colorRef      = useRef('#ff6b00')
   const brushSizeRef  = useRef(8)
   const isMouseDown   = useRef(false)
+  const snapPoints    = useRef<fabric.Point[]>([])
 
   const [tool, setTool]           = useState<Tool>('select')
   const [color, setColor]         = useState('#ff6b00')
   const [brushSize, setBrushSize] = useState(8)
   const [saved, setSaved]         = useState(false)
 
+  // Properties panel state (for selected object)
+  const [hasSel,      setHasSel]      = useState(false)
+  const [propFill,    setPropFill]    = useState<string | null>(null)
+  const [propStroke,  setPropStroke]  = useState('#ff6b00')
+  const [propSWidth,  setPropSWidth]  = useState(8)
+
   useEffect(() => { colorRef.current     = color     }, [color])
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
+
+  // ── CSS cursor helpers ───────────────────────────────────────────────────────
+  function showSizeCursor(clientX: number, clientY: number) {
+    const div  = cursorRef.current
+    const area = canvasAreaRef.current
+    const cv   = canvasEl.current
+    if (!div || !area || !cv) return
+    const cvRect   = cv.getBoundingClientRect()
+    const areaRect = area.getBoundingClientRect()
+    const scale = cvRect.width / 600
+    const r = (brushSizeRef.current / 2) * scale
+    div.style.left    = `${clientX - areaRect.left - r}px`
+    div.style.top     = `${clientY - areaRect.top  - r}px`
+    div.style.width   = `${r * 2}px`
+    div.style.height  = `${r * 2}px`
+    div.style.display = 'block'
+  }
+
+  // Position cursor at canvas-space coordinates (for snap)
+  function showSizeCursorAtCanvasPos(cx: number, cy: number) {
+    const div  = cursorRef.current
+    const area = canvasAreaRef.current
+    const cv   = canvasEl.current
+    if (!div || !area || !cv) return
+    const cvRect   = cv.getBoundingClientRect()
+    const areaRect = area.getBoundingClientRect()
+    const scale = cvRect.width / 600
+    const r = (brushSizeRef.current / 2) * scale
+    const screenX = cx * scale + cvRect.left
+    const screenY = cy * scale + cvRect.top
+    div.style.left    = `${screenX - areaRect.left - r}px`
+    div.style.top     = `${screenY - areaRect.top  - r}px`
+    div.style.width   = `${r * 2}px`
+    div.style.height  = `${r * 2}px`
+    div.style.display = 'block'
+  }
+
+  function hideSizeCursor() {
+    if (cursorRef.current) cursorRef.current.style.display = 'none'
+  }
 
   // ── Canvas init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -130,9 +181,14 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
     canvas.isDrawingMode = false
     canvas.selection     = tool === 'select'
-    mockupObjects.current.forEach(obj =>
-      obj.set({ evented: tool === 'fill', selectable: false })
-    )
+    canvas.discardActiveObject()
+    canvas.getObjects().forEach(obj => {
+      const isMockup = mockupObjects.current.includes(obj)
+      obj.set({
+        evented:    isMockup ? tool === 'fill' : false,
+        selectable: isMockup ? false : tool === 'select',
+      })
+    })
 
     const offs: (() => void)[] = []
 
@@ -143,78 +199,103 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       brush.color = colorRef.current
       brush.width = brushSizeRef.current
       canvas.freeDrawingBrush = brush
-
-      // Brush preview cursor
       canvas.defaultCursor = 'none'
-      const cur = new fabric.Circle({
-        radius: brushSizeRef.current / 2,
-        fill: 'transparent',
-        stroke: 'rgba(255,255,255,0.7)',
-        strokeWidth: 1,
-        strokeDashArray: [3, 3],
-        selectable: false, evented: false,
-        originX: 'center', originY: 'center',
-        left: -200, top: -200,
-      })
-      canvas.add(cur)
 
-      const onMove = (e: fabric.TPointerEventInfo) => {
-        const p = e.scenePoint
-        cur.set({ left: p.x, top: p.y, radius: brushSizeRef.current / 2 })
-        canvas.bringObjectToFront(cur)
-        canvas.requestRenderAll()
-      }
+      const onMove  = (e: fabric.TPointerEventInfo) => showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
+      const onLeave = () => hideSizeCursor()
       canvas.on('mouse:move', onMove)
-
+      canvasAreaRef.current?.addEventListener('mouseleave', onLeave)
       offs.push(() => {
         canvas.off('mouse:move', onMove)
-        canvas.remove(cur)
+        canvasAreaRef.current?.removeEventListener('mouseleave', onLeave)
         canvas.defaultCursor = 'default'
-        canvas.requestRenderAll()
+        hideSizeCursor()
       })
     }
 
     // ── Pen / Curve ──────────────────────────────────────────────────────────
     if (tool === 'pen' || tool === 'curve') {
-      canvas.selection = false
-      canvas.defaultCursor = 'none'
-
-      // Stroke-width preview cursor
-      const cur = new fabric.Circle({
-        radius: brushSizeRef.current / 2,
-        fill: 'transparent',
-        stroke: 'rgba(255,255,255,0.7)',
-        strokeWidth: 1,
-        strokeDashArray: [3, 3],
-        selectable: false, evented: false,
-        originX: 'center', originY: 'center',
-        left: -200, top: -200,
-      })
-      canvas.add(cur)
+      canvas.selection     = false
+      canvas.defaultCursor = PEN_CURSOR
+      hideSizeCursor()   // hide brush-circle in case previous tool left it
 
       const pts: fabric.Point[]   = []
       const dots: fabric.Circle[] = []
+      const lines: fabric.Line[]  = []
       let preview: fabric.Line | null = null
+      let snapIndicator: fabric.Circle | null = null
       let lastClickTime = 0
+
+      const SNAP_RADIUS = 14   // canvas units
+
+      // Returns the nearest snap point and whether it closes the current path
+      const findSnap = (p: fabric.Point): { pt: fabric.Point; closes: boolean } | null => {
+        // First priority: close the current open path
+        if (pts.length >= 2) {
+          if (Math.hypot(p.x - pts[0].x, p.y - pts[0].y) < SNAP_RADIUS)
+            return { pt: pts[0], closes: true }
+        }
+        // Second: snap to any committed path endpoint
+        for (const sp of snapPoints.current) {
+          if (Math.hypot(p.x - sp.x, p.y - sp.y) < SNAP_RADIUS)
+            return { pt: sp, closes: false }
+        }
+        return null
+      }
+
+      const clearSnapIndicator = () => {
+        if (snapIndicator) { canvas.remove(snapIndicator); snapIndicator = null }
+      }
 
       const commit = () => {
         if (preview) { canvas.remove(preview); preview = null }
+        clearSnapIndicator()
         dots.forEach(d => canvas.remove(d))
         dots.length = 0
+        lines.forEach(l => canvas.remove(l))
+        lines.length = 0
 
         if (pts.length >= 2) {
-          const d = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
-          const path = new fabric.Path(d, {
-            stroke: colorRef.current,
-            strokeWidth: brushSizeRef.current,
-            strokeLineCap: 'round',
-            strokeLineJoin: 'round',
-            fill: null,
-            selectable: true,
-          })
-          if (clipPath.current) path.clipPath = clipPath.current
-          canvas.add(path)
-          undoHistory.current.push({ type: 'add', obj: path })
+          // Store endpoints for future snapping
+          snapPoints.current.push(new fabric.Point(pts[0].x, pts[0].y))
+          const lastPt = pts[pts.length - 1]
+          if (lastPt.x !== pts[0].x || lastPt.y !== pts[0].y)
+            snapPoints.current.push(new fabric.Point(lastPt.x, lastPt.y))
+
+          let obj: fabric.FabricObject
+
+          if (pts.length === 2) {
+            // 2-point straight line → rotated Line so the selection box
+            // hugs the line (like Illustrator) instead of an axis-aligned square
+            const p0 = pts[0], p1 = pts[pts.length - 1]
+            const cx    = (p0.x + p1.x) / 2
+            const cy    = (p0.y + p1.y) / 2
+            const len   = Math.hypot(p1.x - p0.x, p1.y - p0.y)
+            const angle = Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180 / Math.PI
+            obj = new fabric.Line([-len / 2, 0, len / 2, 0], {
+              left: cx, top: cy, angle,
+              originX: 'center', originY: 'center',
+              stroke: colorRef.current,
+              strokeWidth: brushSizeRef.current,
+              strokeLineCap: 'round',
+              fill: undefined,
+              selectable: true,
+            })
+          } else {
+            const d = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
+            obj = new fabric.Path(d, {
+              stroke: colorRef.current,
+              strokeWidth: brushSizeRef.current,
+              strokeLineCap: 'round',
+              strokeLineJoin: 'round',
+              fill: null,
+              selectable: true,
+            })
+          }
+
+          if (clipPath.current) obj.clipPath = clipPath.current
+          canvas.add(obj)
+          undoHistory.current.push({ type: 'add', obj })
         }
         pts.length = 0
         canvas.requestRenderAll()
@@ -224,26 +305,32 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         const now = Date.now()
         const isDbl = now - lastClickTime < 350
         lastClickTime = now
+        if (isDbl) { commit(); return }
 
-        if (isDbl) {
-          // Double-click: finish path without adding this point
+        const raw = e.scenePoint
+        const snap = findSnap(raw)
+
+        if (snap?.closes) {
+          pts.push(new fabric.Point(pts[0].x, pts[0].y))
           commit()
           return
         }
 
-        const p = e.scenePoint
+        const p = snap ? snap.pt : raw
 
-        // Close path if clicking near first dot
-        if (pts.length >= 2) {
-          const first = pts[0]
-          if (Math.hypot(p.x - first.x, p.y - first.y) < 12) {
-            pts.push(new fabric.Point(first.x, first.y))
-            commit()
-            return
-          }
+        if (pts.length >= 1) {
+          const prev = pts[pts.length - 1]
+          const seg = new fabric.Line([prev.x, prev.y, p.x, p.y], {
+            stroke: colorRef.current,
+            strokeWidth: brushSizeRef.current,
+            strokeLineCap: 'round',
+            selectable: false, evented: false,
+          })
+          lines.push(seg)
+          canvas.add(seg)
         }
 
-        pts.push(p)
+        pts.push(snap ? new fabric.Point(snap.pt.x, snap.pt.y) : p)
         const dot = new fabric.Circle({
           left: p.x - 4, top: p.y - 4, radius: 4,
           fill: colorRef.current, stroke: '#fff', strokeWidth: 1.5,
@@ -251,115 +338,120 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
         })
         dots.push(dot)
         canvas.add(dot)
-        canvas.bringObjectToFront(dot)
         canvas.requestRenderAll()
       }
 
       const onMove = (e: fabric.TPointerEventInfo) => {
-        const p = e.scenePoint
+        const raw = e.scenePoint
+        const snap = findSnap(raw)
 
-        // Update cursor preview
-        cur.set({ left: p.x, top: p.y, radius: Math.max(brushSizeRef.current / 2, 4) })
-        canvas.bringObjectToFront(cur)
+        if (snap) {
+          // Highlight first dot orange when closing current path
+          if (dots[0]) dots[0].set({ stroke: snap.closes ? '#ff6b00' : '#fff', strokeWidth: snap.closes ? 2.5 : 1.5 })
+          // Show orange ring at external snap point
+          if (!snap.closes) {
+            if (!snapIndicator) {
+              snapIndicator = new fabric.Circle({
+                radius: 7, fill: 'transparent',
+                stroke: '#ff6b00', strokeWidth: 1.5,
+                selectable: false, evented: false,
+                originX: 'center', originY: 'center',
+              })
+              canvas.add(snapIndicator)
+            }
+            snapIndicator.set({ left: snap.pt.x, top: snap.pt.y })
+          } else {
+            clearSnapIndicator()
+          }
+        } else {
+          if (dots[0]) dots[0].set({ stroke: '#fff', strokeWidth: 1.5 })
+          clearSnapIndicator()
+        }
 
         if (pts.length === 0) { canvas.requestRenderAll(); return }
+
+        const target = snap ? snap.pt : raw
         if (preview) canvas.remove(preview)
         const last = pts[pts.length - 1]
-        preview = new fabric.Line([last.x, last.y, p.x, p.y], {
+        preview = new fabric.Line([last.x, last.y, target.x, target.y], {
           stroke: colorRef.current, strokeWidth: 1,
           strokeDashArray: [5, 4], opacity: 0.5,
           selectable: false, evented: false,
         })
         canvas.add(preview)
-        canvas.bringObjectToFront(cur)
         canvas.requestRenderAll()
       }
 
       const onKey = (e: KeyboardEvent) => {
-        if (e.key === 'Enter') { commit(); return }
-        if (e.key === 'Escape') {
-          if (preview) { canvas.remove(preview); preview = null }
-          dots.forEach(d => canvas.remove(d))
-          dots.length = 0; pts.length = 0
-          canvas.requestRenderAll()
-        }
+        if (e.key === 'Enter' || e.key === 'Escape') { commit(); return }
       }
+
+      const onLeave = () => hideSizeCursor()
 
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:move', onMove)
       window.addEventListener('keydown', onKey)
+      canvasAreaRef.current?.addEventListener('mouseleave', onLeave)
 
       offs.push(() => {
         canvas.off('mouse:down', onDown)
         canvas.off('mouse:move', onMove)
         window.removeEventListener('keydown', onKey)
+        canvasAreaRef.current?.removeEventListener('mouseleave', onLeave)
         canvas.defaultCursor = 'default'
-        canvas.remove(cur)
         if (preview) canvas.remove(preview)
+        clearSnapIndicator()
         dots.forEach(d => canvas.remove(d))
+        lines.forEach(l => canvas.remove(l))
         canvas.requestRenderAll()
+        hideSizeCursor()
       })
     }
 
     // ── Eraser ───────────────────────────────────────────────────────────────
     if (tool === 'eraser') {
-      canvas.selection = false
+      canvas.selection     = false
       canvas.defaultCursor = 'none'
 
-      // Visual eraser cursor
-      const cursor = new fabric.Circle({
-        radius: brushSizeRef.current,
-        fill: 'rgba(255,255,255,0.08)',
-        stroke: 'rgba(255,255,255,0.6)',
-        strokeWidth: 1,
-        strokeDashArray: [3, 3],
-        selectable: false, evented: false,
-        originX: 'center', originY: 'center',
-        left: -100, top: -100,
-      })
-      canvas.add(cursor)
-
-      const onDown = () => { isMouseDown.current = true }
-      const onUp   = () => { isMouseDown.current = false }
+      const onDown  = () => { isMouseDown.current = true }
+      const onUp    = () => { isMouseDown.current = false }
 
       const onMove = (e: fabric.TPointerEventInfo) => {
         const p = e.scenePoint
         const r = brushSizeRef.current
-
-        // Move visual cursor
-        cursor.set({ left: p.x, top: p.y, radius: r })
-        canvas.bringObjectToFront(cursor)
+        showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
 
         if (isMouseDown.current) {
           const bounds = { left: p.x - r, top: p.y - r, right: p.x + r, bottom: p.y + r }
           const toRemove = canvas.getObjects().filter(obj => {
             if (mockupObjects.current.includes(obj)) return false
-            if (obj === cursor) return false
             const b = obj.getBoundingRect()
             return (
-              b.left   < bounds.right  &&
-              b.left + b.width  > bounds.left &&
-              b.top    < bounds.bottom &&
-              b.top  + b.height > bounds.top
+              b.left              < bounds.right  &&
+              b.left + b.width    > bounds.left   &&
+              b.top               < bounds.bottom &&
+              b.top  + b.height   > bounds.top
             )
           })
           toRemove.forEach(obj => canvas.remove(obj))
         }
-
         canvas.requestRenderAll()
       }
+
+      const onLeave = () => hideSizeCursor()
 
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:up',   onUp)
       canvas.on('mouse:move', onMove)
+      canvasAreaRef.current?.addEventListener('mouseleave', onLeave)
 
       offs.push(() => {
         canvas.off('mouse:down', onDown)
         canvas.off('mouse:up',   onUp)
         canvas.off('mouse:move', onMove)
-        canvas.remove(cursor)
+        canvasAreaRef.current?.removeEventListener('mouseleave', onLeave)
         canvas.defaultCursor = 'default'
-        canvas.requestRenderAll()
+        hideSizeCursor()
       })
     }
 
@@ -378,8 +470,34 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       offs.push(() => canvas.off('mouse:down', onDown))
     }
 
+    // ── Select ───────────────────────────────────────────────────────────────
+    if (tool === 'select') {
+      const syncProps = (obj: fabric.FabricObject | null) => {
+        if (!obj) { setHasSel(false); return }
+        setHasSel(true)
+        setPropFill(typeof obj.fill   === 'string' ? obj.fill   : null)
+        setPropStroke(typeof obj.stroke === 'string' ? obj.stroke : '#000000')
+        setPropSWidth(obj.strokeWidth ?? 1)
+      }
+
+      const onCreated  = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
+      const onUpdated  = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
+      const onCleared  = () => syncProps(null)
+
+      canvas.on('selection:created', onCreated as Parameters<typeof canvas.on>[1])
+      canvas.on('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
+      canvas.on('selection:cleared', onCleared)
+
+      offs.push(() => {
+        canvas.off('selection:created', onCreated as Parameters<typeof canvas.on>[1])
+        canvas.off('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
+        canvas.off('selection:cleared', onCleared)
+        setHasSel(false)
+      })
+    }
+
     return () => offs.forEach(fn => fn())
-  }, [tool])
+  }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync brush live
   useEffect(() => {
@@ -388,6 +506,31 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     canvas.freeDrawingBrush.color = color
     canvas.freeDrawingBrush.width = brushSize
   }, [color, brushSize, tool])
+
+  // ── Property panel handlers ─────────────────────────────────────────────────
+  function applyFill(val: string | null) {
+    const canvas = fc.current
+    if (!canvas) return
+    const obj = canvas.getActiveObject()
+    if (obj) { obj.set({ fill: val ?? undefined }); canvas.requestRenderAll() }
+    setPropFill(val)
+  }
+
+  function applyStroke(val: string) {
+    const canvas = fc.current
+    if (!canvas) return
+    const obj = canvas.getActiveObject()
+    if (obj) { obj.set({ stroke: val }); canvas.requestRenderAll() }
+    setPropStroke(val)
+  }
+
+  function applyStrokeWidth(val: number) {
+    const canvas = fc.current
+    if (!canvas) return
+    const obj = canvas.getActiveObject()
+    if (obj) { obj.set({ strokeWidth: val }); canvas.requestRenderAll() }
+    setPropSWidth(val)
+  }
 
   // ── Undo (Ctrl+Z) ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -442,6 +585,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       </header>
 
       <div className="editor-body">
+        {/* ── Left toolbar ── */}
         <aside className="editor-toolbar">
           <ToolBtn icon="↖" label="Seleccionar"  active={tool === 'select'} onClick={() => setTool('select')} />
           <ToolBtn icon="✏" label="Pincel libre" active={tool === 'draw'}   onClick={() => setTool('draw')} />
@@ -475,14 +619,74 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <div className="editor-hint">Ctrl+Z<br/>undo</div>
         </aside>
 
-        <main className="editor-canvas-area">
+        {/* ── Canvas ── */}
+        <main className="editor-canvas-area" ref={canvasAreaRef as RefObject<HTMLElement>}>
           <canvas ref={canvasEl} />
+          <div ref={cursorRef} className="editor-size-cursor" />
           {(tool === 'pen' || tool === 'curve') && (
             <div className="editor-pen-hint">
               Click · agregar &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
             </div>
           )}
         </main>
+
+        {/* ── Right properties panel ── */}
+        {tool === 'select' && (
+          <aside className="editor-props">
+            {!hasSel ? (
+              <p className="editor-props-empty">Seleccioná<br/>un objeto</p>
+            ) : (
+              <>
+                <div className="prop-section">
+                  <span className="prop-label">Relleno</span>
+                  <div className="prop-row">
+                    {propFill !== null ? (
+                      <>
+                        <div className="prop-color-wrap">
+                          <input
+                            type="color"
+                            value={propFill}
+                            onChange={e => applyFill(e.target.value)}
+                            className="prop-color-input"
+                          />
+                          <div className="prop-color-swatch" style={{ background: propFill }} />
+                        </div>
+                        <button className="prop-none-btn" onClick={() => applyFill(null)} title="Sin relleno">✕</button>
+                      </>
+                    ) : (
+                      <button className="prop-add-btn" onClick={() => applyFill('#ffffff')}>+ color</button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="prop-section">
+                  <span className="prop-label">Trazado</span>
+                  <div className="prop-row">
+                    <div className="prop-color-wrap">
+                      <input
+                        type="color"
+                        value={propStroke}
+                        onChange={e => applyStroke(e.target.value)}
+                        className="prop-color-input"
+                      />
+                      <div className="prop-color-swatch" style={{ background: propStroke }} />
+                    </div>
+                  </div>
+                  <div className="prop-row prop-row-slider">
+                    <span className="prop-slider-label">Grosor</span>
+                    <input
+                      type="range" min={0.5} max={60} step={0.5}
+                      value={propSWidth}
+                      onChange={e => applyStrokeWidth(Number(e.target.value))}
+                      className="prop-slider"
+                    />
+                    <span className="prop-slider-val">{propSWidth}</span>
+                  </div>
+                </div>
+              </>
+            )}
+          </aside>
+        )}
       </div>
     </div>
   )
