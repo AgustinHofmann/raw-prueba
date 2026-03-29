@@ -252,6 +252,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       let preview: fabric.Line | null = null
       let snapIndicator: fabric.Circle | null = null
       let lastClickTime = 0
+      let lastClickPos: fabric.Point | null = null
 
       const SNAP_RADIUS = 14   // canvas units
 
@@ -330,11 +331,15 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
       const onDown = (e: fabric.TPointerEventInfo) => {
         const now = Date.now()
+        const raw0 = e.scenePoint
         const isDbl = now - lastClickTime < 350
+          && lastClickPos !== null
+          && Math.hypot(raw0.x - lastClickPos.x, raw0.y - lastClickPos.y) < 10
         lastClickTime = now
+        lastClickPos  = raw0
         if (isDbl) { commit(); return }
 
-        const raw = e.scenePoint
+        const raw = raw0
         const snap = findSnap(raw)
 
         if (snap?.closes) {
