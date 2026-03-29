@@ -188,6 +188,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
 
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current
+        e.path.set({ selectable: false, evented: false })
         undoHistory.current.push({ type: 'add', obj: e.path })
         canvas.renderAll()
       })
@@ -305,7 +306,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
               strokeWidth: brushSizeRef.current,
               strokeLineCap: 'round',
               fill: undefined,
-              selectable: true,
+              selectable: false, evented: false,
             })
           } else {
             const d = tool === 'curve' ? catmullRomToBezier(pts) : straightPathStr(pts)
@@ -315,7 +316,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
               strokeLineCap: 'round',
               strokeLineJoin: 'round',
               fill: null,
-              selectable: true,
+              selectable: false, evented: false,
             })
           }
 
