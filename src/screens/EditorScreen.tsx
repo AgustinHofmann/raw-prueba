@@ -53,19 +53,17 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
 
-  const [tool, setTool]           = useState<Tool>('select')
-  const [color, setColor]         = useState('#ff6b00')
-  const [brushSize, setBrushSize] = useState(8)
-  const [saved, setSaved]         = useState(false)
+  const [tool, setTool]   = useState<Tool>('select')
+  const [saved, setSaved] = useState(false)
 
-  // Properties panel state (for selected object)
-  const [hasSel,      setHasSel]      = useState(false)
-  const [propFill,    setPropFill]    = useState<string | null>(null)
-  const [propStroke,  setPropStroke]  = useState('#ff6b00')
-  const [propSWidth,  setPropSWidth]  = useState(8)
+  // Unified properties — source of truth for drawing defaults AND selected object
+  const [hasSel,     setHasSel]     = useState(false)
+  const [propFill,   setPropFill]   = useState<string | null>(null)
+  const [propStroke, setPropStroke] = useState('#ff6b00')
+  const [propSWidth, setPropSWidth] = useState(8)
 
-  useEffect(() => { colorRef.current     = color     }, [color])
-  useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
+  useEffect(() => { colorRef.current     = propStroke }, [propStroke])
+  useEffect(() => { brushSizeRef.current = propSWidth }, [propSWidth])
 
   // ── CSS cursor helpers ───────────────────────────────────────────────────────
   function showSizeCursor(clientX: number, clientY: number) {
@@ -535,33 +533,37 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   useEffect(() => {
     const canvas = fc.current
     if (!canvas || tool !== 'draw' || !canvas.freeDrawingBrush) return
-    canvas.freeDrawingBrush.color = color
-    canvas.freeDrawingBrush.width = brushSize
-  }, [color, brushSize, tool])
+    canvas.freeDrawingBrush.color = propStroke
+    canvas.freeDrawingBrush.width = propSWidth
+  }, [propStroke, propSWidth, tool])
 
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
-    const canvas = fc.current
-    if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (obj) { obj.set({ fill: val ?? undefined }); canvas.requestRenderAll() }
     setPropFill(val)
+    const obj = fc.current?.getActiveObject()
+    if (obj && !mockupObjects.current.includes(obj)) {
+      obj.set({ fill: val ?? undefined })
+      fc.current?.requestRenderAll()
+    }
   }
 
   function applyStroke(val: string) {
-    const canvas = fc.current
-    if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (obj) { obj.set({ stroke: val }); canvas.requestRenderAll() }
-    setPropStroke(val)
+    setPropStroke(val)   // also updates colorRef via useEffect
+    const obj = fc.current?.getActiveObject()
+    if (obj && !mockupObjects.current.includes(obj)) {
+      obj.set({ stroke: val })
+      fc.current?.requestRenderAll()
+    }
   }
 
   function applyStrokeWidth(val: number) {
-    const canvas = fc.current
-    if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (obj) { obj.set({ strokeWidth: val }); canvas.requestRenderAll() }
-    setPropSWidth(val)
+    const clamped = Math.max(0.5, val)
+    setPropSWidth(clamped)   // also updates brushSizeRef via useEffect
+    const obj = fc.current?.getActiveObject()
+    if (obj && !mockupObjects.current.includes(obj)) {
+      obj.set({ strokeWidth: clamped })
+      fc.current?.requestRenderAll()
+    }
   }
 
   // ── Undo (Ctrl+Z) + Delete selected ────────────────────────────────────────
@@ -614,8 +616,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     a.click()
   }
 
-  const showSizeSlider = tool === 'draw' || tool === 'pen' || tool === 'curve' || tool === 'eraser'
-
   return (
     <div className="editor">
       <header className="editor-topbar">
@@ -638,28 +638,6 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <ToolBtn icon="∿" label="Curvatura"    active={tool === 'curve'}  onClick={() => setTool('curve')} />
           <ToolBtn icon="◻" label="Goma"         active={tool === 'eraser'} onClick={() => setTool('eraser')} />
           <ToolBtn icon="▣" label="Relleno"      active={tool === 'fill'}   onClick={() => setTool('fill')} />
-
-          <div className="editor-toolbar-divider" />
-
-          {tool !== 'eraser' && (
-            <div className="editor-color-wrap" title="Color activo">
-              <input type="color" value={color} onChange={e => setColor(e.target.value)} className="editor-color-input" />
-              <div className="editor-color-swatch" style={{ background: color }} />
-            </div>
-          )}
-
-          {showSizeSlider && (
-            <div className="editor-brush-wrap">
-              <input
-                type="range" min={1} max={80} value={brushSize}
-                onChange={e => setBrushSize(Number(e.target.value))}
-                className="editor-brush-slider"
-                title={tool === 'eraser' ? `Radio: ${brushSize}px` : `Grosor: ${brushSize}px`}
-              />
-              <span className="editor-brush-label">{brushSize}</span>
-            </div>
-          )}
-
           <div className="editor-toolbar-divider" />
           <div className="editor-hint">Ctrl+Z<br/>undo</div>
         </aside>
@@ -670,68 +648,58 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
           <div ref={cursorRef} className="editor-size-cursor" />
           {(tool === 'pen' || tool === 'curve') && (
             <div className="editor-pen-hint">
-              Click · agregar &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
+              Click · agregar &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · finalizar
             </div>
           )}
         </main>
 
-        {/* ── Right properties panel ── */}
-        {tool === 'select' && (
-          <aside className="editor-props">
-            {!hasSel ? (
-              <p className="editor-props-empty">Seleccioná<br/>un objeto</p>
-            ) : (
-              <>
-                <div className="prop-section">
-                  <span className="prop-label">Relleno</span>
-                  <div className="prop-row">
-                    {propFill !== null ? (
-                      <>
-                        <div className="prop-color-wrap">
-                          <input
-                            type="color"
-                            value={propFill}
-                            onChange={e => applyFill(e.target.value)}
-                            className="prop-color-input"
-                          />
-                          <div className="prop-color-swatch" style={{ background: propFill }} />
-                        </div>
-                        <button className="prop-none-btn" onClick={() => applyFill(null)} title="Sin relleno">✕</button>
-                      </>
-                    ) : (
-                      <button className="prop-add-btn" onClick={() => applyFill('#ffffff')}>+ color</button>
-                    )}
+        {/* ── Right properties panel — always visible ── */}
+        <aside className="editor-props">
+          <div className="prop-section">
+            <span className="prop-label">Relleno</span>
+            <div className="prop-row">
+              {propFill !== null ? (
+                <>
+                  <div className="prop-color-wrap">
+                    <input type="color" value={propFill} onChange={e => applyFill(e.target.value)} className="prop-color-input" />
+                    <div className="prop-color-swatch" style={{ background: propFill }} />
                   </div>
-                </div>
+                  <button className="prop-none-btn" onClick={() => applyFill(null)} title="Sin relleno">✕</button>
+                </>
+              ) : (
+                <button className="prop-add-btn" onClick={() => applyFill('#ffffff')}>+ color</button>
+              )}
+            </div>
+          </div>
 
-                <div className="prop-section">
-                  <span className="prop-label">Trazado</span>
-                  <div className="prop-row">
-                    <div className="prop-color-wrap">
-                      <input
-                        type="color"
-                        value={propStroke}
-                        onChange={e => applyStroke(e.target.value)}
-                        className="prop-color-input"
-                      />
-                      <div className="prop-color-swatch" style={{ background: propStroke }} />
-                    </div>
-                  </div>
-                  <div className="prop-row prop-row-slider">
-                    <span className="prop-slider-label">Grosor</span>
-                    <input
-                      type="range" min={0.5} max={60} step={0.5}
-                      value={propSWidth}
-                      onChange={e => applyStrokeWidth(Number(e.target.value))}
-                      className="prop-slider"
-                    />
-                    <span className="prop-slider-val">{propSWidth}</span>
-                  </div>
-                </div>
-              </>
-            )}
-          </aside>
-        )}
+          <div className="prop-section">
+            <span className="prop-label">Trazado</span>
+            <div className="prop-row">
+              <div className="prop-color-wrap">
+                <input type="color" value={propStroke} onChange={e => applyStroke(e.target.value)} className="prop-color-input" />
+                <div className="prop-color-swatch" style={{ background: propStroke }} />
+              </div>
+            </div>
+            <div className="prop-weight-row">
+              <span className="prop-weight-label">Grosor</span>
+              <div className="prop-weight-input-wrap">
+                <input
+                  type="number"
+                  min={0.5} max={200} step={0.5}
+                  value={propSWidth}
+                  onChange={e => applyStrokeWidth(Number(e.target.value))}
+                  onBlur={e  => applyStrokeWidth(Number(e.target.value))}
+                  className="prop-weight-input"
+                />
+                <span className="prop-weight-unit">px</span>
+              </div>
+            </div>
+          </div>
+
+          {hasSel && (
+            <p className="prop-sel-hint">· objeto seleccionado</p>
+          )}
+        </aside>
       </div>
     </div>
   )

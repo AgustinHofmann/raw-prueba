@@ -280,10 +280,6 @@
   gap: 6px;
 }
 
-.prop-row-slider {
-  gap: 7px;
-}
-
 .prop-color-wrap {
   position: relative;
   width: 28px;
@@ -347,21 +343,54 @@
   border-color: #888;
 }
 
-.prop-slider-label {
+.prop-weight-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.prop-weight-label {
   font-size: 10px;
   color: #555;
-  min-width: 36px;
 }
 
-.prop-slider {
-  flex: 1;
-  accent-color: #ff6b00;
-  cursor: pointer;
+.prop-weight-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 
-.prop-slider-val {
-  font-size: 10px;
-  color: #777;
-  min-width: 22px;
+.prop-weight-input {
+  width: 46px;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  border-radius: 3px;
+  padding: 3px 5px;
+  font-size: 12px;
   text-align: right;
+}
+
+.prop-weight-input:focus {
+  outline: none;
+  border-color: #555;
+}
+
+/* hide default browser spinner arrows — we rely on typing */
+.prop-weight-input::-webkit-inner-spin-button,
+.prop-weight-input::-webkit-outer-spin-button {
+  opacity: 0.4;
+}
+
+.prop-weight-unit {
+  font-size: 10px;
+  color: #555;
+}
+
+.prop-sel-hint {
+  font-size: 9px;
+  color: #444;
+  margin-top: auto;
+  padding-top: 8px;
 }
