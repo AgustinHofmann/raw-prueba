@@ -119,6 +119,23 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     })
     fc.current = canvas
 
+    // ── Illustrator-like selection style ────────────────────────────────────
+    canvas.selectionColor       = 'rgba(74, 158, 255, 0.04)'
+    canvas.selectionBorderColor = '#4A9EFF'
+    canvas.selectionLineWidth   = 1
+    ;(canvas as any).uniformScaling = false   // free scale; Shift = proportional
+
+    Object.assign(fabric.FabricObject.prototype, {
+      borderColor:        '#4A9EFF',
+      borderScaleFactor:  1,
+      cornerColor:        '#4A9EFF',
+      cornerStrokeColor:  '#ffffff',
+      cornerSize:         7,
+      cornerStyle:        'rect',
+      transparentCorners: false,
+      padding:            4,
+    })
+
     const svgUrl = `/mockups/${project.mockupId}.svg`
 
     fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
@@ -185,8 +202,8 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     canvas.getObjects().forEach(obj => {
       const isMockup = mockupObjects.current.includes(obj)
       obj.set({
-        evented:    isMockup ? tool === 'fill' : false,
-        selectable: isMockup ? false : tool === 'select',
+        evented:    isMockup ? tool === 'fill' : tool === 'select',
+        selectable: isMockup ? false         : tool === 'select',
       })
     })
 
