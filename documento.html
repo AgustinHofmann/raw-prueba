@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAW Design — Documento del Proyecto</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      font-size: 11pt;
+      line-height: 1.6;
+      max-width: 750px;
+      margin: 60px auto;
+      color: #000;
+    }
+    h1 { font-size: 26pt; margin-bottom: 4px; }
+    h2 { font-size: 16pt; margin-top: 36px; margin-bottom: 6px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    h3 { font-size: 12pt; margin-top: 20px; margin-bottom: 4px; }
+    p  { margin: 8px 0; }
+    ul { margin: 8px 0 8px 24px; }
+    li { margin-bottom: 4px; }
+    .subtitulo { font-size: 13pt; color: #555; margin-top: 0; }
+    .stat-row { display: flex; gap: 40px; margin: 16px 0; }
+    .stat { text-align: center; }
+    .stat-num { font-size: 22pt; font-weight: bold; }
+    .stat-label { font-size: 9pt; color: #444; }
+    blockquote {
+      border-left: 3px solid #ccc;
+      margin: 10px 0 10px 20px;
+      padding: 6px 14px;
+      color: #333;
+      font-style: italic;
+    }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 10pt; }
+    th { background: #f0f0f0; border: 1px solid #ccc; padding: 8px 10px; text-align: left; }
+    td { border: 1px solid #ccc; padding: 8px 10px; vertical-align: top; }
+    .sprint-num { font-weight: bold; white-space: nowrap; }
+    .tag { font-size: 9pt; color: #b45309; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<h1>RAW Design</h1>
+<p class="subtitulo">Plataforma web de diseño de indumentaria — Documento del Proyecto</p>
+<p><strong>Equipo:</strong> Agustín Hofmann · Aaron Wuler · Ramiro Sánchez Rivera</p>
+<p><strong>Fecha:</strong> Abril 2026</p>
+
+<!-- ─────────────────────────────────── -->
+<h2>1. Problemática</h2>
+
+<p>El diseño de indumentaria es un proceso creativo y técnico que hoy no cuenta con herramientas digitales pensadas específicamente para él. Los diseñadores de moda —tanto estudiantes como profesionales— trabajan con software genérico como <strong>Adobe Illustrator, Photoshop o Procreate</strong>, plataformas que fueron construidas para el diseño gráfico o la ilustración en general, no para el flujo de trabajo particular de quien diseña prendas de vestir.</p>
+
+<p>Esto genera problemas concretos en el día a día:</p>
+<ul>
+  <li><strong>Falta de mockups especializados:</strong> No existen plantillas de prendas 2D flat listas para usar. El diseñador tiene que dibujar cada prenda desde cero cada vez que empieza un proyecto, lo que consume tiempo valioso.</li>
+  <li><strong>Componentes no intercambiables:</strong> Si se quiere probar distintos tipos de cuello, bolsillos o mangas sobre una misma prenda, hay que redibujarlo todo manualmente. No existe un sistema que permita "intercambiar" piezas de forma visual e intuitiva.</li>
+  <li><strong>Detalles constructivos difíciles de representar:</strong> Elementos como costuras, cierres (cremalleras), bordados o pespuntes no tienen representación digital adecuada en herramientas genéricas. El diseñador termina improvisando o simplemente no los incluye en el boceto.</li>
+  <li><strong>Comunicación con el taller:</strong> Enviar un diseño al taller de producción requiere armar un documento técnico (techpack) por separado, en otra aplicación, con información de medidas, materiales y detalles constructivos. Es un proceso tedioso y propenso a errores.</li>
+  <li><strong>Curva de aprendizaje elevada:</strong> Dominar Illustrator o herramientas similares requiere formación técnica específica que muchos diseñadores de moda no tienen, y que tampoco necesitarían si existiera una herramienta pensada para ellos.</li>
+</ul>
+
+<p>En síntesis: el mercado ofrece herramientas muy potentes pero genéricas, o herramientas muy simples pero inútiles para un profesional. <strong>RAW Design propone ocupar ese espacio vacío</strong>: una herramienta web especializada, accesible y pensada exclusivamente para el proceso de diseño de indumentaria.</p>
+
+<!-- ─────────────────────────────────── -->
+<h2>2. Investigación y Validación</h2>
+
+<h3>2.1 Encuesta</h3>
+
+<p>Se realizó una encuesta dirigida a estudiantes y profesionales del diseño de indumentaria para validar la existencia del problema y medir el interés en la propuesta. Los resultados fueron contundentes:</p>
+
+<div class="stat-row">
+  <div class="stat"><div class="stat-num">100%</div><div class="stat-label">usa herramientas no especializadas<br/>para diseñar prendas</div></div>
+  <div class="stat"><div class="stat-num">100%</div><div class="stat-label">valoró positivamente<br/>los mockups intercambiables</div></div>
+  <div class="stat"><div class="stat-num">80%</div><div class="stat-label">usaría RAW como<br/>herramienta principal</div></div>
+</div>
+
+<p>La encuesta confirmó que la problemática no es percibida solo por el equipo de desarrollo, sino que es una necesidad real y compartida por quienes trabajan en el rubro.</p>
+
+<h3>2.2 Entrevista</h3>
+
+<p>Se realizó una entrevista en profundidad con una diseñadora de indumentaria que trabaja de forma independiente. A continuación, los fragmentos más relevantes:</p>
+
+<p><strong>— ¿Cómo trabajás hoy cuando diseñás una prenda desde cero?</strong></p>
+<blockquote>"Arranco en papel, luego paso todo a Illustrator. El problema es que Illustrator no tiene nada de ropa, tenés que armar cada parte desde cero cada vez. Es un montón de tiempo para algo que debería ser simple."</blockquote>
+
+<p><strong>— ¿Qué te gustaría poder hacer y hoy no podés con las herramientas que tenés?</strong></p>
+<blockquote>"Probar distintos cuellos o bolsillos sin redibujar todo. Y que se vea parecido a cómo va a quedar la prenda real, no solo líneas. También detalles como costuras o cierres, eso nunca lo pude representar bien digitalmente."</blockquote>
+
+<p><strong>— ¿Si existiera una herramienta específica para diseño de indumentaria, la usarías?</strong></p>
+<blockquote>"Sin dudas. Si puedo seleccionar el tipo de cuello, aplicar el color y ver cómo queda todo junto sin tener que saber Illustrator a fondo, eso me cambia el flujo de trabajo completamente."</blockquote>
+
+<h3>2.3 Benchmarking e Inspiración</h3>
+
+<p>Los resultados de la encuesta y las entrevistas motivaron una investigación más profunda sobre herramientas existentes en el mercado. Se analizaron en particular:</p>
+<ul>
+  <li><strong>Adobe Illustrator:</strong> Potente pero genérico. Sin soporte nativo para indumentaria. Curva de aprendizaje muy alta.</li>
+  <li><strong>Procreate:</strong> Excelente sistema de pinceles personalizables e intuitivos. Inspiró directamente la idea de incorporar pinceles especializados para indumentaria en RAW.</li>
+  <li><strong>CLO 3D / Marvelous Designer:</strong> Herramientas 3D muy avanzadas y costosas, pensadas para producción, no para bocetado rápido 2D.</li>
+</ul>
+
+<p>De este análisis surgió una de las ideas más diferenciadoras del proyecto: los <strong>pinceles especializados para indumentaria</strong>. Inspirados en el sistema de Procreate, pero aplicados al contexto específico del diseño de prendas:</p>
+<ul>
+  <li><strong>Pincel de bordado:</strong> Simula puntadas de hilo sobre la tela con trazos repetitivos configurables en tipo, densidad y color.</li>
+  <li><strong>Pincel de cierre (cremallera):</strong> Dibuja el perfil completo de un cierre a lo largo de cualquier trayectoria libre trazada por el usuario.</li>
+  <li><strong>Pincel de costura:</strong> Representa pespuntes y costuras decorativas, personalizables en tipo de puntada, grosor y espaciado.</li>
+</ul>
+
+<p>Ninguna herramienta existente en el mercado ofrece estas funcionalidades orientadas específicamente a la representación de detalles constructivos de prendas.</p>
+
+<!-- ─────────────────────────────────── -->
+<h2>3. Solución</h2>
+
+<p><strong>RAW Design</strong> es una aplicación web de diseño de indumentaria 2D, pensada para que cualquier diseñador de moda —independientemente de su nivel técnico en software— pueda crear bocetos digitales de alta calidad, comunicarlos al taller y exportarlos en el formato correcto.</p>
+
+<p>La propuesta se organiza en tres pilares:</p>
+
+<h3>3.1 Sistema de Mockups Modulares</h3>
+<p>La base de RAW son los mockups de prendas 2D flat diseñados específicamente para la aplicación. Funcionan como un sistema de bloques tipo <strong>lego</strong>: el usuario parte de una prenda base (remera, hoodie, pantalón) y la construye combinando piezas intercambiables:</p>
+<ul>
+  <li>Cuellos: redondo, en V, polo, mao, abierto, y más.</li>
+  <li>Mangas: corta, larga, ranglan, sin manga, globo.</li>
+  <li>Bolsillos: pecho, cargo, parche, con solapa.</li>
+  <li>Detalles: botones, strass, trabillas, hombreras, bordados pre-armados.</li>
+</ul>
+<p>Todos los componentes son <strong>simétricos y en 2D</strong>, dibujados a mano por el diseñador UX/UI del equipo, y pueden combinarse libremente para armar cualquier pieza.</p>
+
+<h3>3.2 Herramientas de Dibujo y Edición</h3>
+<p>Sobre los mockups, el usuario puede trabajar libremente con un conjunto de herramientas de dibujo profesionales:</p>
+<ul>
+  <li><strong>Herramienta de selección</strong> al estilo Illustrator: mover, escalar y rotar objetos con precisión.</li>
+  <li><strong>Herramienta de pluma</strong>: trazado de paths con nodos, para dibujar formas complejas.</li>
+  <li><strong>Herramienta de curvatura</strong>: edición de curvas Bézier por segmento, sin afectar el resto del trazado.</li>
+  <li><strong>Pincel libre</strong>: para trazos orgánicos y rápidos.</li>
+  <li><strong>Pinceles especializados</strong>: costura, cierre y bordado, cada uno con sus parámetros configurables.</li>
+  <li><strong>Texturas para ropa</strong>: grunge, vintage, desgaste, estampados — aplicables a cualquier zona de la prenda.</li>
+  <li><strong>Tipografías especializadas</strong> pensadas para el contexto de la moda.</li>
+  <li><strong>Medidas reales en centímetros</strong> desde el inicio del diseño, para que las proporciones correspondan con la prenda real.</li>
+</ul>
+
+<h3>3.3 Exportación Profesional</h3>
+<p>Una vez terminado el diseño, RAW permite exportarlo en los formatos que el diseñador realmente necesita:</p>
+<ul>
+  <li><strong>PNG / JPG</strong>: para presentaciones, catálogos, redes sociales o clientes.</li>
+  <li><strong>Techpack</strong>: documento técnico estándar de la industria con medidas, materiales y detalles constructivos, listo para enviar directamente al taller de producción o proveedor. Esto elimina el paso de armar el techpack en una herramienta separada.</li>
+</ul>
+
+<h3>3.4 A futuro</h3>
+<p>Una vez consolidadas las funcionalidades principales, se planea incorporar la generación automática de <strong>moldes de producción</strong> a partir de las medidas ingresadas en el diseño. El usuario podría seleccionar el corte, ingresar las medidas y obtener los moldes listos para cortar — eliminando la necesidad de un patronista para prendas estándar.</p>
+
+<p><em>Stack tecnológico: React 19 · TypeScript · Vite · Fabric.js</em></p>
+
+<!-- ─────────────────────────────────── -->
+<h2>4. Equipo</h2>
+
+<table>
+  <tr>
+    <th>Nombre</th>
+    <th>Rol</th>
+    <th>Responsabilidades</th>
+  </tr>
+  <tr>
+    <td><strong>Agustín Hofmann</strong></td>
+    <td>Fullstack Developer</td>
+    <td>Desarrollo de la aplicación web (páginas, herramientas, base de datos). Aporta conocimiento de dominio como diseñador de indumentaria, definiendo los requerimientos desde la perspectiva del usuario final.</td>
+  </tr>
+  <tr>
+    <td><strong>Aaron Wuler</strong></td>
+    <td>Fullstack Developer</td>
+    <td>Desarrollo de la aplicación web (páginas, herramientas, base de datos) junto con Agustín.</td>
+  </tr>
+  <tr>
+    <td><strong>Ramiro Sánchez Rivera</strong></td>
+    <td>UX/UI Designer</td>
+    <td>Diseño de pantallas (TIMI) y — su tarea principal — creación de los mockups SVG de prendas con sistema modular: cuellos y mangas intercambiables, bolsillos, botones, costuras, strass y más, todos simétricos y en 2D.</td>
+  </tr>
+</table>
+
+<!-- ─────────────────────────────────── -->
+<h2>5. Planificación — 6 Sprints</h2>
+
+<table>
+  <tr>
+    <th style="width:110px;">Sprint</th>
+    <th>Objetivo</th>
+    <th>Tareas</th>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 1<br/><span class="tag">En refinamiento</span></td>
+    <td><strong>Editor Base y Herramientas de Dibujo</strong></td>
+    <td>
+      <ul>
+        <li>Setup del proyecto: React 19 + TypeScript + Vite + Fabric.js</li>
+        <li>Pantalla del editor con toolbar lateral y panel de propiedades</li>
+        <li>Herramienta de selección al estilo Illustrator</li>
+        <li>Herramienta de pluma: paths abiertos y cerrados con nodos</li>
+        <li>Herramienta de curvatura: edición Bézier por segmento</li>
+        <li>Pincel libre, historial undo/redo y snap</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 2</td>
+    <td><strong>Mockups de Prendas</strong></td>
+    <td>
+      <ul>
+        <li>SVGs de prendas base: remera, hoodie y pantalón (2D, simétricos)</li>
+        <li>Sistema de bloques modulares: cuellos, mangas, bolsillos, botones, strass</li>
+        <li>Ensamble de componentes sobre el canvas (tipo lego)</li>
+        <li>Selector de prenda y previsualización en tiempo real</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 3</td>
+    <td><strong>Color, Texturas y Tipografías</strong></td>
+    <td>
+      <ul>
+        <li>Aplicación de color sólido por zona de la prenda</li>
+        <li>Texturas reales para ropa: grunge, vintage, desgaste, estampados</li>
+        <li>Tipografías especializadas para indumentaria</li>
+        <li>Medidas reales en centímetros sobre el canvas</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 4</td>
+    <td><strong>Pinceles Especializados</strong></td>
+    <td>
+      <ul>
+        <li>Pincel de costura: pespuntes configurables en tipo, grosor y espaciado</li>
+        <li>Pincel de cierre: cremallera a lo largo de cualquier trayectoria</li>
+        <li>Pincel de bordado: puntadas de hilo personalizables</li>
+        <li>Texturas de bordado y estampado integradas</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 5</td>
+    <td><strong>Exportación y Techpack</strong></td>
+    <td>
+      <ul>
+        <li>Exportación del diseño como PNG y JPG</li>
+        <li>Generación del documento techpack para proveedores</li>
+        <li>Ajustes finales de UX: tooltips, estados vacíos, feedback visual</li>
+        <li>Testing de flujos principales</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td class="sprint-num">Sprint 6</td>
+    <td><strong>Pulido, Deploy y Moldes (futuro)</strong></td>
+    <td>
+      <ul>
+        <li>Optimización de performance del canvas</li>
+        <li>Deploy de la aplicación y link público</li>
+        <li>Base para generación automática de moldes desde medidas</li>
+        <li>Corrección de bugs finales y entrega</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+<!-- ─────────────────────────────────── -->
+<h2>6. Prototipo</h2>
+
+<p>El prototipo de RAW Design está disponible en Figma para su visualización:</p>
+<p><strong>Link:</strong> <a href="https://www.figma.com/design/o4Hk3X51HDTpFNG5LhMnUS/Illustrator-praim?t=O92sKhjVc3dfbhDu-0">https://www.figma.com/design/o4Hk3X51HDTpFNG5LhMnUS/Illustrator-praim</a></p>
+<p>El prototipo funcional del editor (canvas con herramientas de pluma, curvatura, selección y panel de propiedades) se encuentra en desarrollo activo y estará disponible en línea al finalizar el Sprint 1.</p>
+
+</body>
+</html>
