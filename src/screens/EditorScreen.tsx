@@ -1,12 +1,17 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project } from '../types/project'
+import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import './EditorScreen.css'
+
+interface EditorActions { save: () => void; export: () => void }
 
 interface Props {
   project: Project
-  onBack: () => void
-  onSave: (thumbnail: string) => void
+  onSave: (thumbnail: string, canvasJson: string) => void
+  saved: boolean
+  onSaveComplete: () => void
+  onActionsReady: (a: EditorActions | null) => void
 }
 
 type Tool = 'select' | 'draw' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text'
@@ -371,12 +376,12 @@ function extractBezierCmds(obj: fabric.FabricObject): BCmd[] {
 // Lápiz: punta abajo-izquierda, borrador arriba-derecha
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
-const FONTS = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Helvetica', 'Impact', 'Trebuchet MS', 'Palatino', 'Garamond']
 
-export default function EditorScreen({ project, onBack, onSave }: Props) {
+export default function EditorScreen({ project, onSave, saved, onSaveComplete, onActionsReady }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
+  const fontFileRef   = useRef<HTMLInputElement>(null)
   const fc            = useRef<fabric.Canvas | null>(null)
   const mockupObjects = useRef<fabric.FabricObject[]>([])
   const clipPath      = useRef<fabric.Group | null>(null)
@@ -389,8 +394,12 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
 
-  const [tool, setTool]   = useState<Tool>('select')
-  const [saved, setSaved] = useState(false)
+  const [tool, setTool] = useState<Tool>('select')
+  const [zoom,   setZoom]   = useState(1)
+  const [panned, setPanned] = useState(false)
+  const [rightTab,     setRightTab]     = useState<'props' | 'layers'>('props')
+  const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
+  const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
   const [hasSel,        setHasSel]        = useState(false)
   const [isText,        setIsText]        = useState(false)
@@ -399,10 +408,51 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   const [propSWidth,    setPropSWidth]    = useState(8)
   const [propFontFamily, setPropFontFamily] = useState('Arial')
   const [propFontSize,  setPropFontSize]  = useState(24)
+  const [userFonts,      setUserFonts]      = useState<string[]>([])
+  const [fontPickerOpen, setFontPickerOpen] = useState(false)
+  const [fontFilter,     setFontFilter]     = useState('')
+  const [fontLoading,    setFontLoading]    = useState(false)
 
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
+  useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
+
+  // Register save/export actions for ChromeBar
+  useEffect(() => {
+    const handleSaveRef = () => handleSave()
+    const handleExportRef = () => handleExport()
+    onActionsReady({ save: handleSaveRef, export: handleExportRef })
+    return () => onActionsReady(null)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Font picker handlers ─────────────────────────────────────────────────────
+  async function handleFontSelect(family: string) {
+    if ((GOOGLE_FONTS as readonly string[]).includes(family)) {
+      setFontLoading(true)
+      await loadGoogleFont(family)
+      setFontLoading(false)
+    }
+    applyFontFamily(family)
+    setFontPickerOpen(false)
+    setFontFilter('')
+  }
+
+  async function handleFontUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    const name = await loadUserFont(file)
+    setUserFonts(prev => prev.includes(name) ? prev : [...prev, name])
+    await handleFontSelect(name)
+  }
+
+  function handleDeleteUserFont(name: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    deleteUserFont(name)
+    setUserFonts(prev => prev.filter(f => f !== name))
+    if (propFontFamily === name) applyFontFamily('Arial')
+  }
 
   // ── CSS cursor helpers ───────────────────────────────────────────────────────
   function showSizeCursor(clientX: number, clientY: number) {
@@ -441,26 +491,54 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     })
     fc.current = canvas
 
-    canvas.selectionColor       = 'rgba(29, 119, 224, 0.06)'
+    const refreshLayers = () => setLayers([...canvas.getObjects()])
+    canvas.on('object:added',   refreshLayers)
+    canvas.on('object:removed', refreshLayers)
+    canvas.on('object:modified', refreshLayers)
+
+    canvas.on('selection:created', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
+    canvas.on('selection:updated', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
+    canvas.on('selection:cleared', () => setSelectedObj(null))
+
+    // Marquee selection box — thin solid line, barely visible fill
+    canvas.selectionColor       = 'rgba(29, 119, 224, 0.04)'
     canvas.selectionBorderColor = '#1D77E0'
     canvas.selectionLineWidth   = 1
-    ;(canvas as any).selectionDashArray = [4, 3]
+    ;(canvas as any).selectionDashArray = []
     ;(canvas as any).uniformScaling     = false
-    canvas.skipOffscreen = false  // evita que Fabric oculte objetos al hacer zoom
+    canvas.skipOffscreen = false
+
+    // Illustrator-style handle renderer: small white square, 1px blue stroke
+    const AI_HANDLE_SIZE = 6
+    function renderAIHandle(ctx: CanvasRenderingContext2D, left: number, top: number) {
+      const h = AI_HANDLE_SIZE
+      ctx.save()
+      ctx.fillStyle   = '#ffffff'
+      ctx.strokeStyle = '#1D77E0'
+      ctx.lineWidth   = 1
+      ctx.fillRect(  left - h / 2, top - h / 2, h, h)
+      ctx.strokeRect(left - h / 2, top - h / 2, h, h)
+      ctx.restore()
+    }
 
     Object.assign(fabric.FabricObject.prototype, {
-      borderColor:        '#1D77E0',
-      borderScaleFactor:  1,
-      cornerColor:        '#ffffff',
-      cornerStrokeColor:  '#1D77E0',
-      cornerSize:         7,
-      cornerStyle:        'rect',
-      transparentCorners: false,
-      padding:            2,
+      borderColor:       '#1D77E0',
+      borderScaleFactor: 1,
+      cornerSize:        AI_HANDLE_SIZE + 4, // hit area slightly larger than visual
+      cornerStyle:       'rect',
+      transparentCorners: true,
+      padding:            4,
     })
 
     try {
-      fabric.FabricObject.prototype.controls.mtr.visible = false
+      const controls = fabric.FabricObject.prototype.controls
+      Object.keys(controls).forEach(key => {
+        if (key === 'mtr') {
+          controls[key].visible = false
+        } else {
+          controls[key].render = renderAIHandle as any
+        }
+      })
     } catch (_) {}
 
     const svgUrl = `/mockups/${project.mockupId}.svg`
@@ -470,7 +548,10 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       const objs = objects.filter(Boolean) as fabric.FabricObject[]
       mockupObjects.current = objs
 
-      objs.forEach(obj => obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' }))
+      objs.forEach(obj => {
+        ;(obj as any)._rawMockup = true
+        obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
+      })
       objs.forEach(obj => canvas.add(obj))
 
       const allL = objs.map(o => o.left ?? 0)
@@ -506,6 +587,23 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       cg.absolutePositioned = true
       clipPath.current = cg
 
+      // Restore saved user objects if any
+      if (project.canvasJson) {
+        try {
+          const saved = JSON.parse(project.canvasJson) as object[]
+          const revived = await (fabric.util as any).enlivenObjects(saved) as fabric.FabricObject[]
+          for (const obj of revived) {
+            if (!(obj instanceof fabric.IText) && clipPath.current) {
+              obj.set({ clipPath: clipPath.current })
+            }
+            canvas.add(obj)
+          }
+          canvas.requestRenderAll()
+        } catch (e) {
+          console.warn('canvas restore failed', e)
+        }
+      }
+
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current
         e.path.set({ selectable: false, evented: false })
@@ -535,6 +633,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       const pt      = canvas.getPointer(e as unknown as fabric.TPointerEvent, true)
       canvas.zoomToPoint(pt, newZoom)
       canvas.requestRenderAll()
+      setZoom(newZoom)
     }
 
     let midPan = false
@@ -563,6 +662,7 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
       const ny  = Math.min(h, Math.max(-h, vpt[5] + dy))
       canvas.relativePan(new fabric.Point(nx - vpt[4], ny - vpt[5]))
       canvas.requestRenderAll()
+      setPanned(true)
     }
 
     const onMUp = (e: MouseEvent) => {
@@ -1690,9 +1790,13 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
   function handleSave() {
     const canvas = fc.current
     if (!canvas) return
-    onSave(canvas.toDataURL({ format: 'png', multiplier: 0.3 }))
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    const userObjs = canvas.getObjects()
+      .filter(o => !(o as any)._rawMockup)
+      .map(o => { const j = o.toJSON(); delete j.clipPath; return j })
+    const canvasJson = JSON.stringify(userObjs)
+    const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
+    onSave(thumbnail, canvasJson)
+    onSaveComplete()
   }
 
   function handleExport() {
@@ -1704,143 +1808,503 @@ export default function EditorScreen({ project, onBack, onSave }: Props) {
     a.click()
   }
 
-  return (
-    <div className="editor">
-      <header className="editor-topbar">
-        <button className="editor-back" onClick={onBack}>← RAW</button>
-        <span className="editor-project-name">{project.name}</span>
-        <div className="editor-topbar-actions">
-          <button className="editor-btn-save" onClick={handleSave}>
-            {saved ? '✓ Guardado' : 'Guardar'}
-          </button>
-          <button className="editor-btn-export" onClick={handleExport}>Exportar PNG</button>
-        </div>
-      </header>
+  function resetView() {
+    const canvas = fc.current
+    if (!canvas) return
+    canvas.setZoom(1)
+    canvas.absolutePan(new fabric.Point(0, 0))
+    canvas.requestRenderAll()
+    setZoom(1)
+    setPanned(false)
+  }
 
-      <div className="editor-body">
-        {/* ── Left toolbar ── */}
-        <aside className="editor-toolbar">
-          <ToolBtn icon="↖" label="Seleccionar (V)"   active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon="✏" label="Pincel libre"       active={tool === 'draw'}    onClick={() => setTool('draw')} />
-          <ToolBtn icon="✎" label="Lápiz"             active={tool === 'pencil'}  onClick={() => setTool('pencil')} />
-          <ToolBtn icon="🖊" label="Pluma"             active={tool === 'pen'}    onClick={() => setTool('pen')} />
-          <ToolBtn icon="∿" label="Pluma curvatura"   active={tool === 'curve'}  onClick={() => setTool('curve')} />
-          <ToolBtn icon="T" label="Texto"              active={tool === 'text'}   onClick={() => setTool('text')} />
-          <ToolBtn icon="◻" label="Goma"              active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon="▣" label="Relleno"            active={tool === 'fill'}   onClick={() => setTool('fill')} />
-          <div className="editor-toolbar-divider" />
-          <div className="editor-hint">Ctrl+Z<br/>Ctrl+⇧Z</div>
+  const viewChanged = Math.abs(zoom - 1) > 0.01 || panned
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', background: 'var(--bg)', overflow: 'hidden' }}>
+        {/* Left tool dock */}
+        <aside style={{
+          width: 44, flexShrink: 0, borderRight: '1px solid var(--line-soft)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          padding: '8px 4px', gap: 2, background: 'var(--bg)',
+        }}>
+          <ToolBtn icon="↖" label="Seleccionar (V)"  active={tool === 'select'} onClick={() => setTool('select')} />
+          <ToolBtn icon={<IconBrush />} label="Pincel libre" active={tool === 'draw'}   onClick={() => setTool('draw')} />
+          <ToolBtn icon="✎" label="Lápiz"            active={tool === 'pencil'} onClick={() => setTool('pencil')} />
+          <ToolBtn icon="🖊" label="Pluma"            active={tool === 'pen'}   onClick={() => setTool('pen')} />
+          <ToolBtn icon="∿" label="Pluma curvatura"  active={tool === 'curve'}  onClick={() => setTool('curve')} />
+          <ToolBtn icon="T" label="Texto"             active={tool === 'text'}   onClick={() => setTool('text')} />
+          <ToolBtn icon={<IconEraser />} label="Goma"    active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <ToolBtn icon={<IconBucket />} label="Relleno" active={tool === 'fill'}   onClick={() => setTool('fill')} />
+          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-soft)', paddingTop: 8, width: '100%' }}>
+            <div className="mono" style={{ fontSize: 8, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.8 }}>Z<br/>⇧Z</div>
+          </div>
         </aside>
 
-        {/* ── Canvas ── */}
-        <main className="editor-canvas-area" ref={canvasAreaRef as RefObject<HTMLElement>}>
+        {/* Canvas */}
+        <main style={{ flex: 1, position: 'relative', overflow: 'hidden', background: 'var(--bg-2)' }}
+          ref={canvasAreaRef as RefObject<HTMLElement>}>
+          <div style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none',
+            backgroundImage: 'radial-gradient(circle, var(--line-soft) 1px, transparent 1px)',
+            backgroundSize: '20px 20px', opacity: 0.4,
+          }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
-          {tool === 'pen' && (
-            <div className="editor-pen-hint">
-              Click · agregar &nbsp;|&nbsp; Doble-click / Enter · terminar &nbsp;|&nbsp; Esc · cancelar
-            </div>
+          {viewChanged && (
+            <button
+              onClick={resetView}
+              title="Restablecer zoom y posición"
+              style={{
+                position: 'absolute', bottom: 16, right: 16,
+                display: 'flex', alignItems: 'center', gap: 7,
+                background: 'var(--bg)', border: '1px solid var(--line)',
+                borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+                fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--fg)',
+                boxShadow: 'var(--shadow-lg)',
+                animation: 'rise 0.2s var(--ease) both',
+                transition: 'background 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg)' }}
+            >
+              <span style={{ fontSize: 13 }}>⊙</span>
+              <span>{Math.round(zoom * 100)}%</span>
+              <span style={{ color: 'var(--muted)', marginLeft: 2 }}>· restablecer</span>
+            </button>
           )}
-          {tool === 'curve' && (
-            <div className="editor-pen-hint">
-              Click ancla · seleccionar &nbsp;|&nbsp; Arrastrar · mover &nbsp;|&nbsp; Supr · eliminar ancla
-            </div>
-          )}
-          {tool === 'text' && (
-            <div className="editor-pen-hint">
-              Click en el canvas para colocar texto
+          {(tool === 'pen' || tool === 'curve' || tool === 'text') && (
+            <div style={{
+              position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+              background: 'rgb(0 0 0 / 0.7)', color: '#fff', fontSize: 11,
+              padding: '6px 14px', borderRadius: 999, backdropFilter: 'blur(8px)',
+              pointerEvents: 'none', whiteSpace: 'nowrap', fontFamily: 'var(--mono)',
+            }}>
+              {tool === 'pen'   && 'Click · agregar  |  Doble-click / Enter · terminar  |  Esc · cancelar'}
+              {tool === 'curve' && 'Click ancla · seleccionar  |  Arrastrar · mover  |  Supr · eliminar ancla'}
+              {tool === 'text'  && 'Click en el canvas para colocar texto'}
             </div>
           )}
         </main>
 
-        {/* ── Right properties panel ── */}
-        <aside className="editor-props">
-
-          {/* Tipografía — solo cuando hay texto seleccionado */}
-          {isText && (
-            <div className="prop-section">
-              <span className="prop-label">Tipografía</span>
-              <select
-                value={propFontFamily}
-                onChange={e => applyFontFamily(e.target.value)}
-                className="prop-font-select"
+        {/* Right panel */}
+        <aside style={{
+          width: 232, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
+          display: 'flex', flexDirection: 'column', background: 'var(--bg)',
+        }}>
+          {/* Tabs */}
+          <div style={{
+            display: 'flex', flexShrink: 0,
+            borderBottom: '1px solid var(--line-soft)',
+          }}>
+            {(['props', 'layers'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setRightTab(tab)}
+                style={{
+                  flex: 1, height: 36, border: 'none', borderRadius: 0, cursor: 'pointer',
+                  background: rightTab === tab ? 'var(--surface)' : 'transparent',
+                  borderBottom: '2px solid ' + (rightTab === tab ? 'var(--accent)' : 'transparent'),
+                  color: rightTab === tab ? 'var(--fg)' : 'var(--muted)',
+                  fontSize: 11, fontFamily: 'var(--ui)', letterSpacing: '0.06em',
+                  transition: 'all 0.15s var(--ease)',
+                }}
               >
-                {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
-              </select>
-              <div className="prop-weight-row">
-                <span className="prop-weight-label">Tamaño</span>
-                <div className="prop-weight-input-wrap">
+                {tab === 'props' ? 'Propiedades' : 'Capas'}
+              </button>
+            ))}
+          </div>
+
+          {/* Properties tab */}
+          {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
+          {isText && (
+            <div>
+              <div className="label" style={{ marginBottom: 8 }}>Tipografía</div>
+
+              {/* Font picker trigger */}
+              <button
+                onClick={() => { setFontPickerOpen(v => !v); setFontFilter('') }}
+                style={{
+                  width: '100%', padding: '9px 12px', borderRadius: 8, marginBottom: 4,
+                  background: 'var(--surface)', border: '1px solid ' + (fontPickerOpen ? 'var(--accent)' : 'var(--line)'),
+                  cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  textAlign: 'left', transition: 'border-color 0.15s var(--ease)',
+                }}
+              >
+                <span style={{ fontFamily: propFontFamily, fontSize: 15, color: 'var(--fg)' }}>{propFontFamily}</span>
+                <span style={{ fontFamily: 'var(--ui)', fontSize: 10, color: 'var(--muted)' }}>
+                  {fontLoading ? '…' : fontPickerOpen ? '▴' : '▾'}
+                </span>
+              </button>
+
+              {/* Font dropdown */}
+              {fontPickerOpen && (
+                <div style={{
+                  background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8,
+                  overflow: 'hidden', marginBottom: 8,
+                }}>
                   <input
-                    type="number"
-                    min={6} max={400} step={1}
+                    value={fontFilter}
+                    onChange={e => setFontFilter(e.target.value)}
+                    placeholder="Buscar fuente..."
+                    autoFocus
+                    style={{
+                      width: '100%', padding: '7px 10px', borderRadius: 0, border: 'none',
+                      borderBottom: '1px solid var(--line-soft)',
+                      background: 'var(--surface)', color: 'var(--fg)',
+                      fontFamily: 'var(--ui)', fontSize: 12, outline: 'none',
+                    }}
+                  />
+                  <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                    <FontSection label="Sistema"      fonts={SYSTEM_FONTS} filter={fontFilter} selected={propFontFamily} onSelect={handleFontSelect} />
+                    <FontSection label="Google Fonts" fonts={GOOGLE_FONTS} filter={fontFilter} selected={propFontFamily} onSelect={handleFontSelect} />
+                    {/* User fonts */}
+                    {(userFonts.length > 0 || !fontFilter) && (
+                      <div style={{ borderTop: '1px solid var(--line-soft)' }}>
+                        <div style={{ padding: '6px 10px 2px', fontSize: 9, color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+                          Mis fuentes
+                        </div>
+                        {userFonts
+                          .filter(f => !fontFilter || f.toLowerCase().includes(fontFilter.toLowerCase()))
+                          .map(f => (
+                            <div key={f} style={{ display: 'flex', alignItems: 'center' }}>
+                              <FontRow name={f} selected={propFontFamily === f} onClick={() => handleFontSelect(f)} />
+                              <button
+                                onClick={e => handleDeleteUserFont(f, e)}
+                                style={{
+                                  flexShrink: 0, padding: '0 8px', height: 34, border: 'none',
+                                  background: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11,
+                                }}
+                                title="Eliminar fuente"
+                              >✕</button>
+                            </div>
+                          ))
+                        }
+                        <button
+                          onClick={() => fontFileRef.current?.click()}
+                          style={{
+                            width: '100%', padding: '8px 10px', border: 'none',
+                            background: 'none', color: 'var(--accent)', fontSize: 11,
+                            cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ui)',
+                          }}
+                        >
+                          + Subir fuente (.ttf .otf .woff .woff2)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Font size */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                <span className="label">Tamaño</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <input
+                    type="number" min={6} max={400} step={1}
                     value={propFontSize}
                     onChange={e => applyFontSize(Number(e.target.value))}
-                    className="prop-weight-input"
+                    style={{
+                      width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
+                      background: 'var(--surface)', border: '1px solid var(--line)',
+                      color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
+                    }}
                   />
-                  <span className="prop-weight-unit">px</span>
+                  <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>px</span>
                 </div>
               </div>
             </div>
           )}
 
           {/* Relleno */}
-          <div className="prop-section">
-            <span className="prop-label">Relleno</span>
-            <div className="prop-row">
+          <div>
+            <div className="label" style={{ marginBottom: 8 }}>Relleno</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {propFill !== null ? (
                 <>
-                  <div className="prop-color-wrap">
-                    <input type="color" value={propFill} onChange={e => applyFill(e.target.value)} className="prop-color-input" />
-                    <div className="prop-color-swatch" style={{ background: propFill }} />
-                  </div>
-                  <button className="prop-none-btn" onClick={() => applyFill(null)} title="Sin relleno">✕</button>
+                  <label style={{ position: 'relative', cursor: 'pointer' }}>
+                    <input type="color" value={propFill} onChange={e => applyFill(e.target.value)}
+                      style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                    <div style={{
+                      width: 32, height: 32, borderRadius: 8, background: propFill,
+                      border: '2px solid var(--line)', cursor: 'pointer',
+                    }} />
+                  </label>
+                  <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propFill}</span>
+                  <button onClick={() => applyFill(null)} style={{
+                    background: 'none', border: 'none', color: 'var(--muted)',
+                    cursor: 'pointer', fontSize: 12, padding: 4,
+                  }}>✕</button>
                 </>
               ) : (
-                <button className="prop-add-btn" onClick={() => applyFill('#ffffff')}>+ color</button>
+                <button className="btn btn-ghost" onClick={() => applyFill('#ffffff')} style={{ padding: '5px 10px', fontSize: 12 }}>
+                  + color
+                </button>
               )}
             </div>
           </div>
 
           {/* Trazado */}
-          <div className="prop-section">
-            <span className="prop-label">Trazado</span>
-            <div className="prop-row">
-              <div className="prop-color-wrap">
-                <input type="color" value={propStroke} onChange={e => applyStroke(e.target.value)} className="prop-color-input" />
-                <div className="prop-color-swatch" style={{ background: propStroke }} />
-              </div>
+          <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+            <div className="label" style={{ marginBottom: 8 }}>Trazado</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <label style={{ position: 'relative', cursor: 'pointer' }}>
+                <input type="color" value={propStroke} onChange={e => applyStroke(e.target.value)}
+                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                <div style={{
+                  width: 32, height: 32, borderRadius: 8, background: propStroke,
+                  border: '2px solid var(--line)', cursor: 'pointer',
+                }} />
+              </label>
+              <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propStroke}</span>
             </div>
-            <div className="prop-weight-row">
-              <span className="prop-weight-label">Grosor</span>
-              <div className="prop-weight-input-wrap">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span className="label">Grosor</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <input
-                  type="number"
-                  min={0.5} max={200} step={0.5}
+                  type="number" min={0.5} max={200} step={0.5}
                   value={propSWidth}
                   onChange={e => applyStrokeWidth(Number(e.target.value))}
                   onBlur={e  => applyStrokeWidth(Number(e.target.value))}
-                  className="prop-weight-input"
+                  style={{
+                    width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
+                    background: 'var(--surface)', border: '1px solid var(--line)',
+                    color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
+                  }}
                 />
-                <span className="prop-weight-unit">px</span>
+                <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>px</span>
               </div>
             </div>
           </div>
 
           {hasSel && (
-            <p className="prop-sel-hint">· objeto seleccionado</p>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>· objeto seleccionado</div>
+          )}
+          </div>}
+
+          {/* Layers tab */}
+          {rightTab === 'layers' && (
+            <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
+              <LayersPanel
+                layers={layers}
+                selectedObj={selectedObj}
+                onSelect={obj => {
+                  const canvas = fc.current
+                  if (!canvas) return
+                  setTool('select')
+                  setSelectedObj(obj)
+                  canvas.isDrawingMode = false
+                  canvas.selection = true
+                  obj.selectable = true
+                  obj.evented = true
+                  canvas.setActiveObject(obj)
+                  canvas.requestRenderAll()
+                }}
+              />
+            </div>
           )}
         </aside>
+      {/* Hidden font file input */}
+      <input
+        ref={fontFileRef}
+        type="file"
+        accept=".ttf,.otf,.woff,.woff2"
+        style={{ display: 'none' }}
+        onChange={handleFontUpload}
+      />
+    </div>
+  )
+}
+
+// ── Layers panel ─────────────────────────────────────────────────────────────
+
+type LayerGroup = { label: string; icon: string; items: fabric.FabricObject[] }
+
+function getLayerLabel(obj: fabric.FabricObject): string {
+  const t = (obj as any).type as string
+  if (t === 'i-text' || t === 'text') return (obj as any).text?.slice(0, 20) || 'Texto'
+  if (t === 'path')   return 'Trazado'
+  if (t === 'line')   return 'Línea'
+  if (t === 'rect')   return 'Rectángulo'
+  if (t === 'circle') return 'Círculo'
+  if (t === 'group')  return 'Grupo'
+  return t ?? 'Objeto'
+}
+
+function getLayerIcon(obj: fabric.FabricObject): string {
+  const t = (obj as any).type as string
+  if (t === 'i-text' || t === 'text') return 'T'
+  if (t === 'path')   return '∿'
+  if (t === 'line')   return '╱'
+  if (t === 'rect')   return '▭'
+  if (t === 'circle') return '○'
+  if (t === 'group')  return '⬡'
+  return '·'
+}
+
+function LayersPanel({ layers, selectedObj, onSelect }: {
+  layers: fabric.FabricObject[]
+  selectedObj: fabric.FabricObject | null
+  onSelect: (obj: fabric.FabricObject) => void
+}) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+
+  const mockup   = layers.filter(o => (o as any)._rawMockup)
+  const texts    = layers.filter(o => !((o as any)._rawMockup) && ((o as any).type === 'i-text' || (o as any).type === 'text'))
+  const paths    = layers.filter(o => !((o as any)._rawMockup) && ((o as any).type === 'path' || (o as any).type === 'line'))
+  const others   = layers.filter(o => !((o as any)._rawMockup) && (o as any).type !== 'i-text' && (o as any).type !== 'text' && (o as any).type !== 'path' && (o as any).type !== 'line')
+
+  const groups: LayerGroup[] = [
+    { label: 'Trazados',  icon: '∿', items: [...paths].reverse()  },
+    { label: 'Texto',     icon: 'T', items: [...texts].reverse()  },
+    { label: 'Otros',     icon: '▭', items: [...others].reverse() },
+    { label: 'Mockup',    icon: '◈', items: [...mockup].reverse() },
+  ].filter(g => g.items.length > 0)
+
+  if (groups.length === 0) {
+    return (
+      <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+        Sin capas
       </div>
+    )
+  }
+
+  function toggle(label: string) {
+    setCollapsed(prev => ({ ...prev, [label]: !prev[label] }))
+  }
+
+  return (
+    <div>
+      {groups.map(group => (
+        <div key={group.label}>
+          {/* Group header */}
+          <button
+            onClick={() => toggle(group.label)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 7,
+              padding: '5px 12px', border: 'none', background: 'none', cursor: 'pointer',
+              color: 'var(--muted)', fontFamily: 'var(--ui)', fontSize: 10,
+              letterSpacing: '0.12em', textTransform: 'uppercase',
+              borderBottom: '1px solid var(--line-soft)',
+            }}
+          >
+            <span style={{ fontSize: 9, transition: 'transform 0.15s', transform: collapsed[group.label] ? 'rotate(-90deg)' : 'none' }}>▾</span>
+            <span style={{ fontSize: 11, marginRight: 2 }}>{group.icon}</span>
+            {group.label}
+            <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{group.items.length}</span>
+          </button>
+
+          {/* Layer rows */}
+          {!collapsed[group.label] && group.items.map((obj, i) => {
+            const isSelected = obj === selectedObj
+            return (
+              <button
+                key={i}
+                onClick={() => onSelect(obj)}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 12px 6px 24px', border: 'none',
+                  background: isSelected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'none',
+                  borderLeft: '2px solid ' + (isSelected ? 'var(--accent)' : 'transparent'),
+                  cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ui)', fontSize: 11,
+                  color: isSelected ? 'var(--fg)' : 'var(--fg-2)',
+                  borderBottom: '1px solid var(--line-soft)',
+                  transition: 'background 0.1s, color 0.1s',
+                }}
+                onMouseEnter={e => { if (!isSelected) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' } }}
+                onMouseLeave={e => { if (!isSelected) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--fg-2)' } }}
+              >
+                <span style={{ fontSize: 10, color: isSelected ? 'var(--accent)' : 'var(--muted)', width: 12, textAlign: 'center', flexShrink: 0 }}>{getLayerIcon(obj)}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getLayerLabel(obj)}</span>
+              </button>
+            )
+          })}
+        </div>
+      ))}
     </div>
   )
 }
 
 function ToolBtn({ icon, label, active, onClick }: {
-  icon: string; label: string; active: boolean; onClick: () => void
+  icon: React.ReactNode; label: string; active: boolean; onClick: () => void
 }) {
   return (
-    <button className={`editor-tool-btn ${active ? 'active' : ''}`} onClick={onClick} title={label}>
+    <button onClick={onClick} title={label} style={{
+      width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+      border: '1.5px solid ' + (active ? 'var(--accent)' : 'transparent'),
+      color: active ? 'var(--accent)' : 'var(--fg-2)',
+      cursor: 'pointer', fontSize: 16,
+      transition: 'all 0.15s var(--ease)',
+    }}>
       {icon}
+    </button>
+  )
+}
+
+const IconBrush = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <rect x="7.2" y="0.5" width="2.8" height="8" rx="1.4" transform="rotate(40 8.6 4.5)" />
+    <rect x="5.5" y="8.5" width="5" height="2" rx="0.4" />
+    <ellipse cx="8" cy="13.5" rx="2.5" ry="2" />
+  </svg>
+)
+
+const IconEraser = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <rect x="1" y="6" width="14" height="7" rx="2" />
+    <rect x="1" y="6" width="6" height="7" rx="2" opacity="0.45" />
+    <rect x="1" y="10.5" width="14" height="2.5" rx="0" opacity="0.15" />
+  </svg>
+)
+
+const IconBucket = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M5 4.5 Q8 1.5 11 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M3.5 5.5 L5 14 L11 14 L12.5 5.5 Z" />
+    <rect x="3.5" y="5" width="9" height="1.5" rx="0.5" />
+  </svg>
+)
+
+function FontSection({ label, fonts, filter, selected, onSelect }: {
+  label: string
+  fonts: readonly string[]
+  filter: string
+  selected: string
+  onSelect: (f: string) => void
+}) {
+  const visible = filter
+    ? fonts.filter(f => f.toLowerCase().includes(filter.toLowerCase()))
+    : fonts
+  if (visible.length === 0) return null
+  return (
+    <div style={{ borderTop: '1px solid var(--line-soft)' }}>
+      <div style={{ padding: '6px 10px 2px', fontSize: 9, color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      {visible.map(f => (
+        <FontRow key={f} name={f} selected={selected === f} onClick={() => onSelect(f)} />
+      ))}
+    </div>
+  )
+}
+
+function FontRow({ name, selected, onClick }: { name: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: '100%', padding: '6px 10px', border: 'none', textAlign: 'left',
+        background: selected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+        color: selected ? 'var(--accent)' : 'var(--fg)',
+        fontFamily: name, fontSize: 14, cursor: 'pointer',
+        transition: 'background 0.1s', flex: 1,
+      }}
+      onMouseEnter={e => { if (!selected) e.currentTarget.style.background = 'var(--surface)' }}
+      onMouseLeave={e => { if (!selected) e.currentTarget.style.background = 'transparent' }}
+    >
+      {name}
     </button>
   )
 }
