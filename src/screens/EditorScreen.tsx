@@ -933,8 +933,55 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             ? ` L ${curr.pt.x} ${curr.pt.y}`
             : ` C ${prev.cp2.x} ${prev.cp2.y} ${curr.cp1.x} ${curr.cp1.y} ${curr.pt.x} ${curr.pt.y}`
         }
-        if (closeIt) d += ' Z'
+        if (closeIt) {
+          // The closing segment (last → first) must use bezier handles, not a bare Z.
+          // A plain Z draws a straight line and ignores the handles at both endpoints,
+          // causing a kink even when both adjacent segments are smooth curves.
+          const last  = ancs[ancs.length - 1]
+          const first = ancs[0]
+          const closeStraight = last.cp2.x === last.pt.x && last.cp2.y === last.pt.y
+                             && first.cp1.x === first.pt.x && first.cp1.y === first.pt.y
+          if (!closeStraight)
+            d += ` C ${last.cp2.x} ${last.cp2.y} ${first.cp1.x} ${first.cp1.y} ${first.pt.x} ${first.pt.y}`
+          d += ' Z'
+        }
         return d
+      }
+
+      // For each corner anchor (zero handles) that sits between two curved segments,
+      // compute a smooth Catmull-Rom tangent so the path flows continuously through it.
+      // Only runs on commit — doesn't mutate handles during interactive drawing.
+      const autoSmoothCorners = (ancs: PAnchor[], closed: boolean): void => {
+        const n = ancs.length
+        if (n < 3) return
+        for (let i = 0; i < n; i++) {
+          const curr = ancs[i]
+          if (curr.cp1.x !== curr.pt.x || curr.cp1.y !== curr.pt.y) continue
+          if (curr.cp2.x !== curr.pt.x || curr.cp2.y !== curr.pt.y) continue
+          if (!closed && (i === 0 || i === n - 1)) continue  // endpoints of open path
+
+          const iPrev = (i - 1 + n) % n
+          const iNext = (i + 1) % n
+          const prev  = ancs[iPrev]
+          const next  = ancs[iNext]
+
+          // Adjacent segment is curved when the handle on THAT side is non-zero
+          const prevCurved = prev.cp2.x !== prev.pt.x || prev.cp2.y !== prev.pt.y
+          const nextCurved = next.cp1.x !== next.pt.x || next.cp1.y !== next.pt.y
+          if (!prevCurved || !nextCurved) continue
+
+          // Catmull-Rom tangent: direction prev→next, chord-length scaled (1/3 each side)
+          const tx = next.pt.x - prev.pt.x
+          const ty = next.pt.y - prev.pt.y
+          const tLen = Math.hypot(tx, ty)
+          if (tLen < 1e-9) continue
+          const nx = tx / tLen, ny = ty / tLen
+
+          const dIn  = Math.hypot(curr.pt.x - prev.pt.x, curr.pt.y - prev.pt.y)
+          const dOut = Math.hypot(next.pt.x - curr.pt.x, next.pt.y - curr.pt.y)
+          curr.cp1 = new fabric.Point(curr.pt.x - nx * dIn  / 3, curr.pt.y - ny * dIn  / 3)
+          curr.cp2 = new fabric.Point(curr.pt.x + nx * dOut / 3, curr.pt.y + ny * dOut / 3)
+        }
       }
 
       // Dibuja un brazo de handle (línea + circulito en el extremo)
@@ -966,7 +1013,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           addTemp(new fabric.Path(previewPathStr, {
             stroke: colorRef.current, strokeWidth: brushSizeRef.current,
             strokeLineCap: previewPathStr.includes(' C ') ? 'round' : 'butt',
-            strokeLineJoin: 'miter',
+            strokeLineJoin: 'round',
             fill: null, selectable: false, evented: false,
           }))
         }
@@ -992,12 +1039,17 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
         // Preview del segmento al cursor (cuando no se está arrastrando)
         if (cursor && !mouseIsDown && anchors.length >= 1) {
-          const last = anchors[anchors.length - 1]
-          const cp1  = last.cp2
-          const straight = cp1.x === last.pt.x && cp1.y === last.pt.y
+          const last   = anchors[anchors.length - 1]
+          const cp1out = last.cp2
+          // When closing, use A0's incoming handle as the arriving control point so the
+          // preview matches the smooth bezier that commit() will actually build.
+          const cp2in: fabric.Point = isClosing && anchors.length >= 2
+            ? anchors[0].cp1 : cursor
+          const straight = cp1out.x === last.pt.x && cp1out.y === last.pt.y
+                        && cp2in.x  === cursor.x  && cp2in.y  === cursor.y
           const seg = straight
             ? `M ${last.pt.x} ${last.pt.y} L ${cursor.x} ${cursor.y}`
-            : `M ${last.pt.x} ${last.pt.y} C ${cp1.x} ${cp1.y} ${cursor.x} ${cursor.y} ${cursor.x} ${cursor.y}`
+            : `M ${last.pt.x} ${last.pt.y} C ${cp1out.x} ${cp1out.y} ${cp2in.x} ${cp2in.y} ${cursor.x} ${cursor.y}`
           addTemp(new fabric.Path(seg, {
             stroke: colorRef.current, strokeWidth: 1,
             strokeDashArray: [5, 4], opacity: 0.5,
@@ -1052,6 +1104,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const commit = (closed = false) => {
         clearTemp()
         if (anchors.length >= 2) {
+          autoSmoothCorners(anchors, closed)
           snapPoints.current.push(new fabric.Point(anchors[0].pt.x, anchors[0].pt.y))
           const lastPt = anchors[anchors.length - 1].pt
           if (!closed) snapPoints.current.push(new fabric.Point(lastPt.x, lastPt.y))
@@ -1059,7 +1112,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           const obj = new fabric.Path(penPathStr, {
             stroke: colorRef.current, strokeWidth: brushSizeRef.current,
             strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
-            strokeLineJoin: 'miter',
+            strokeLineJoin: 'round',
             fill: null, selectable: false, evented: true,
           })
           ;(obj as any).hoverCursor = PEN_CURSOR
@@ -1335,6 +1388,38 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         canvas.requestRenderAll()
       }
 
+      // Reads existing SVG commands and marks each anchor as smooth (has non-degenerate
+      // control point) or corner (cp == anchor position → zero-length handle).
+      const detectSmoothAnchors = (cmds: any[][]): Set<number> => {
+        const smooth = new Set<number>()
+        const isClosed = cmds.some((c: any[]) => c[0] === 'Z')
+        const segCmds = cmds.filter((c: any[]) => c[0] !== 'M' && c[0] !== 'Z')
+        const mCmd = cmds.find((c: any[]) => c[0] === 'M')!
+        const anchor0x = mCmd[1] as number, anchor0y = mCmd[2] as number
+
+        // For closed paths the last segCmd loops back to anchor 0 — don't count it as a new anchor.
+        let anchorCount = segCmds.length + 1
+        if (isClosed && segCmds.length > 0) {
+          const last = segCmds[segCmds.length - 1]
+          const lastX = last[last.length - 2] as number, lastY = last[last.length - 1] as number
+          if (Math.abs(lastX - anchor0x) < 0.5 && Math.abs(lastY - anchor0y) < 0.5) anchorCount--
+        }
+
+        for (let i = 0; i < segCmds.length; i++) {
+          const c = segCmds[i]
+          if (c[0] !== 'C') continue
+          const fromIdx = i
+          const toIdx = (i + 1) % anchorCount
+          let ax: number, ay: number
+          if (fromIdx === 0) { ax = anchor0x; ay = anchor0y }
+          else { const p = segCmds[fromIdx - 1]; ax = p[p.length - 2] as number; ay = p[p.length - 1] as number }
+          const [, cp1x, cp1y, cp2x, cp2y, px, py] = c as number[]
+          if (Math.hypot(cp1x - ax, cp1y - ay) > 0.5) smooth.add(fromIdx)
+          if (Math.hypot(cp2x - px, cp2y - py) > 0.5) smooth.add(toIdx)
+        }
+        return smooth
+      }
+
       const showAnchors = (obj: fabric.FabricObject) => {
         clearAnchorHandles(aHandles, canvas)
         editObj  = obj
@@ -1344,10 +1429,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (stored) {
           smoothAnchors = new Set(stored as number[])
         } else if ((obj as any).path) {
-          const cmds = (obj as fabric.Path).path as any[][]
-          // Solo tratar como todo-corners si el path es 100% recto (sin ningún C)
-          const isAllStraight = cmds.every(c => c[0] === 'M' || c[0] === 'L' || c[0] === 'Z')
-          smoothAnchors = isAllStraight ? new Set<number>() : null
+          smoothAnchors = detectSmoothAnchors((obj as fabric.Path).path as any[][])
         } else {
           smoothAnchors = null
         }
@@ -1383,7 +1465,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           if (positions.length === 2) {
             d = `M ${positions[0].x} ${positions[0].y} L ${positions[1].x} ${positions[1].y}`
           } else if (smoothAnchors !== null) {
-            d = buildMixedPath(positions, smoothAnchors, isClosed)
+            // Any corner sandwiched between two smooth anchors inherits smoothness.
+            const n = positions.length
+            const extended = new Set(smoothAnchors)
+            for (let i = 0; i < n; i++) {
+              if (extended.has(i)) continue
+              const prev = isClosed ? (i - 1 + n) % n : i - 1
+              const next = isClosed ? (i + 1) % n : i + 1
+              if (prev >= 0 && next < n && extended.has(prev) && extended.has(next))
+                extended.add(i)
+            }
+            smoothAnchors = extended
+            d = buildMixedPath(positions, extended, isClosed)
           } else {
             d = catmullRomToBezier(positions)
             if (isClosed) d += ' Z'
@@ -1417,10 +1510,20 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             setSelectedAnchor(i)
             canvas.requestRenderAll()
             preDragObj = editObj; draggingIdx = i; dragging = true
-            // Make the dragged anchor smooth so adjacent segments always curve
+            // If this corner sits between two smooth anchors, smooth it on drag start.
+            // This preserves corners next to straight segments but flows curves correctly.
             if (smoothAnchors !== null && !smoothAnchors.has(i)) {
-              smoothAnchors = new Set(smoothAnchors)
-              smoothAnchors.add(i)
+              const n = aHandles.length
+              const pathCmds = (editObj as any).path
+                ? ((editObj as fabric.Path).path as any[][]) : null
+              const isClosed = !!pathCmds && pathCmds.some((c: any[]) => c[0] === 'Z')
+              const prevIdx = i > 0 ? i - 1 : (isClosed ? n - 1 : -1)
+              const nextIdx = i < n - 1 ? i + 1 : (isClosed ? 0 : -1)
+              if (prevIdx >= 0 && nextIdx >= 0
+                && smoothAnchors.has(prevIdx) && smoothAnchors.has(nextIdx)) {
+                smoothAnchors = new Set(smoothAnchors)
+                smoothAnchors.add(i)
+              }
             }
             return
           }
