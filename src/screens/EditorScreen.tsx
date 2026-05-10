@@ -500,6 +500,22 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.on('selection:updated', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
     canvas.on('selection:cleared', () => setSelectedObj(null))
 
+    // Keep stroke width visually constant when scaling
+    canvas.on('object:scaling', (e: any) => {
+      const obj = e.target
+      if (!obj) return
+      const orig = e.transform?.original
+      if (!orig) return
+      const origSW   = orig.strokeWidth ?? 0
+      if (!origSW) return
+      const origSX   = orig.scaleX ?? 1
+      const origSY   = orig.scaleY ?? 1
+      const curSX    = obj.scaleX  ?? 1
+      const curSY    = obj.scaleY  ?? 1
+      const factor   = Math.sqrt((curSX / origSX) * (curSY / origSY))
+      obj.strokeWidth = Math.max(0.1, origSW / factor)
+    })
+
     // Marquee selection box — thin solid line, barely visible fill
     canvas.selectionColor       = 'rgba(29, 119, 224, 0.04)'
     canvas.selectionBorderColor = '#1D77E0'
@@ -524,9 +540,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     Object.assign(fabric.FabricObject.prototype, {
       borderColor:       '#1D77E0',
       borderScaleFactor: 1,
-      cornerSize:        AI_HANDLE_SIZE + 4, // hit area slightly larger than visual
+      cornerSize:        AI_HANDLE_SIZE + 4,
       cornerStyle:       'rect',
       transparentCorners: true,
+      strokeUniform:     true,
       padding:            4,
     })
 
@@ -593,6 +610,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           const saved = JSON.parse(project.canvasJson) as object[]
           const revived = await (fabric.util as any).enlivenObjects(saved) as fabric.FabricObject[]
           for (const obj of revived) {
+            obj.set({ strokeUniform: true })
             if (!(obj instanceof fabric.IText) && clipPath.current) {
               obj.set({ clipPath: clipPath.current })
             }
@@ -1533,14 +1551,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const onUpdated = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
       const onCleared = () => syncProps(null)
 
+      const onScaled = (e: any) => syncProps(e.target ?? null)
+
       canvas.on('selection:created', onCreated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:cleared', onCleared)
+      canvas.on('object:scaled',    onScaled)
 
       offs.push(() => {
         canvas.off('selection:created', onCreated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:cleared', onCleared)
+        canvas.off('object:scaled',    onScaled)
         setHasSel(false)
         setIsText(false)
       })

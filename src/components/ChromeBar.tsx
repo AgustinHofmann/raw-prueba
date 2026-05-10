@@ -43,18 +43,26 @@ export default function ChromeBar({
       height: 40, flexShrink: 0, display: 'flex', alignItems: 'stretch',
       borderBottom: '1px solid var(--line-soft)', background: 'var(--bg)',
     }}>
-      {/* Left section: logo + slogan + home button — 200px, matching sidebar width */}
+      {/* Left section: logo + slogan + home button */}
       <div style={{
-        width: 200, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 12, gap: 0,
+        width: 380, flexShrink: 0, display: 'flex', alignItems: 'center',
+        paddingLeft: 14, gap: 0,
       }}>
-        <Logo />
+        <Logo size={28} />
+        <span style={{
+          flex: 1, marginLeft: 14, paddingLeft: 14,
+          fontSize: 10, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+          letterSpacing: '0.02em', lineHeight: 1.3, whiteSpace: 'nowrap',
+          borderLeft: '1px solid var(--line-soft)',
+        }}>
+          Plataforma web<br />de diseño de indumentaria
+        </span>
 
         {/* Home button — rectangular, fills height */}
         <button
           onClick={onHome}
           style={{
-            marginLeft: 'auto', height: '100%', padding: '0 12px',
+            flexShrink: 0, height: '100%', padding: '0 14px',
             background: route === 'home' ? 'var(--surface)' : 'transparent',
             borderLeft: '1px solid ' + (route === 'home' ? 'var(--line-soft)' : 'transparent'),
             borderRight: 'none', borderTop: 'none', borderBottom: 'none',
