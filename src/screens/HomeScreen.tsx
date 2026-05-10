@@ -30,6 +30,8 @@ export default function HomeScreen({
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName]   = useState('')
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete]         = useState<Project | null>(null)
+  const [pendingDeleteFolder, setPendingDeleteFolder] = useState<Folder | null>(null)
   const importRef    = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
@@ -204,7 +206,7 @@ export default function HomeScreen({
                 delay={i * 0.03}
                 isDragOver={dragOverFolder === folder.id}
                 onClick={() => setActiveFolderId(folder.id)}
-                onDelete={() => onDeleteFolder(folder.id)}
+                onDelete={() => setPendingDeleteFolder(folder)}
                 onDragOver={e => { e.preventDefault(); setDragOverFolder(folder.id) }}
                 onDragLeave={() => setDragOverFolder(null)}
                 onDrop={e => {
@@ -222,7 +224,7 @@ export default function HomeScreen({
                 folders={folders}
                 delay={(visibleFolders.length + i) * 0.03}
                 onClick={() => onOpenProject(p)}
-                onDelete={() => onDeleteProject(p.id)}
+                onDelete={() => setPendingDelete(p)}
                 onMove={folderId => onMoveProject(p.id, folderId)}
                 onDragStart={e => {
                   e.dataTransfer.setData('projectId', p.id)
@@ -233,6 +235,118 @@ export default function HomeScreen({
           </div>
         )}
       </main>
+
+      {/* Delete confirmation modal */}
+      {pendingDelete && (
+        <div
+          onClick={() => setPendingDelete(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgb(0 0 0 / 0.5)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'rise 0.15s var(--ease) both',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg)', border: '1px solid var(--line)',
+              borderRadius: 16, padding: '28px 32px', width: 340,
+              display: 'flex', flexDirection: 'column', gap: 20,
+              boxShadow: 'var(--shadow-lg)',
+              animation: 'rise 0.2s var(--ease) both',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', marginBottom: 6 }}>
+                ¿Eliminar proyecto?
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+                <span style={{ color: 'var(--fg)', fontWeight: 500 }}>"{pendingDelete.name}"</span> se eliminará permanentemente. Esta acción no se puede deshacer.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingDelete(null)}
+                className="btn btn-ghost"
+                style={{ fontSize: 12, padding: '7px 16px' }}
+                autoFocus
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => { onDeleteProject(pendingDelete.id); setPendingDelete(null) }}
+                style={{
+                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  background: 'var(--danger, #e53935)', border: 'none',
+                  color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
+                  transition: 'opacity 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete folder confirmation modal */}
+      {pendingDeleteFolder && (
+        <div
+          onClick={() => setPendingDeleteFolder(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgb(0 0 0 / 0.5)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'rise 0.15s var(--ease) both',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg)', border: '1px solid var(--line)',
+              borderRadius: 16, padding: '28px 32px', width: 340,
+              display: 'flex', flexDirection: 'column', gap: 20,
+              boxShadow: 'var(--shadow-lg)',
+              animation: 'rise 0.2s var(--ease) both',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', marginBottom: 6 }}>
+                ¿Eliminar carpeta?
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+                <span style={{ color: 'var(--fg)', fontWeight: 500 }}>"{pendingDeleteFolder.name}"</span> se eliminará. Los proyectos dentro quedarán sin carpeta.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingDeleteFolder(null)}
+                className="btn btn-ghost"
+                style={{ fontSize: 12, padding: '7px 16px' }}
+                autoFocus
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => { onDeleteFolder(pendingDeleteFolder.id); setPendingDeleteFolder(null) }}
+                style={{
+                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  background: 'var(--danger, #e53935)', border: 'none',
+                  color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
+                  transition: 'opacity 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
