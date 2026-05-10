@@ -21,10 +21,9 @@ export default function OnboardingScreen({ onEnter }: { onEnter: () => void }) {
         filter: 'blur(50px)', animation: 'rise 1.4s var(--ease) both',
       }} />
       <div style={{ position: 'relative', textAlign: 'center', maxWidth: 720, padding: 32 }}>
-        <div className="label rise" style={{ marginBottom: 28 }}>RAW · Atelier digital</div>
         <div className="display-i rise-2" style={{ fontSize: 'clamp(44px, 7vw, 100px)', color: 'var(--fg)', letterSpacing: '-0.025em' }}>
           Diseñá <span style={{ color: 'var(--accent)' }}>prendas</span><br />
-          como un <em>editorial</em>.
+          idea y crea <em>sin vueltas</em>.
         </div>
         <p className="rise-3" style={{ marginTop: 24, fontSize: 15, lineHeight: 1.6, color: 'var(--muted)', maxWidth: 480, margin: '24px auto 0' }}>
           Mockups 2D, color, trazo libre y exportación lista para producción.

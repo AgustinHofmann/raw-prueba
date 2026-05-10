@@ -201,17 +201,30 @@ function rebuildFromAnchors(
   return newObj
 }
 
-// Reconstruye un path mezclando segmentos rectos (corners) y curvas suaves (Catmull-Rom).
-// Para anclas suaves usa la fórmula Catmull-Rom estándar, garantizando continuidad C1.
-// Para corners usa el propio punto como vecino ficticio, colapsando el handle al segmento.
-// Esto es matemáticamente equivalente a catmullRomToBezier cuando todos son smooth.
+// Reconstruye un path mezclando segmentos rectos (corners) y curvas suaves.
+// Usa la dirección tangente Catmull-Rom pero escala cada handle a 1/3 del segmento
+// actual (chord-length parameterization). Esto evita que handles en segmentos cortos
+// sean demasiado grandes (curvas exageradas) o pequeños (puntas afiladas) cuando los
+// vecinos están muy lejos o muy cerca, dando transiciones equilibradas en cualquier polígono.
 function buildMixedPath(positions: fabric.Point[], smoothAnchors: Set<number>, closed = false): string {
   const n = positions.length
   if (n < 2) return ''
 
+  // Helper: tangent-scaled handle at point P in direction (toward - away), length = segLen/3
+  function scaledHandle(
+    P: fabric.Point, toward: fabric.Point, away: fabric.Point, segLen: number, sign: 1 | -1,
+  ): [number, number] {
+    const tx = toward.x - away.x
+    const ty = toward.y - away.y
+    const tLen = Math.hypot(tx, ty)
+    if (tLen < 1e-9 || segLen < 1e-9) return [P.x, P.y]
+    const sc = (segLen / 3) / tLen * sign
+    return [P.x + tx * sc, P.y + ty * sc]
+  }
+
   let d = `M ${positions[0].x} ${positions[0].y}`
-  // For closed paths iterate n segments (including the closing segment back to positions[0])
   const segments = closed ? n : n - 1
+
   for (let j = 0; j < segments; j++) {
     const j1  = (j + 1) % n
     const Pj  = positions[j]
@@ -221,31 +234,29 @@ function buildMixedPath(positions: fabric.Point[], smoothAnchors: Set<number>, c
 
     if (!s0 && !s1) { d += ` L ${Pj1.x} ${Pj1.y}`; continue }
 
-    // Catmull-Rom neighbors — wrap around for closed paths, clamp for open.
-    // Corner anchors use zero-length handles (cp = anchor point) so the curve
-    // departs/arrives without a belly, matching Illustrator's corner behavior.
-    let pPrev: { x: number; y: number }
-    if (s0) {
-      pPrev = j === 0
-        ? (closed ? positions[n - 1] : positions[0])
-        : positions[j - 1]
+    const segLen = Math.hypot(Pj1.x - Pj.x, Pj1.y - Pj.y)
+
+    // Catmull-Rom neighbor lookup (wrap/clamp for open paths)
+    const jPrev  = j   === 0     ? (closed ? n - 1 : 0)     : j   - 1
+    const j1Next = j1  === n - 1 ? (closed ? 0     : n - 1) : j1  + 1
+    const pPrev  = positions[jPrev]
+    const pNext  = positions[j1Next]
+
+    let cp1x: number, cp1y: number
+    if (!s0) {
+      cp1x = Pj.x; cp1y = Pj.y           // corner → zero-length outgoing handle
     } else {
-      pPrev = Pj1  // makes cp1 = Pj (zero-length outgoing handle at corner)
+      // Tangent direction at Pj: from pPrev toward Pj1, scaled to segLen/3
+      ;[cp1x, cp1y] = scaledHandle(Pj, Pj1, pPrev, segLen, 1)
     }
 
-    let pNext: { x: number; y: number }
-    if (s1) {
-      pNext = j1 === n - 1
-        ? (closed ? positions[0] : positions[n - 1])
-        : positions[j1 + 1]
+    let cp2x: number, cp2y: number
+    if (!s1) {
+      cp2x = Pj1.x; cp2y = Pj1.y         // corner → zero-length incoming handle
     } else {
-      pNext = Pj  // makes cp2 = Pj1 (zero-length incoming handle at corner)
+      // Tangent direction at Pj1: from Pj toward pNext, scaled to segLen/3
+      ;[cp2x, cp2y] = scaledHandle(Pj1, pNext, Pj, segLen, -1)
     }
-
-    const cp1x = Pj.x  + (Pj1.x - pPrev.x) / 6
-    const cp1y = Pj.y  + (Pj1.y - pPrev.y) / 6
-    const cp2x = Pj1.x - (pNext.x - Pj.x)  / 6
-    const cp2y = Pj1.y - (pNext.y - Pj.y)  / 6
 
     d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${Pj1.x} ${Pj1.y}`
   }
@@ -501,19 +512,26 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.on('selection:cleared', () => setSelectedObj(null))
 
     // Keep stroke width visually constant when scaling
+    // Capture pre-scale values on mouse:down because Fabric v6 doesn't include
+    // strokeWidth in e.transform.original during object:scaling
+    canvas.on('mouse:down', () => {
+      const obj = canvas.getActiveObject()
+      if (!obj) return
+      ;(obj as any)._preSW = obj.strokeWidth ?? 0
+      ;(obj as any)._preSX = obj.scaleX ?? 1
+      ;(obj as any)._preSY = obj.scaleY ?? 1
+    })
     canvas.on('object:scaling', (e: any) => {
       const obj = e.target
       if (!obj) return
-      const orig = e.transform?.original
-      if (!orig) return
-      const origSW   = orig.strokeWidth ?? 0
-      if (!origSW) return
-      const origSX   = orig.scaleX ?? 1
-      const origSY   = orig.scaleY ?? 1
-      const curSX    = obj.scaleX  ?? 1
-      const curSY    = obj.scaleY  ?? 1
-      const factor   = Math.sqrt((curSX / origSX) * (curSY / origSY))
-      obj.strokeWidth = Math.max(0.1, origSW / factor)
+      const preSW = (obj as any)._preSW
+      if (!preSW) return
+      const preSX = (obj as any)._preSX ?? 1
+      const preSY = (obj as any)._preSY ?? 1
+      const curSX = obj.scaleX ?? 1
+      const curSY = obj.scaleY ?? 1
+      const factor = Math.sqrt((curSX / preSX) * (curSY / preSY))
+      obj.strokeWidth = Math.max(0.1, preSW / factor)
     })
 
     // Marquee selection box — thin solid line, barely visible fill
@@ -543,7 +561,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       cornerSize:        AI_HANDLE_SIZE + 4,
       cornerStyle:       'rect',
       transparentCorners: true,
-      strokeUniform:     true,
       padding:            4,
     })
 
@@ -867,6 +884,37 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       let lastClickTime  = 0
       let lastClickPos: fabric.Point | null = null
       const SNAP_RADIUS  = 14
+      const ALIGN_THRESH = 8
+
+      // Point snap (exact node) overrides alignment snap.
+      // Alignment snap nudges X/Y independently toward shared axes with other anchors.
+      const computeSnap = (raw: fabric.Point, candidates: fabric.Point[]): {
+        snapped: fabric.Point
+        nodeSnap: fabric.Point | null
+        guides: Array<{ axis: 'h' | 'v'; val: number }>
+      } => {
+        for (const p of candidates) {
+          if (Math.hypot(raw.x - p.x, raw.y - p.y) < SNAP_RADIUS)
+            return { snapped: new fabric.Point(p.x, p.y), nodeSnap: p, guides: [] }
+        }
+        let sx = raw.x, sy = raw.y
+        const guides: Array<{ axis: 'h' | 'v'; val: number }> = []
+        // Include midpoints of all pairs so e.g. the apex of an equilateral triangle
+        // snaps to the center X of the base automatically.
+        const alignPts: Array<{ x: number; y: number }> = [...candidates]
+        for (let i = 0; i < candidates.length; i++)
+          for (let j = i + 1; j < candidates.length; j++)
+            alignPts.push({ x: (candidates[i].x + candidates[j].x) / 2, y: (candidates[i].y + candidates[j].y) / 2 })
+        let bestDx = ALIGN_THRESH + 1, bestDy = ALIGN_THRESH + 1
+        for (const p of alignPts) {
+          const dx = Math.abs(raw.x - p.x), dy = Math.abs(raw.y - p.y)
+          if (dx < bestDx) { bestDx = dx; sx = p.x }
+          if (dy < bestDy) { bestDy = dy; sy = p.y }
+        }
+        if (bestDx <= ALIGN_THRESH) guides.push({ axis: 'v', val: sx })
+        if (bestDy <= ALIGN_THRESH) guides.push({ axis: 'h', val: sy })
+        return { snapped: new fabric.Point(sx, sy), nodeSnap: null, guides }
+      }
 
       // Todos los objetos temporales de visualización
       let tempObjs: fabric.FabricObject[] = []
@@ -903,7 +951,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       // Redibuja todos los elementos visuales temporales
-      const redraw = (cursor?: fabric.Point, liveCp2?: fabric.Point) => {
+      const redraw = (
+        cursor?: fabric.Point,
+        liveCp2?: fabric.Point,
+        guides: Array<{ axis: 'h' | 'v'; val: number }> = [],
+        nodeSnap: fabric.Point | null = null,
+      ) => {
         clearTemp()
         if (anchors.length === 0) { canvas.requestRenderAll(); return }
 
@@ -961,6 +1014,38 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }))
         }
 
+        // Alignment guide lines (H = constant Y, V = constant X)
+        for (const g of guides) {
+          const pts: [number, number, number, number] = g.axis === 'v'
+            ? [g.val, -9999, g.val, 9999]
+            : [-9999, g.val, 9999, g.val]
+          addTemp(new fabric.Line(pts, {
+            stroke: '#1D77E0', strokeWidth: 0.5, opacity: 0.5,
+            strokeDashArray: [6, 4], selectable: false, evented: false,
+          }))
+          // Small crosshair dot at the snapped intersection
+          if (cursor) {
+            const gx = g.axis === 'v' ? g.val : cursor.x
+            const gy = g.axis === 'h' ? g.val : cursor.y
+            addTemp(new fabric.Circle({
+              left: gx, top: gy, radius: 2.5, fill: '#1D77E0',
+              originX: 'center', originY: 'center', selectable: false, evented: false,
+            }))
+          }
+        }
+
+        // Node snap ring for existing nodes (blue; orange ring already handles close-path)
+        const isCloseNode = isClosing && anchors.length >= 2
+          && nodeSnap !== null
+          && nodeSnap.x === anchors[0].pt.x && nodeSnap.y === anchors[0].pt.y
+        if (nodeSnap && !isCloseNode) {
+          addTemp(new fabric.Circle({
+            left: nodeSnap.x, top: nodeSnap.y, radius: 9,
+            fill: 'transparent', stroke: '#1D77E0', strokeWidth: 1.5,
+            originX: 'center', originY: 'center', selectable: false, evented: false,
+          }))
+        }
+
         canvas.requestRenderAll()
       }
 
@@ -999,8 +1084,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       const onDown = (e: fabric.TPointerEventInfo) => {
-        const now = Date.now()
-        const pt  = e.scenePoint
+        const now   = Date.now()
+        const rawPt = e.scenePoint
+
+        // Snap the click position to nearby nodes / alignment axes
+        const downCandidates = [...anchors.map(a => a.pt), ...snapPoints.current]
+        const { snapped: pt } = computeSnap(rawPt, downCandidates)
 
         // Modo edición de anclajes (solo si no estamos dibujando)
         if (anchors.length === 0) {
@@ -1085,40 +1174,58 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       const onMove = (e: fabric.TPointerEventInfo) => {
-        const pt = e.scenePoint
-        cursorPt = pt
+        const rawPt = e.scenePoint
 
-        // Cursor dinámico en modo edición
+        // Snap candidates: anchors of current path (minus the just-placed one if dragging)
+        // + committed endpoints of other paths
+        const moveCandidates: fabric.Point[] = [
+          ...anchors.slice(0, mouseIsDown ? -1 : undefined).map(a => a.pt),
+          ...snapPoints.current,
+        ]
+
+        // Compute snap only when not dragging a bezier handle (handles are free vectors)
+        let snappedPt = rawPt
+        let guides: Array<{ axis: 'h' | 'v'; val: number }> = []
+        let nodeSnap: fabric.Point | null = null
+        if (!draggingHandle) {
+          const snap = computeSnap(rawPt, moveCandidates)
+          snappedPt  = snap.snapped
+          guides     = snap.guides
+          nodeSnap   = snap.nodeSnap
+        }
+        cursorPt = snappedPt
+
+        // Cursor dinámico en modo edición (usa rawPt para hit-test de handles)
         if (anchors.length === 0) {
           let overHandle = false
           for (const h of aHandles) {
             const hx = (h.circle.left as number) + ANCHOR_R
             const hy = (h.circle.top  as number) + ANCHOR_R
-            if (Math.hypot(pt.x - hx, pt.y - hy) < ANCHOR_HIT) { overHandle = true; break }
+            if (Math.hypot(rawPt.x - hx, rawPt.y - hy) < ANCHOR_HIT) { overHandle = true; break }
           }
           const cur = overHandle ? PEN_DEL_CURSOR
-            : (editObj && nearPathSegmentIdx(editObj, pt, 8) >= 0) ? PEN_ADD_CURSOR
+            : (editObj && nearPathSegmentIdx(editObj, rawPt, 8) >= 0) ? PEN_ADD_CURSOR
             : PEN_CURSOR
           applyPenCursor(cur)
         }
 
-        // Indicador de cierre
+        // Indicador de cierre (basado en posición snapeada)
         isClosing = anchors.length >= 2
-          && Math.hypot(pt.x - anchors[0].pt.x, pt.y - anchors[0].pt.y) < SNAP_RADIUS
+          && Math.hypot(snappedPt.x - anchors[0].pt.x, snappedPt.y - anchors[0].pt.y) < SNAP_RADIUS
 
-        // Arrastrar handle del último ancla
+        // Arrastrar handle del último ancla (sin snap — dirección libre)
         let liveCp2: fabric.Point | undefined
         if (mouseIsDown && anchors.length > 0) {
           const last = anchors[anchors.length - 1]
-          if (Math.hypot(pt.x - last.pt.x, pt.y - last.pt.y) > 4) {
+          if (Math.hypot(rawPt.x - last.pt.x, rawPt.y - last.pt.y) > 4) {
             draggingHandle = true
-            last.cp2 = new fabric.Point(pt.x, pt.y)
-            last.cp1 = new fabric.Point(last.pt.x * 2 - pt.x, last.pt.y * 2 - pt.y)
+            last.cp2 = new fabric.Point(rawPt.x, rawPt.y)
+            last.cp1 = new fabric.Point(last.pt.x * 2 - rawPt.x, last.pt.y * 2 - rawPt.y)
             liveCp2  = last.cp2
           }
         }
 
-        redraw(pt, liveCp2)
+        redraw(snappedPt, liveCp2, guides, nodeSnap)
       }
 
       const onUp = () => { mouseIsDown = false; draggingHandle = false; redraw(cursorPt) }

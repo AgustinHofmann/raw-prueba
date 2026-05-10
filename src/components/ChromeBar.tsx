@@ -45,24 +45,25 @@ export default function ChromeBar({
     }}>
       {/* Left section: logo + slogan + home button */}
       <div style={{
-        width: 380, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 14, gap: 0,
+        width: 200, flexShrink: 0, display: 'flex', alignItems: 'center',
+        paddingLeft: 12, gap: 0, overflow: 'hidden',
       }}>
-        <Logo size={28} />
+        <Logo size={22} />
         <span style={{
-          flex: 1, marginLeft: 14, paddingLeft: 14,
-          fontSize: 10, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
-          letterSpacing: '0.02em', lineHeight: 1.3, whiteSpace: 'nowrap',
+          flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
+          fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+          letterSpacing: '0.02em', lineHeight: 1.3,
           borderLeft: '1px solid var(--line-soft)',
+          overflow: 'hidden',
         }}>
-          Plataforma web<br />de diseño de indumentaria
+          diseño de<br />indumentaria
         </span>
 
         {/* Home button — rectangular, fills height */}
         <button
           onClick={onHome}
           style={{
-            flexShrink: 0, height: '100%', padding: '0 14px',
+            flexShrink: 0, height: '100%', padding: '0 10px',
             background: route === 'home' ? 'var(--surface)' : 'transparent',
             borderLeft: '1px solid ' + (route === 'home' ? 'var(--line-soft)' : 'transparent'),
             borderRight: 'none', borderTop: 'none', borderBottom: 'none',
@@ -93,8 +94,8 @@ export default function ChromeBar({
               style={{
                 height: '100%', padding: '0 8px 0 14px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
-                borderLeft: '1px solid ' + (active ? 'var(--line-soft)' : 'transparent'),
-                borderRight: '1px solid ' + (active ? 'var(--line-soft)' : 'transparent'),
+                borderLeft: '1px solid var(--line-soft)',
+                borderRight: 'none',
                 borderTop: 'none',
                 borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
                 borderRadius: 0,
@@ -119,7 +120,9 @@ export default function ChromeBar({
           onClick={onNewProject}
           style={{
             width: 36, height: '100%', flexShrink: 0,
-            background: 'transparent', border: 'none', borderRadius: 0,
+            background: 'transparent', borderRadius: 0,
+            borderLeft: '1px solid var(--line-soft)', borderRight: 'none',
+            borderTop: 'none', borderBottom: '2px solid transparent',
             color: 'var(--muted)', fontSize: 18, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             transition: 'all 0.15s var(--ease)',
