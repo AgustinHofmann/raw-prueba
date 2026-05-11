@@ -401,6 +401,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const clipboardBuf  = useRef<fabric.FabricObject | null>(null)
   const colorRef      = useRef('#ff6b00')
   const brushSizeRef  = useRef(8)
+  const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
@@ -417,6 +418,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [propFill,      setPropFill]      = useState<string | null>(null)
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
+  const [propX,         setPropX]         = useState(0)
+  const [propY,         setPropY]         = useState(0)
+  const [propW,         setPropW]         = useState(0)
+  const [propH,         setPropH]         = useState(0)
+  const [propAngle,     setPropAngle]     = useState(0)
   const [propFontFamily, setPropFontFamily] = useState('Arial')
   const [propFontSize,  setPropFontSize]  = useState(24)
   const [userFonts,      setUserFonts]      = useState<string[]>([])
@@ -426,6 +432,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
+  useEffect(() => { fillRef.current       = propFill      }, [propFill])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
 
@@ -1113,7 +1120,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             stroke: colorRef.current, strokeWidth: brushSizeRef.current,
             strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
             strokeLineJoin: 'round',
-            fill: null, selectable: false, evented: true,
+            fill: fillRef.current, selectable: false, evented: true,
           })
           ;(obj as any).hoverCursor = PEN_CURSOR
           if (clipPath.current) obj.clipPath = clipPath.current
@@ -1748,6 +1755,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         setPropFill(typeof obj.fill   === 'string' ? obj.fill   : null)
         setPropStroke(typeof obj.stroke === 'string' ? obj.stroke : '#000000')
         setPropSWidth(obj.strokeWidth ?? 1)
+        setPropX(Math.round(obj.left ?? 0))
+        setPropY(Math.round(obj.top  ?? 0))
+        setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
+        setPropH(Math.round((obj.height ?? 0) * Math.abs(obj.scaleY ?? 1)))
+        setPropAngle(Math.round((obj.angle ?? 0) * 10) / 10)
         if (obj instanceof fabric.IText) {
           setIsText(true)
           setPropFontFamily(obj.fontFamily ?? 'Arial')
@@ -1761,18 +1773,24 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const onUpdated = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
       const onCleared = () => syncProps(null)
 
-      const onScaled = (e: any) => syncProps(e.target ?? null)
+      const onScaled   = (e: any) => syncProps(e.target ?? null)
+      const onMoved    = (e: any) => syncProps(e.target ?? null)
+      const onRotated  = (e: any) => syncProps(e.target ?? null)
 
       canvas.on('selection:created', onCreated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:cleared', onCleared)
       canvas.on('object:scaled',    onScaled)
+      canvas.on('object:moving',    onMoved)
+      canvas.on('object:rotating',  onRotated)
 
       offs.push(() => {
         canvas.off('selection:created', onCreated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:cleared', onCleared)
         canvas.off('object:scaled',    onScaled)
+        canvas.off('object:moving',    onMoved)
+        canvas.off('object:rotating',  onRotated)
         setHasSel(false)
         setIsText(false)
       })
@@ -1834,6 +1852,38 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       obj.set({ fill: val ?? undefined })
       fc.current?.requestRenderAll()
     }
+  }
+
+  function applyX(val: number) {
+    setPropX(val)
+    const obj = fc.current?.getActiveObject()
+    if (obj) { obj.set({ left: val }); obj.setCoords(); fc.current?.requestRenderAll() }
+  }
+  function applyY(val: number) {
+    setPropY(val)
+    const obj = fc.current?.getActiveObject()
+    if (obj) { obj.set({ top: val }); obj.setCoords(); fc.current?.requestRenderAll() }
+  }
+  function applyW(val: number) {
+    const v = Math.max(1, val)
+    setPropW(v)
+    const obj = fc.current?.getActiveObject()
+    if (obj && (obj.width ?? 0) > 0) {
+      obj.set({ scaleX: v / obj.width! }); obj.setCoords(); fc.current?.requestRenderAll()
+    }
+  }
+  function applyH(val: number) {
+    const v = Math.max(1, val)
+    setPropH(v)
+    const obj = fc.current?.getActiveObject()
+    if (obj && (obj.height ?? 0) > 0) {
+      obj.set({ scaleY: v / obj.height! }); obj.setCoords(); fc.current?.requestRenderAll()
+    }
+  }
+  function applyAngle(val: number) {
+    setPropAngle(val)
+    const obj = fc.current?.getActiveObject()
+    if (obj) { obj.set({ angle: val }); obj.setCoords(); fc.current?.requestRenderAll() }
   }
 
   function applyStroke(val: string) {
@@ -2243,6 +2293,51 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                     }}
                   />
                   <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>px</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Transformar */}
+          {hasSel && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Transformar</div>
+              {/* X / Y */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                {([['X', propX, applyX], ['Y', propY, applyY]] as const).map(([label, val, fn]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+                    <input type="number" step={1} value={val}
+                      onChange={e => fn(Number(e.target.value))}
+                      style={{ width: '100%', padding: '5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+                        background: 'var(--surface)', border: '1px solid var(--line)',
+                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                  </div>
+                ))}
+              </div>
+              {/* W / H */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                {([['W', propW, applyW], ['H', propH, applyH]] as const).map(([label, val, fn]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+                    <input type="number" step={1} min={1} value={val}
+                      onChange={e => fn(Number(e.target.value))}
+                      style={{ width: '100%', padding: '5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+                        background: 'var(--surface)', border: '1px solid var(--line)',
+                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                  </div>
+                ))}
+              </div>
+              {/* Rotación */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span className="label">Rotación</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <input type="number" step={1} min={-360} max={360} value={propAngle}
+                    onChange={e => applyAngle(Number(e.target.value))}
+                    style={{ width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
+                      background: 'var(--surface)', border: '1px solid var(--line)',
+                      color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                  <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>°</span>
                 </div>
               </div>
             </div>
