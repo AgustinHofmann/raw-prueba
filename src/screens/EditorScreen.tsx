@@ -1703,16 +1703,36 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (isMouseDown.current) {
           const toRemove = canvas.getObjects().filter(obj => {
             if (mockupObjects.current.includes(obj)) return false
-            // Fast bounding-box pre-reject (with stroke margin)
+            // Fast bounding-box pre-reject
             const b = obj.getBoundingRect()
             const sw = (obj.strokeWidth ?? 2) / 2
             if (b.left - sw > p.x + r || b.left + b.width  + sw < p.x - r ||
                 b.top  - sw > p.y + r || b.top  + b.height + sw < p.y - r) return false
-            // Check actual path/segment proximity
             const hit = r + sw
-            let pts: fabric.Point[] = []
-            try { pts = getAnchorPositions(obj) } catch { return true }
-            if (pts.length === 0) return true
+            // For paths: sample actual bezier geometry (not just anchor chords)
+            if ((obj as any).path) {
+              let prev = new fabric.Point(0, 0)
+              for (const cmd of extractBezierCmds(obj)) {
+                if (cmd.type === 'Z') continue
+                if (cmd.type === 'M') { prev = cmd.pts[0]; continue }
+                if (cmd.type === 'L') {
+                  if (distPointToSegment(p.x, p.y, prev.x, prev.y, cmd.pts[0].x, cmd.pts[0].y) < hit) return true
+                  prev = cmd.pts[0]
+                } else if (cmd.type === 'C') {
+                  const [cp1, cp2, ep] = cmd.pts
+                  for (let i = 0; i <= 8; i++) {
+                    const t = i / 8, mt = 1 - t
+                    const bx = mt*mt*mt*prev.x + 3*mt*mt*t*cp1.x + 3*mt*t*t*cp2.x + t*t*t*ep.x
+                    const by = mt*mt*mt*prev.y + 3*mt*mt*t*cp1.y + 3*mt*t*t*cp2.y + t*t*t*ep.y
+                    if (Math.hypot(bx - p.x, by - p.y) < hit) return true
+                  }
+                  prev = ep
+                }
+              }
+              return false
+            }
+            // Fallback for line objects
+            const pts = getAnchorPositions(obj)
             for (let i = 0; i < pts.length; i++) {
               if (Math.hypot(pts[i].x - p.x, pts[i].y - p.y) < hit) return true
               if (i < pts.length - 1 &&
