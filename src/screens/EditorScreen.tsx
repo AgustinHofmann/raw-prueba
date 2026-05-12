@@ -14,7 +14,7 @@ interface Props {
   onActionsReady: (a: EditorActions | null) => void
 }
 
-type Tool = 'select' | 'draw' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text'
+type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text'
 
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
@@ -575,11 +575,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     try {
       const controls = fabric.FabricObject.prototype.controls
       Object.keys(controls).forEach(key => {
-        if (key === 'mtr') {
-          controls[key].visible = false
-        } else {
-          controls[key].render = renderAIHandle as any
-        }
+        if (key !== 'mtr') controls[key].render = renderAIHandle as any
       })
     } catch (_) {}
 
@@ -750,27 +746,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
     const offs: (() => void)[] = []
 
-    // ── Free draw ────────────────────────────────────────────────────────────
-    if (tool === 'draw') {
-      canvas.isDrawingMode = true
-      const brush = new fabric.PencilBrush(canvas)
-      brush.color = colorRef.current
-      brush.width = brushSizeRef.current
-      canvas.freeDrawingBrush = brush
-      canvas.defaultCursor = 'none'
-
-      const onMove  = (e: fabric.TPointerEventInfo) => showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
-      const onLeave = () => hideSizeCursor()
-      canvas.on('mouse:move', onMove)
-      canvasAreaRef.current?.addEventListener('mouseleave', onLeave)
-      offs.push(() => {
-        canvas.off('mouse:move', onMove)
-        canvasAreaRef.current?.removeEventListener('mouseleave', onLeave)
-        canvas.defaultCursor = 'default'
-        hideSizeCursor()
-      })
-    }
-
     // ── Lápiz (freehand → smooth bezier) ─────────────────────────────────────
     if (tool === 'pencil') {
       canvas.selection     = false
@@ -856,16 +831,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       // ── Estado de edición de anclajes (paths existentes) ──
       let editObj: fabric.FabricObject | null = null
       let aHandles: AnchorHandle[] = []
+      let selectedEditAnchorIdx: number | null = null
 
       const showAnchors = (obj: fabric.FabricObject) => {
         clearAnchorHandles(aHandles, canvas)
         editObj  = obj
         aHandles = buildAnchorHandles(obj, canvas)
+        selectedEditAnchorIdx = null
       }
 
       const clearEdit = () => {
         clearAnchorHandles(aHandles, canvas)
         editObj = null
+        selectedEditAnchorIdx = null
         canvas.requestRenderAll()
       }
 
@@ -1040,10 +1018,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         })
 
         // Handles en vivo mientras se arrastra el último ancla
+        // Si Alt está activo, cp1 no es el mirror de cp2 — se dibuja el valor real de cp1
         if (liveCp2 && anchors.length > 0) {
           const last = anchors[anchors.length - 1]
           drawArm(last.pt, liveCp2)
-          drawArm(last.pt, new fabric.Point(last.pt.x * 2 - liveCp2.x, last.pt.y * 2 - liveCp2.y))
+          drawArm(last.pt, last.cp1)
         }
 
         // Preview del segmento al cursor (cuando no se está arrastrando)
@@ -1113,7 +1092,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const commit = (closed = false) => {
         clearTemp()
         if (anchors.length >= 2) {
-          autoSmoothCorners(anchors, closed)
           snapPoints.current.push(new fabric.Point(anchors[0].pt.x, anchors[0].pt.y))
           const lastPt = anchors[anchors.length - 1].pt
           if (!closed) snapPoints.current.push(new fabric.Point(lastPt.x, lastPt.y))
@@ -1160,7 +1138,15 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             const h = aHandles[i]
             const hx = (h.circle.left as number) + ANCHOR_R
             const hy = (h.circle.top  as number) + ANCHOR_R
-            if (Math.hypot(pt.x - hx, pt.y - hy) < ANCHOR_HIT) { deleteAnchor(i); return }
+            if (Math.hypot(pt.x - hx, pt.y - hy) < ANCHOR_HIT) {
+              // Deselect previous
+              if (selectedEditAnchorIdx !== null && aHandles[selectedEditAnchorIdx])
+                aHandles[selectedEditAnchorIdx].circle.set({ fill: '#fff' })
+              selectedEditAnchorIdx = i
+              aHandles[i].circle.set({ fill: '#1D77E0' })
+              canvas.requestRenderAll()
+              return
+            }
           }
           if (editObj) {
             const isBezier = !!(editObj as any).path
@@ -1267,7 +1253,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             const hy = (h.circle.top  as number) + ANCHOR_R
             if (Math.hypot(rawPt.x - hx, rawPt.y - hy) < ANCHOR_HIT) { overHandle = true; break }
           }
-          const cur = overHandle ? PEN_DEL_CURSOR
+          const cur = overHandle ? PEN_CURSOR
             : (editObj && nearPathSegmentIdx(editObj, rawPt, 8) >= 0) ? PEN_ADD_CURSOR
             : PEN_CURSOR
           applyPenCursor(cur)
@@ -1278,14 +1264,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           && Math.hypot(snappedPt.x - anchors[0].pt.x, snappedPt.y - anchors[0].pt.y) < SNAP_RADIUS
 
         // Arrastrar handle del último ancla (sin snap — dirección libre)
+        // Alt = sólo mueve el handle de salida (cp2), cp1 queda fijo → ángulo asimétrico
         let liveCp2: fabric.Point | undefined
         if (mouseIsDown && anchors.length > 0) {
           const last = anchors[anchors.length - 1]
           if (Math.hypot(rawPt.x - last.pt.x, rawPt.y - last.pt.y) > 4) {
             draggingHandle = true
             last.cp2 = new fabric.Point(rawPt.x, rawPt.y)
-            last.cp1 = new fabric.Point(last.pt.x * 2 - rawPt.x, last.pt.y * 2 - rawPt.y)
-            liveCp2  = last.cp2
+            if (!(e.e as MouseEvent).altKey)
+              last.cp1 = new fabric.Point(last.pt.x * 2 - rawPt.x, last.pt.y * 2 - rawPt.y)
+            liveCp2 = last.cp2
           }
         }
 
@@ -1296,6 +1284,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === 'Escape') commit()
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEditAnchorIdx !== null && anchors.length === 0) {
+          e.preventDefault()
+          const idx = selectedEditAnchorIdx
+          selectedEditAnchorIdx = null
+          deleteAnchor(idx)
+        }
       }
 
       canvas.on('mouse:down', onDown)
@@ -1709,13 +1703,23 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (isMouseDown.current) {
           const toRemove = canvas.getObjects().filter(obj => {
             if (mockupObjects.current.includes(obj)) return false
+            // Fast bounding-box pre-reject (with stroke margin)
             const b = obj.getBoundingRect()
-            return (
-              b.left              < p.x + r &&
-              b.left + b.width    > p.x - r &&
-              b.top               < p.y + r &&
-              b.top  + b.height   > p.y - r
-            )
+            const sw = (obj.strokeWidth ?? 2) / 2
+            if (b.left - sw > p.x + r || b.left + b.width  + sw < p.x - r ||
+                b.top  - sw > p.y + r || b.top  + b.height + sw < p.y - r) return false
+            // Check actual path/segment proximity
+            const hit = r + sw
+            let pts: fabric.Point[] = []
+            try { pts = getAnchorPositions(obj) } catch { return true }
+            if (pts.length === 0) return true
+            for (let i = 0; i < pts.length; i++) {
+              if (Math.hypot(pts[i].x - p.x, pts[i].y - p.y) < hit) return true
+              if (i < pts.length - 1 &&
+                  distPointToSegment(p.x, p.y, pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y) < hit)
+                return true
+            }
+            return false
           })
           if (toRemove.length > 0) {
             toRemove.forEach(obj => { canvas.remove(obj); removedThisStroke.push(obj) })
@@ -1843,13 +1847,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     return () => offs.forEach(fn => fn())
   }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync brush live
-  useEffect(() => {
-    const canvas = fc.current
-    if (!canvas || tool !== 'draw' || !canvas.freeDrawingBrush) return
-    canvas.freeDrawingBrush.color = propStroke
-    canvas.freeDrawingBrush.width = propSWidth
-  }, [propStroke, propSWidth, tool])
 
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
@@ -2118,7 +2115,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           padding: '8px 4px', gap: 2, background: 'var(--bg)',
         }}>
           <ToolBtn icon="↖" label="Seleccionar (V)"  active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon={<IconBrush />} label="Pincel libre" active={tool === 'draw'}   onClick={() => setTool('draw')} />
           <ToolBtn icon="✎" label="Lápiz"            active={tool === 'pencil'} onClick={() => setTool('pencil')} />
           <ToolBtn icon="🖊" label="Pluma"            active={tool === 'pen'}   onClick={() => setTool('pen')} />
           <ToolBtn icon="∿" label="Pluma curvatura"  active={tool === 'curve'}  onClick={() => setTool('curve')} />
@@ -2169,7 +2165,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               padding: '6px 14px', borderRadius: 999, backdropFilter: 'blur(8px)',
               pointerEvents: 'none', whiteSpace: 'nowrap', fontFamily: 'var(--mono)',
             }}>
-              {tool === 'pen'   && 'Click · agregar  |  Doble-click / Enter · terminar  |  Esc · cancelar'}
+              {tool === 'pen'   && 'Click · agregar  |  Alt+arrastrar · ángulo libre  |  Click ancla · seleccionar  |  Supr · eliminar  |  Enter · terminar'}
               {tool === 'curve' && 'Click ancla · seleccionar  |  Arrastrar · mover  |  Supr · eliminar ancla'}
               {tool === 'text'  && 'Click en el canvas para colocar texto'}
             </div>
@@ -2577,13 +2573,6 @@ function ToolBtn({ icon, label, active, onClick }: {
   )
 }
 
-const IconBrush = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-    <rect x="7.2" y="0.5" width="2.8" height="8" rx="1.4" transform="rotate(40 8.6 4.5)" />
-    <rect x="5.5" y="8.5" width="5" height="2" rx="0.4" />
-    <ellipse cx="8" cy="13.5" rx="2.5" ry="2" />
-  </svg>
-)
 
 const IconEraser = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
