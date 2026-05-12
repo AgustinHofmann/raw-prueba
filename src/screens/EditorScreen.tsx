@@ -193,6 +193,7 @@ function rebuildFromAnchors(
       strokeLineJoin: (old.strokeLineJoin ?? 'round') as string,
       fill: (old.fill as string | null) ?? null,
       selectable: false, evented: true, clipPath: clip ?? undefined,
+      strokeUniform: true,
     })
   }
   if (hoverCur) (newObj as any).hoverCursor = hoverCur
@@ -823,6 +824,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           strokeLineJoin: 'round',
           fill: null,
           selectable: false, evented: false,
+          strokeUniform: true,
         })
         if (clipPath.current) obj.clipPath = clipPath.current
         canvas.add(obj)
@@ -1121,6 +1123,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
             strokeLineJoin: 'round',
             fill: fillRef.current, selectable: false, evented: true,
+            strokeUniform: true,
           })
           ;(obj as any).hoverCursor = PEN_CURSOR
           if (clipPath.current) obj.clipPath = clipPath.current
@@ -1176,6 +1179,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                   strokeLineJoin: (editObj.strokeLineJoin ?? 'round') as any,
                   fill: (editObj.fill as string | null) ?? null,
                   selectable: false, evented: true, clipPath: oldClip,
+                  strokeUniform: true,
                 })
                 ;(newPath as any).hoverCursor = PEN_CURSOR
                 canvas.remove(editObj); canvas.add(newPath)
@@ -1375,6 +1379,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           strokeLineJoin: (editObj.strokeLineJoin ?? 'round') as any,
           fill: (editObj.fill as string | null) ?? null,
           selectable: false, evented: true, clipPath: oldClip,
+          strokeUniform: true,
         })
         if (smoothAnchors !== null) (newPath as any).__smoothAnchors = Array.from(smoothAnchors)
         ;(newPath as any).hoverCursor = CURVE_CURSOR
@@ -1494,6 +1499,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             strokeLineJoin: (editObj.strokeLineJoin ?? 'round') as any,
             fill: (editObj.fill as string | null) ?? null,
             selectable: false, evented: true, clipPath: oldClip,
+            strokeUniform: true,
           })
           if (smoothAnchors !== null)
             (newObj as any).__smoothAnchors = Array.from(smoothAnchors)
@@ -1594,6 +1600,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 strokeLineJoin: (editObj.strokeLineJoin ?? 'round') as any,
                 fill: (editObj.fill as string | null) ?? null,
                 selectable: false, evented: true, clipPath: oldClip2,
+                strokeUniform: true,
               })
               ;(newPath as any).__smoothAnchors = Array.from(smoothAnchors)
               ;(newPath as any).hoverCursor = CURVE_CURSOR
