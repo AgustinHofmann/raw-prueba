@@ -4,7 +4,14 @@
       "Bash(npm install *)",
       "Bash(Get-Content \"C:\\\\Users\\\\aaron\\\\AppData\\\\Local\\\\npm-cache\\\\_logs\\\\2026-05-26T11_19_53_540Z-debug-0.log\" -Tail 50)",
       "PowerShell(npm config list 2>&1)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Skill(anthropic-skills:docx)",
+      "Skill(anthropic-skills:docx:*)",
+      "Bash(Get-ChildItem -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(pandoc \"C:\\\\Users\\\\aaron\\\\Downloads\\\\Proyecto RAW design.docx\" -o - --to plain)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__Claude_in_Chrome__list_connected_browsers"
     ]
   }
 }

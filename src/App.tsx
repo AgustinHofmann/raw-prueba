@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Project, Folder } from './types/project'
+import { fetchProjects, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
 import OnboardingScreen from './screens/OnboardingScreen'
 import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
@@ -14,35 +15,11 @@ import Spotlight from './components/Spotlight'
 
 type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
 
-const STORAGE_KEY = 'raw-projects'
-const FOLDERS_KEY = 'raw-folders'
-
-function loadProjects(): Project[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as Project[]
-    return raw.map(p => ({ folderId: null, ...p }))
-  }
-  catch { return [] }
-}
-
-function saveProjects(p: Project[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
-}
-
-function loadFolders(): Folder[] {
-  try { return JSON.parse(localStorage.getItem(FOLDERS_KEY) ?? '[]') }
-  catch { return [] }
-}
-
-function saveFolders(f: Folder[]) {
-  localStorage.setItem(FOLDERS_KEY, JSON.stringify(f))
-}
-
 export default function App() {
   const [route, setRoute]           = useState<Route>('onboard')
   const [transition, setTransition] = useState(0)
-  const [projects, setProjects]     = useState<Project[]>(loadProjects)
-  const [folders, setFolders]       = useState<Folder[]>(loadFolders)
+  const [projects, setProjects]     = useState<Project[]>([])
+  const [folders, setFolders]       = useState<Folder[]>([])
   const [activeProject, setActive]  = useState<Project | null>(null)
   const [openTabs, setOpenTabs]     = useState<Project[]>([])
   const [showSheet, setShowSheet]   = useState(false)
@@ -50,8 +27,11 @@ export default function App() {
   const [saved, setSaved]           = useState(false)
   const editorActionsRef = useRef<{ save: () => void; export: () => void } | null>(null)
 
-  useEffect(() => { saveProjects(projects) }, [projects])
-  useEffect(() => { saveFolders(folders) }, [folders])
+  useEffect(() => {
+    Promise.all([fetchProjects(), fetchFolders()])
+      .then(([p, f]) => { setProjects(p); setFolders(f) })
+      .catch(err => console.error('Error cargando datos:', err))
+  }, [])
 
   const go = (r: Route) => setRoute(r)
   const showToast = (msg: string) => setToast(msg)
@@ -74,41 +54,55 @@ export default function App() {
     })
   }
 
-  function handleCreate(p: Project) {
+  async function handleCreate(p: Project) {
+    await upsertProject(p)
     setProjects(prev => [p, ...prev])
     openProject(p)
     setShowSheet(false)
   }
 
-  function handleImport(p: Project) {
+  async function handleImport(p: Project) {
+    await upsertProject(p)
     setProjects(prev => [p, ...prev])
     openProject(p)
   }
 
-  function handleDelete(id: string) {
+  async function handleDelete(id: string) {
+    await deleteProject(id)
     setProjects(prev => prev.filter(p => p.id !== id))
     closeTab(id)
     showToast('Proyecto eliminado')
   }
 
-  function handleCreateFolder(name: string) {
+  async function handleCreateFolder(name: string) {
     const folder: Folder = { id: crypto.randomUUID(), name, createdAt: Date.now() }
+    await upsertFolder(folder)
     setFolders(prev => [folder, ...prev])
   }
 
-  function handleDeleteFolder(id: string) {
+  async function handleDeleteFolder(id: string) {
+    const affected = projects.filter(p => p.folderId === id).map(p => ({ ...p, folderId: null }))
+    await Promise.all([
+      deleteFolder(id),
+      ...affected.map(upsertProject),
+    ])
     setFolders(prev => prev.filter(f => f.id !== id))
     setProjects(prev => prev.map(p => p.folderId === id ? { ...p, folderId: null } : p))
     showToast('Carpeta eliminada')
   }
 
-  function handleMoveProject(projectId: string, folderId: string | null) {
-    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, folderId } : p))
+  async function handleMoveProject(projectId: string, folderId: string | null) {
+    const p = projects.find(p => p.id === projectId)
+    if (!p) return
+    const updated = { ...p, folderId }
+    await upsertProject(updated)
+    setProjects(prev => prev.map(p => p.id === projectId ? updated : p))
   }
 
-  function handleSave(thumbnail: string, canvasJson: string) {
+  async function handleSave(thumbnail: string, canvasJson: string) {
     if (!activeProject) return
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
+    await upsertProject(updated)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
@@ -120,9 +114,10 @@ export default function App() {
     showToast('Guardado ✓')
   }
 
-  function handleRename(name: string) {
+  async function handleRename(name: string) {
     if (!activeProject) return
     const updated = { ...activeProject, name, updatedAt: Date.now() }
+    await upsertProject(updated)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
