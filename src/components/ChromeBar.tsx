@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState } from 'react'
 import Logo from './Logo'
 import { Project } from '../types/project'
 
@@ -10,6 +10,7 @@ interface Props {
   activeProject: Project | null
   saved: boolean
   email: string
+  avatarUrl?: string
   onHome: () => void
   onTabClick: (p: Project) => void
   onTabClose: (id: string) => void
@@ -17,30 +18,19 @@ interface Props {
   onSave: () => void
   onExport: () => void
   onRename: (name: string) => void
-  onSignOut: () => void
+  onProfileOpen: () => void
 }
 
 export default function ChromeBar({
-  route, openTabs, activeProject, saved, email,
+  route, openTabs, activeProject, saved, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onRename, onSignOut,
+  onSave, onExport, onRename, onProfileOpen,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
-  const [menuOpen, setMenuOpen]   = useState(false)
-  const menuRef                   = useRef<HTMLDivElement>(null)
   const isEditor = route === 'editor' && activeProject !== null
 
   const initial = (email?.[0] ?? '?').toUpperCase()
-
-  // Cierra el menú si se hace clic afuera
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
-    }
-    if (menuOpen) document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [menuOpen])
 
   function startEdit() {
     if (!activeProject) return
@@ -58,12 +48,26 @@ export default function ChromeBar({
       height: 40, flexShrink: 0, display: 'flex', alignItems: 'stretch',
       borderBottom: '1px solid var(--line-soft)', background: 'var(--bg)',
     }}>
-      {/* Left section: logo + slogan + home button */}
+
+      {/* Left: logo clickeable + slogan + home button */}
       <div style={{
         width: 200, flexShrink: 0, display: 'flex', alignItems: 'center',
         paddingLeft: 12, gap: 0, overflow: 'hidden',
       }}>
-        <Logo size={22} />
+        <button
+          onClick={onHome}
+          title="Volver al inicio"
+          style={{
+            background: 'none', border: 'none', padding: 0,
+            cursor: 'pointer', display: 'flex', alignItems: 'center',
+            color: 'var(--fg)', transition: 'opacity 0.15s var(--ease)',
+          }}
+          onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
+          onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+        >
+          <Logo size={22} />
+        </button>
+
         <span style={{
           flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
           fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
@@ -74,7 +78,7 @@ export default function ChromeBar({
           diseño de<br />indumentaria
         </span>
 
-        {/* Home button — rectangular, fills height */}
+        {/* Home button */}
         <button
           onClick={onHome}
           style={{
@@ -95,10 +99,9 @@ export default function ChromeBar({
         </button>
       </div>
 
-      {/* Separator — invisible but structural (matches the sidebar border) */}
       <div style={{ width: 1, background: 'var(--line-soft)', flexShrink: 0 }} />
 
-      {/* Tabs section */}
+      {/* Tabs */}
       <div className="scroll-hide" style={{ flex: 1, display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
         {openTabs.map(t => {
           const active = activeProject?.id === t.id && isEditor
@@ -110,8 +113,7 @@ export default function ChromeBar({
                 height: '100%', padding: '0 8px 0 14px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
                 borderLeft: '1px solid var(--line-soft)',
-                borderRight: 'none',
-                borderTop: 'none',
+                borderRight: 'none', borderTop: 'none',
                 borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
                 borderRadius: 0,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
@@ -147,10 +149,9 @@ export default function ChromeBar({
         >+</button>
       </div>
 
-      {/* Right: editor controls + avatar siempre visible */}
+      {/* Right: controles editor + avatar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 10, flexShrink: 0 }}>
 
-        {/* Controles del editor (solo en modo editor) */}
         {isEditor && (
           <>
             {editing ? (
@@ -170,7 +171,7 @@ export default function ChromeBar({
             ) : (
               <button
                 onClick={startEdit}
-                title="Editar nombre (click)"
+                title="Editar nombre"
                 style={{
                   background: 'none', border: 'none', cursor: 'text',
                   fontFamily: 'var(--display)', fontStyle: 'italic', fontSize: 15,
@@ -192,73 +193,30 @@ export default function ChromeBar({
           </>
         )}
 
-        {/* Avatar con menú desplegable */}
-        <div ref={menuRef} style={{ position: 'relative' }}>
-          <button
-            onClick={() => setMenuOpen(o => !o)}
-            title={email}
-            style={{
-              width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-              background: menuOpen
-                ? 'color-mix(in oklch, var(--accent) 30%, var(--surface))'
-                : 'color-mix(in oklch, var(--accent) 18%, var(--surface))',
-              border: '1.5px solid ' + (menuOpen ? 'var(--accent)' : 'color-mix(in oklch, var(--accent) 50%, var(--line))'),
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 11, fontWeight: 600, color: 'var(--accent)',
-              fontFamily: 'var(--ui)', cursor: 'pointer',
-              transition: 'all 0.15s var(--ease)',
-            }}
-          >
-            {initial}
-          </button>
-
-          {/* Dropdown */}
-          {menuOpen && (
-            <div style={{
-              position: 'absolute', top: 'calc(100% + 8px)', right: 0,
-              minWidth: 200, zIndex: 1000,
-              background: 'var(--surface)',
-              border: '1px solid var(--line)',
-              borderRadius: 'var(--radius)',
-              boxShadow: 'var(--shadow)',
-              overflow: 'hidden',
-              animation: 'rise 0.18s var(--ease) both',
-            }}>
-              {/* Email del usuario */}
-              <div style={{
-                padding: '12px 14px 10px',
-                borderBottom: '1px solid var(--line-soft)',
-              }}>
-                <div className="label" style={{ marginBottom: 3 }}>Cuenta</div>
-                <div style={{ fontSize: 12, color: 'var(--fg-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {email}
-                </div>
-              </div>
-
-              {/* Cerrar sesión */}
-              <button
-                onClick={() => { setMenuOpen(false); onSignOut() }}
-                style={{
-                  width: '100%', padding: '10px 14px',
-                  background: 'none', border: 'none',
-                  color: 'var(--danger)', fontSize: 13,
-                  fontFamily: 'var(--ui)', cursor: 'pointer',
-                  textAlign: 'left', display: 'flex', alignItems: 'center', gap: 8,
-                  transition: 'background 0.15s var(--ease)',
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = 'color-mix(in oklch, var(--danger) 10%, transparent)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'none'}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                  <polyline points="16 17 21 12 16 7"/>
-                  <line x1="21" y1="12" x2="9" y2="12"/>
-                </svg>
-                Cerrar sesión
-              </button>
-            </div>
+        {/* Avatar — abre el panel de perfil */}
+        <button
+          onClick={onProfileOpen}
+          title={email}
+          style={{
+            width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+            background: 'color-mix(in oklch, var(--accent) 18%, var(--surface))',
+            border: '1.5px solid color-mix(in oklch, var(--accent) 50%, var(--line))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', overflow: 'hidden',
+            transition: 'all 0.15s var(--ease)',
+            padding: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.transform = 'scale(1.05)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'color-mix(in oklch, var(--accent) 50%, var(--line))'; e.currentTarget.style.transform = 'scale(1)' }}
+        >
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--ui)' }}>
+              {initial}
+            </span>
           )}
-        </div>
+        </button>
 
       </div>
     </div>

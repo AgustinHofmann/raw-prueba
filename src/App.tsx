@@ -4,6 +4,7 @@ import { supabase } from './lib/supabase'
 import { Project, Folder } from './types/project'
 import { fetchProjects, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
 import AuthScreen from './screens/AuthScreen'
+import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
 import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
@@ -27,7 +28,8 @@ export default function App() {
   const [folders, setFolders]       = useState<Folder[]>([])
   const [activeProject, setActive]  = useState<Project | null>(null)
   const [openTabs, setOpenTabs]     = useState<Project[]>([])
-  const [showSheet, setShowSheet]   = useState(false)
+  const [showSheet, setShowSheet]     = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
   const editorActionsRef = useRef<{ save: () => void; export: () => void } | null>(null)
@@ -165,6 +167,7 @@ export default function App() {
           activeProject={activeProject}
           saved={saved}
           email={user.email ?? ''}
+          avatarUrl={user.user_metadata?.avatar_url}
           onHome={() => go('home')}
           onTabClick={openProject}
           onTabClose={closeTab}
@@ -172,7 +175,7 @@ export default function App() {
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
           onRename={handleRename}
-          onSignOut={() => supabase.auth.signOut()}
+          onProfileOpen={() => setShowProfile(true)}
         />
       )}
 
@@ -209,6 +212,10 @@ export default function App() {
 
       {showSheet && (
         <NewProjectSheet folders={folders} onConfirm={handleCreate} onCancel={() => setShowSheet(false)} />
+      )}
+
+      {showProfile && (
+        <ProfilePanel user={user} projects={projects} onClose={() => setShowProfile(false)} />
       )}
     </div>
   )
