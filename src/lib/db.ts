@@ -12,8 +12,11 @@ export async function fetchProjects(): Promise<Project[]> {
   return (data ?? []).map(rowToProject)
 }
 
-export async function upsertProject(p: Project): Promise<void> {
-  const { error } = await supabase.from('projects').upsert(projectToRow(p))
+export async function upsertProject(p: Project, userId?: string): Promise<void> {
+  const { error } = await supabase.from('projects').upsert({
+    ...projectToRow(p),
+    ...(userId ? { user_id: userId } : {}),
+  })
   if (error) throw error
 }
 
@@ -33,8 +36,11 @@ export async function fetchFolders(): Promise<Folder[]> {
   return (data ?? []).map(rowToFolder)
 }
 
-export async function upsertFolder(f: Folder): Promise<void> {
-  const { error } = await supabase.from('folders').upsert(folderToRow(f))
+export async function upsertFolder(f: Folder, userId?: string): Promise<void> {
+  const { error } = await supabase.from('folders').upsert({
+    ...folderToRow(f),
+    ...(userId ? { user_id: userId } : {}),
+  })
   if (error) throw error
 }
 
@@ -47,16 +53,16 @@ export async function deleteFolder(id: string): Promise<void> {
 
 function rowToProject(row: Record<string, unknown>): Project {
   return {
-    id:         row.id         as string,
-    name:       row.name       as string,
-    mockupId:   row.mockup_id  as Project['mockupId'],
-    thumbnail:  row.thumbnail  as string | null,
+    id:         row.id          as string,
+    name:       row.name        as string,
+    mockupId:   row.mockup_id   as Project['mockupId'],
+    thumbnail:  row.thumbnail   as string | null,
     canvasJson: row.canvas_json as string | null,
-    colors:     (row.colors    as string[]) ?? [],
-    tag:        (row.tag       as string)   ?? '',
-    folderId:   row.folder_id  as string | null,
-    createdAt:  row.created_at as number,
-    updatedAt:  row.updated_at as number,
+    colors:     (row.colors     as string[]) ?? [],
+    tag:        (row.tag        as string)   ?? '',
+    folderId:   row.folder_id   as string | null,
+    createdAt:  row.created_at  as number,
+    updatedAt:  row.updated_at  as number,
   }
 }
 
@@ -77,8 +83,8 @@ function projectToRow(p: Project) {
 
 function rowToFolder(row: Record<string, unknown>): Folder {
   return {
-    id:        row.id        as string,
-    name:      row.name      as string,
+    id:        row.id         as string,
+    name:      row.name       as string,
     createdAt: row.created_at as number,
   }
 }

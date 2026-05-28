@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
+import type { User } from '@supabase/supabase-js'
+import { supabase } from './lib/supabase'
 import { Project, Folder } from './types/project'
 import { fetchProjects, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+import AuthScreen from './screens/AuthScreen'
 import OnboardingScreen from './screens/OnboardingScreen'
 import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
@@ -16,6 +19,8 @@ import Spotlight from './components/Spotlight'
 type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
 
 export default function App() {
+  const [user, setUser]             = useState<User | null>(null)
+  const [authReady, setAuthReady]   = useState(false)
   const [route, setRoute]           = useState<Route>('onboard')
   const [transition, setTransition] = useState(0)
   const [projects, setProjects]     = useState<Project[]>([])
@@ -27,11 +32,25 @@ export default function App() {
   const [saved, setSaved]           = useState(false)
   const editorActionsRef = useRef<{ save: () => void; export: () => void } | null>(null)
 
+  // Verifica sesión activa y escucha cambios de auth
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      setAuthReady(true)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // Carga proyectos y carpetas cuando hay usuario
+  useEffect(() => {
+    if (!user) { setProjects([]); setFolders([]); return }
     Promise.all([fetchProjects(), fetchFolders()])
       .then(([p, f]) => { setProjects(p); setFolders(f) })
       .catch(err => console.error('Error cargando datos:', err))
-  }, [])
+  }, [user])
 
   const go = (r: Route) => setRoute(r)
   const showToast = (msg: string) => setToast(msg)
@@ -55,14 +74,14 @@ export default function App() {
   }
 
   async function handleCreate(p: Project) {
-    await upsertProject(p)
+    await upsertProject(p, user!.id)
     setProjects(prev => [p, ...prev])
     openProject(p)
     setShowSheet(false)
   }
 
   async function handleImport(p: Project) {
-    await upsertProject(p)
+    await upsertProject(p, user!.id)
     setProjects(prev => [p, ...prev])
     openProject(p)
   }
@@ -76,7 +95,7 @@ export default function App() {
 
   async function handleCreateFolder(name: string) {
     const folder: Folder = { id: crypto.randomUUID(), name, createdAt: Date.now() }
-    await upsertFolder(folder)
+    await upsertFolder(folder, user!.id)
     setFolders(prev => [folder, ...prev])
   }
 
@@ -84,7 +103,7 @@ export default function App() {
     const affected = projects.filter(p => p.folderId === id).map(p => ({ ...p, folderId: null }))
     await Promise.all([
       deleteFolder(id),
-      ...affected.map(upsertProject),
+      ...affected.map(p => upsertProject(p, user!.id)),
     ])
     setFolders(prev => prev.filter(f => f.id !== id))
     setProjects(prev => prev.map(p => p.folderId === id ? { ...p, folderId: null } : p))
@@ -95,14 +114,14 @@ export default function App() {
     const p = projects.find(p => p.id === projectId)
     if (!p) return
     const updated = { ...p, folderId }
-    await upsertProject(updated)
+    await upsertProject(updated, user!.id)
     setProjects(prev => prev.map(p => p.id === projectId ? updated : p))
   }
 
   async function handleSave(thumbnail: string, canvasJson: string) {
     if (!activeProject) return
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
-    await upsertProject(updated)
+    await upsertProject(updated, user!.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
@@ -117,13 +136,19 @@ export default function App() {
   async function handleRename(name: string) {
     if (!activeProject) return
     const updated = { ...activeProject, name, updatedAt: Date.now() }
-    await upsertProject(updated)
+    await upsertProject(updated, user!.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
   }
 
   const exportProject = activeProject ?? projects[0] ?? null
+
+  // Espera confirmación de sesión para evitar flash
+  if (!authReady) return null
+
+  // Sin sesión → pantalla de login
+  if (!user) return <AuthScreen />
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -139,6 +164,7 @@ export default function App() {
           openTabs={openTabs}
           activeProject={activeProject}
           saved={saved}
+          email={user.email ?? ''}
           onHome={() => go('home')}
           onTabClick={openProject}
           onTabClose={closeTab}
@@ -146,6 +172,7 @@ export default function App() {
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
           onRename={handleRename}
+          onSignOut={() => supabase.auth.signOut()}
         />
       )}
 
