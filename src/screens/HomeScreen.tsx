@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Project, Folder } from '../types/project'
 
 interface Props {
   projects: Project[]
   folders: Folder[]
+  loading?: boolean
   onNewProject: () => void
   onOpenProject: (project: Project) => void
   onDeleteProject: (id: string) => void
@@ -20,7 +21,7 @@ const MOCKUP_LABELS: Record<string, string> = {
 }
 
 export default function HomeScreen({
-  projects, folders,
+  projects, folders, loading,
   onNewProject, onOpenProject, onDeleteProject, onImportProject,
   onCreateFolder, onDeleteFolder, onMoveProject,
 }: Props) {
@@ -32,8 +33,17 @@ export default function HomeScreen({
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete]         = useState<Project | null>(null)
   const [pendingDeleteFolder, setPendingDeleteFolder] = useState<Folder | null>(null)
-  const importRef    = useRef<HTMLInputElement>(null)
+  const importRef      = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+
+  // Ctrl+N → nuevo proyecto
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); onNewProject() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onNewProject])
 
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -177,7 +187,33 @@ export default function HomeScreen({
           />
         </div>
 
-        {visibleFolders.length === 0 && visibleProjects.length === 0 ? (
+        {loading ? (
+          // Skeleton mientras carga desde Supabase
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))',
+            gap: 14,
+          }}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} style={{
+                borderRadius: 12, overflow: 'hidden',
+                border: '1px solid var(--line)',
+                animation: `rise 0.4s var(--ease) ${i * 0.04}s both`,
+              }}>
+                <div style={{
+                  height: 120,
+                  background: `linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%)`,
+                  backgroundSize: '200% 100%',
+                  animation: 'shimmer 1.4s infinite',
+                }} />
+                <div style={{ padding: '10px 12px', background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ height: 10, borderRadius: 4, background: 'var(--surface-2)', width: '70%' }} />
+                  <div style={{ height: 8,  borderRadius: 4, background: 'var(--surface-2)', width: '45%' }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : visibleFolders.length === 0 && visibleProjects.length === 0 ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
             justifyContent: 'center', height: 240, gap: 16, color: 'var(--muted)',

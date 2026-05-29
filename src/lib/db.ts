@@ -3,13 +3,25 @@ import type { Project, Folder } from '../types/project'
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
+// Lista ligera — sin canvas_json para no descargar datos pesados innecesariamente
 export async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
     .from('projects')
-    .select('*')
+    .select('id,name,mockup_id,thumbnail,colors,tag,folder_id,user_id,created_at,updated_at')
     .order('updated_at', { ascending: false })
   if (error) throw error
-  return (data ?? []).map(rowToProject)
+  return (data ?? []).map(row => ({ ...rowToProject(row), canvasJson: null }))
+}
+
+// Carga el canvas_json solo cuando el usuario abre el proyecto
+export async function fetchProjectCanvas(id: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('canvas_json')
+    .eq('id', id)
+    .single()
+  if (error) throw error
+  return (data as Record<string, unknown>)?.canvas_json as string | null
 }
 
 export async function upsertProject(p: Project, userId?: string): Promise<void> {

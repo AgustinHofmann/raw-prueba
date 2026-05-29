@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import { Project, Folder } from './types/project'
-import { fetchProjects, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+import { fetchProjects, fetchProjectCanvas, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
 import AuthScreen from './screens/AuthScreen'
 import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
@@ -28,6 +28,7 @@ export default function App() {
   const [folders, setFolders]       = useState<Folder[]>([])
   const [activeProject, setActive]  = useState<Project | null>(null)
   const [openTabs, setOpenTabs]     = useState<Project[]>([])
+  const [loading, setLoading]         = useState(false)
   const [showSheet, setShowSheet]     = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
@@ -49,17 +50,35 @@ export default function App() {
   // Carga proyectos y carpetas cuando hay usuario
   useEffect(() => {
     if (!user) { setProjects([]); setFolders([]); return }
+    setLoading(true)
     Promise.all([fetchProjects(), fetchFolders()])
       .then(([p, f]) => { setProjects(p); setFolders(f) })
-      .catch(err => console.error('Error cargando datos:', err))
+      .catch(() => showToast('Error al cargar los proyectos'))
+      .finally(() => setLoading(false))
   }, [user])
 
   const go = (r: Route) => setRoute(r)
   const showToast = (msg: string) => setToast(msg)
 
-  function openProject(p: Project) {
-    setActive(p)
-    setOpenTabs(prev => prev.find(t => t.id === p.id) ? prev : [...prev, p])
+  async function openProject(p: Project) {
+    // Si ya está abierto en un tab, usá la versión en memoria (tiene canvas)
+    const existing = openTabs.find(t => t.id === p.id)
+    if (existing) { setActive(existing); go('editor'); return }
+
+    // Carga lazy del canvas_json solo al abrir
+    let project = p
+    if (!project.canvasJson) {
+      try {
+        const canvasJson = await fetchProjectCanvas(p.id)
+        project = { ...p, canvasJson }
+        setProjects(prev => prev.map(x => x.id === p.id ? project : x))
+      } catch {
+        showToast('Error al cargar el proyecto')
+        return
+      }
+    }
+    setActive(project)
+    setOpenTabs(prev => [...prev, project])
     go('editor')
   }
 
@@ -76,23 +95,29 @@ export default function App() {
   }
 
   async function handleCreate(p: Project) {
-    await upsertProject(p, user!.id)
-    setProjects(prev => [p, ...prev])
-    openProject(p)
-    setShowSheet(false)
+    try {
+      await upsertProject(p, user!.id)
+      setProjects(prev => [p, ...prev])
+      openProject(p)
+      setShowSheet(false)
+    } catch { showToast('Error al crear el proyecto') }
   }
 
   async function handleImport(p: Project) {
-    await upsertProject(p, user!.id)
-    setProjects(prev => [p, ...prev])
-    openProject(p)
+    try {
+      await upsertProject(p, user!.id)
+      setProjects(prev => [p, ...prev])
+      openProject(p)
+    } catch { showToast('Error al importar el proyecto') }
   }
 
   async function handleDelete(id: string) {
-    await deleteProject(id)
-    setProjects(prev => prev.filter(p => p.id !== id))
-    closeTab(id)
-    showToast('Proyecto eliminado')
+    try {
+      await deleteProject(id)
+      setProjects(prev => prev.filter(p => p.id !== id))
+      closeTab(id)
+      showToast('Proyecto eliminado')
+    } catch { showToast('Error al eliminar el proyecto') }
   }
 
   async function handleCreateFolder(name: string) {
@@ -123,10 +148,12 @@ export default function App() {
   async function handleSave(thumbnail: string, canvasJson: string) {
     if (!activeProject) return
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
-    await upsertProject(updated, user!.id)
-    setActive(updated)
-    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
-    setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+    try {
+      await upsertProject(updated, user!.id)
+      setActive(updated)
+      setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
+      setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+    } catch { showToast('Error al guardar — revisá tu conexión') }
   }
 
   function handleSaveComplete() {
@@ -185,6 +212,7 @@ export default function App() {
           <HomeScreen
             projects={projects}
             folders={folders}
+            loading={loading}
             onNewProject={() => setShowSheet(true)}
             onOpenProject={openProject}
             onDeleteProject={handleDelete}
