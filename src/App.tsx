@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+import type { User } from '@supabase/supabase-js'
+import { supabase } from './lib/supabase'
 import { Project, Folder } from './types/project'
+import { fetchProjects, fetchProjectCanvas, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+import AuthScreen from './screens/AuthScreen'
+import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
 import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
@@ -14,51 +19,66 @@ import Spotlight from './components/Spotlight'
 
 type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
 
-const STORAGE_KEY = 'raw-projects'
-const FOLDERS_KEY = 'raw-folders'
-
-function loadProjects(): Project[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as Project[]
-    return raw.map(p => ({ folderId: null, ...p }))
-  }
-  catch { return [] }
-}
-
-function saveProjects(p: Project[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
-}
-
-function loadFolders(): Folder[] {
-  try { return JSON.parse(localStorage.getItem(FOLDERS_KEY) ?? '[]') }
-  catch { return [] }
-}
-
-function saveFolders(f: Folder[]) {
-  localStorage.setItem(FOLDERS_KEY, JSON.stringify(f))
-}
-
 export default function App() {
+  const [user, setUser]             = useState<User | null>(null)
+  const [authReady, setAuthReady]   = useState(false)
   const [route, setRoute]           = useState<Route>('onboard')
   const [transition, setTransition] = useState(0)
-  const [projects, setProjects]     = useState<Project[]>(loadProjects)
-  const [folders, setFolders]       = useState<Folder[]>(loadFolders)
+  const [projects, setProjects]     = useState<Project[]>([])
+  const [folders, setFolders]       = useState<Folder[]>([])
   const [activeProject, setActive]  = useState<Project | null>(null)
   const [openTabs, setOpenTabs]     = useState<Project[]>([])
-  const [showSheet, setShowSheet]   = useState(false)
+  const [loading, setLoading]         = useState(false)
+  const [showSheet, setShowSheet]     = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
   const editorActionsRef = useRef<{ save: () => void; export: () => void } | null>(null)
 
-  useEffect(() => { saveProjects(projects) }, [projects])
-  useEffect(() => { saveFolders(folders) }, [folders])
+  // Verifica sesión activa y escucha cambios de auth
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      setAuthReady(true)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // Carga proyectos y carpetas cuando hay usuario
+  useEffect(() => {
+    if (!user) { setProjects([]); setFolders([]); return }
+    setLoading(true)
+    Promise.all([fetchProjects(), fetchFolders()])
+      .then(([p, f]) => { setProjects(p); setFolders(f) })
+      .catch(() => showToast('Error al cargar los proyectos'))
+      .finally(() => setLoading(false))
+  }, [user])
 
   const go = (r: Route) => setRoute(r)
   const showToast = (msg: string) => setToast(msg)
 
-  function openProject(p: Project) {
-    setActive(p)
-    setOpenTabs(prev => prev.find(t => t.id === p.id) ? prev : [...prev, p])
+  async function openProject(p: Project) {
+    // Si ya está abierto en un tab, usá la versión en memoria (tiene canvas)
+    const existing = openTabs.find(t => t.id === p.id)
+    if (existing) { setActive(existing); go('editor'); return }
+
+    // Carga lazy del canvas_json solo al abrir
+    let project = p
+    if (!project.canvasJson) {
+      try {
+        const canvasJson = await fetchProjectCanvas(p.id)
+        project = { ...p, canvasJson }
+        setProjects(prev => prev.map(x => x.id === p.id ? project : x))
+      } catch {
+        showToast('Error al cargar el proyecto')
+        return
+      }
+    }
+    setActive(project)
+    setOpenTabs(prev => [...prev, project])
     go('editor')
   }
 
@@ -74,44 +94,66 @@ export default function App() {
     })
   }
 
-  function handleCreate(p: Project) {
-    setProjects(prev => [p, ...prev])
-    openProject(p)
-    setShowSheet(false)
+  async function handleCreate(p: Project) {
+    try {
+      await upsertProject(p, user!.id)
+      setProjects(prev => [p, ...prev])
+      openProject(p)
+      setShowSheet(false)
+    } catch { showToast('Error al crear el proyecto') }
   }
 
-  function handleImport(p: Project) {
-    setProjects(prev => [p, ...prev])
-    openProject(p)
+  async function handleImport(p: Project) {
+    try {
+      await upsertProject(p, user!.id)
+      setProjects(prev => [p, ...prev])
+      openProject(p)
+    } catch { showToast('Error al importar el proyecto') }
   }
 
-  function handleDelete(id: string) {
-    setProjects(prev => prev.filter(p => p.id !== id))
-    closeTab(id)
-    showToast('Proyecto eliminado')
+  async function handleDelete(id: string) {
+    try {
+      await deleteProject(id)
+      setProjects(prev => prev.filter(p => p.id !== id))
+      closeTab(id)
+      showToast('Proyecto eliminado')
+    } catch { showToast('Error al eliminar el proyecto') }
   }
 
-  function handleCreateFolder(name: string) {
+  async function handleCreateFolder(name: string) {
     const folder: Folder = { id: crypto.randomUUID(), name, createdAt: Date.now() }
+    await upsertFolder(folder, user!.id)
     setFolders(prev => [folder, ...prev])
   }
 
-  function handleDeleteFolder(id: string) {
+  async function handleDeleteFolder(id: string) {
+    const affected = projects.filter(p => p.folderId === id).map(p => ({ ...p, folderId: null }))
+    await Promise.all([
+      deleteFolder(id),
+      ...affected.map(p => upsertProject(p, user!.id)),
+    ])
     setFolders(prev => prev.filter(f => f.id !== id))
     setProjects(prev => prev.map(p => p.folderId === id ? { ...p, folderId: null } : p))
     showToast('Carpeta eliminada')
   }
 
-  function handleMoveProject(projectId: string, folderId: string | null) {
-    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, folderId } : p))
+  async function handleMoveProject(projectId: string, folderId: string | null) {
+    const p = projects.find(p => p.id === projectId)
+    if (!p) return
+    const updated = { ...p, folderId }
+    await upsertProject(updated, user!.id)
+    setProjects(prev => prev.map(p => p.id === projectId ? updated : p))
   }
 
-  function handleSave(thumbnail: string, canvasJson: string) {
+  async function handleSave(thumbnail: string, canvasJson: string) {
     if (!activeProject) return
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
-    setActive(updated)
-    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
-    setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+    try {
+      await upsertProject(updated, user!.id)
+      setActive(updated)
+      setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
+      setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+    } catch { showToast('Error al guardar — revisá tu conexión') }
   }
 
   function handleSaveComplete() {
@@ -120,15 +162,22 @@ export default function App() {
     showToast('Guardado ✓')
   }
 
-  function handleRename(name: string) {
+  async function handleRename(name: string) {
     if (!activeProject) return
     const updated = { ...activeProject, name, updatedAt: Date.now() }
+    await upsertProject(updated, user!.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
   }
 
   const exportProject = activeProject ?? projects[0] ?? null
+
+  // Espera confirmación de sesión para evitar flash
+  if (!authReady) return null
+
+  // Sin sesión → pantalla de login
+  if (!user) return <AuthScreen />
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -144,6 +193,8 @@ export default function App() {
           openTabs={openTabs}
           activeProject={activeProject}
           saved={saved}
+          email={user.email ?? ''}
+          avatarUrl={user.user_metadata?.avatar_url}
           onHome={() => go('home')}
           onTabClick={openProject}
           onTabClose={closeTab}
@@ -151,6 +202,7 @@ export default function App() {
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
           onRename={handleRename}
+          onProfileOpen={() => setShowProfile(true)}
         />
       )}
 
@@ -160,6 +212,7 @@ export default function App() {
           <HomeScreen
             projects={projects}
             folders={folders}
+            loading={loading}
             onNewProject={() => setShowSheet(true)}
             onOpenProject={openProject}
             onDeleteProject={handleDelete}
@@ -187,6 +240,10 @@ export default function App() {
 
       {showSheet && (
         <NewProjectSheet folders={folders} onConfirm={handleCreate} onCancel={() => setShowSheet(false)} />
+      )}
+
+      {showProfile && (
+        <ProfilePanel user={user} projects={projects} onClose={() => setShowProfile(false)} />
       )}
     </div>
   )
