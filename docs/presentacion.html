@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAW Design — Presentación Bimestre</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e8;
+      line-height: 1.7;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 60px 24px;
+      background: radial-gradient(ellipse 80% 60% at 50% 0%, #1a1060 0%, #0a0a0f 70%);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 30% 70%, rgba(80,40,180,0.15) 0%, transparent 50%),
+                  radial-gradient(circle at 70% 30%, rgba(30,100,220,0.12) 0%, transparent 50%);
+    }
+    .hero-label {
+      font-size: 12px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: #7b5fff;
+      margin-bottom: 24px;
+      position: relative;
+    }
+    .hero h1 {
+      font-size: clamp(52px, 10vw, 96px);
+      font-weight: 800;
+      letter-spacing: -3px;
+      line-height: 1;
+      position: relative;
+      background: linear-gradient(135deg, #fff 30%, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      margin-top: 20px;
+      font-size: 18px;
+      color: #888;
+      max-width: 500px;
+      position: relative;
+    }
+    .hero-meta {
+      margin-top: 48px;
+      display: flex;
+      gap: 40px;
+      position: relative;
+    }
+    .hero-meta-item { text-align: center; }
+    .hero-meta-item .num {
+      font-size: 36px;
+      font-weight: 700;
+      color: #a78bfa;
+    }
+    .hero-meta-item .lbl {
+      font-size: 12px;
+      color: #666;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* ── Layout ── */
+    section {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 80px 24px;
+    }
+    .section-tag {
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #7b5fff;
+      margin-bottom: 12px;
+    }
+    h2 {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      color: #fff;
+      margin-bottom: 40px;
+    }
+    .divider {
+      border: none;
+      border-top: 1px solid #1e1e2e;
+      margin: 0;
+    }
+
+    /* ── Team ── */
+    .team-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+    .team-card {
+      background: #111118;
+      border: 1px solid #1e1e2e;
+      border-radius: 16px;
+      padding: 28px;
+      transition: border-color .2s;
+    }
+    .team-card:hover { border-color: #7b5fff; }
+    .team-card .avatar {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .av-r { background: #1e1030; color: #a78bfa; }
+    .av-a { background: #0d1e30; color: #60a5fa; }
+    .av-aa { background: #0d2010; color: #4ade80; }
+    .team-card h3 { font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 6px; }
+    .team-card .role { font-size: 12px; color: #7b5fff; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; }
+    .team-card ul { list-style: none; }
+    .team-card ul li {
+      font-size: 14px; color: #888;
+      padding: 5px 0;
+      border-bottom: 1px solid #1a1a2a;
+      display: flex; gap: 8px; align-items: flex-start;
+    }
+    .team-card ul li:last-child { border-bottom: none; }
+    .team-card ul li::before { content: '→'; color: #7b5fff; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Sprints ── */
+    .sprint-list { display: flex; flex-direction: column; gap: 24px; }
+    .sprint {
+      background: #111118;
+      border: 1px solid #1e1e2e;
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .sprint-header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 24px 28px;
+      background: #0d0d16;
+      border-bottom: 1px solid #1e1e2e;
+    }
+    .sprint-num {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      background: #1a1040;
+      border: 1px solid #3b2fa0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 700; color: #a78bfa;
+      flex-shrink: 0;
+    }
+    .sprint-header h3 { font-size: 18px; font-weight: 600; color: #fff; }
+    .sprint-header p { font-size: 13px; color: #555; margin-top: 2px; }
+    .sprint-body {
+      padding: 24px 28px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+    }
+    .sprint-person h4 {
+      font-size: 12px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 10px;
+    }
+    .sprint-person ul { list-style: none; }
+    .sprint-person ul li {
+      font-size: 13px;
+      color: #aaa;
+      padding: 4px 0;
+      display: flex; gap: 8px; align-items: flex-start;
+    }
+    .sprint-person ul li .dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      margin-top: 7px;
+      flex-shrink: 0;
+    }
+    .dot-r { background: #a78bfa; }
+    .dot-a { background: #60a5fa; }
+    .dot-aa { background: #4ade80; }
+
+    /* ── Features ── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+    }
+    .feature-card {
+      background: #111118;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .feature-card .icon {
+      font-size: 24px;
+      margin-bottom: 10px;
+    }
+    .feature-card h4 { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+    .feature-card p { font-size: 12px; color: #666; }
+
+    /* ── Tools ── */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .tool-card {
+      background: #111118;
+      border: 1px solid #1e1e2e;
+      border-radius: 16px;
+      padding: 28px;
+    }
+    .tool-card .tool-header {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 16px;
+    }
+    .tool-badge {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .badge-react    { background: #0d2030; color: #60a5fa; border: 1px solid #1e4060; }
+    .badge-ts       { background: #0d1a30; color: #3b82f6; border: 1px solid #1e3060; }
+    .badge-vite     { background: #1a0d20; color: #c084fc; border: 1px solid #3b1e50; }
+    .badge-fabric   { background: #200d0d; color: #f87171; border: 1px solid #501e1e; }
+    .badge-svg      { background: #1a1a0d; color: #facc15; border: 1px solid #503d1e; }
+    .badge-local    { background: #0d200d; color: #4ade80; border: 1px solid #1e501e; }
+    .tool-card h3 { font-size: 18px; font-weight: 600; color: #fff; }
+    .tool-card .why {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 14px;
+    }
+    .tool-card .why strong { color: #a78bfa; }
+    .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill {
+      background: #1a1a2a;
+      border: 1px solid #2a2a3a;
+      border-radius: 100px;
+      padding: 3px 10px;
+      font-size: 11px;
+      color: #888;
+    }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 48px 24px;
+      border-top: 1px solid #1e1e2e;
+      color: #333;
+      font-size: 13px;
+    }
+    footer span { color: #555; }
+  </style>
+</head>
+<body>
+
+<!-- ── HERO ── -->
+<div class="hero">
+  <p class="hero-label">Presentación Bimestre</p>
+  <h1>RAW Design</h1>
+  <p class="hero-sub">Editor de diseño vectorial y bocetado digital construido desde cero</p>
+  <div class="hero-meta">
+    <div class="hero-meta-item">
+      <div class="num">7</div>
+      <div class="lbl">Herramientas</div>
+    </div>
+    <div class="hero-meta-item">
+      <div class="num">4</div>
+      <div class="lbl">Sprints</div>
+    </div>
+    <div class="hero-meta-item">
+      <div class="num">3</div>
+      <div class="lbl">Integrantes</div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider" />
+
+<!-- ── EQUIPO ── -->
+<section>
+  <p class="section-tag">El equipo</p>
+  <h2>Quién hizo qué</h2>
+  <div class="team-grid">
+
+    <div class="team-card">
+      <div class="avatar av-r">R</div>
+      <h3>Ramiro</h3>
+      <div class="role">Diseño Visual</div>
+      <ul>
+        <li>Logo e identidad visual de la app</li>
+        <li>Diseño de pantallas y wireframes</li>
+        <li>Bocetado del primer mockup del editor</li>
+        <li>Revisión visual y ajustes de UI</li>
+      </ul>
+    </div>
+
+    <div class="team-card">
+      <div class="avatar av-a">A</div>
+      <h3>Agustín</h3>
+      <div class="role">Desarrollo Frontend</div>
+      <ul>
+        <li>Setup y arquitectura del proyecto</li>
+        <li>Todas las herramientas del editor</li>
+        <li>Sistema de historial (undo/redo)</li>
+        <li>Pantallas, navegación y componentes UI</li>
+        <li>Animaciones e interacciones</li>
+        <li>Sistema de fuentes y exportación</li>
+      </ul>
+    </div>
+
+    <div class="team-card">
+      <div class="avatar av-aa">Aa</div>
+      <h3>Aaron</h3>
+      <div class="role">Base de Datos</div>
+      <ul>
+        <li>Esquema y diseño de la base de datos</li>
+        <li>Estructura de datos de proyectos</li>
+        <li>Persistencia y gestión de carpetas</li>
+        <li>Importación de proyectos</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ── SPRINTS ── -->
+<section>
+  <p class="section-tag">Proceso de trabajo</p>
+  <h2>Los 4 sprints</h2>
+  <div class="sprint-list">
+
+    <div class="sprint">
+      <div class="sprint-header">
+        <div class="sprint-num">1</div>
+        <div>
+          <h3>Fundación y Diseño Visual</h3>
+          <p>Definir qué construir, cómo se va a ver, y tener un esqueleto funcional</p>
+        </div>
+      </div>
+      <div class="sprint-body">
+        <div class="sprint-person">
+          <h4>Ramiro</h4>
+          <ul>
+            <li><span class="dot dot-r"></span> Logo e identidad de marca</li>
+            <li><span class="dot dot-r"></span> Wireframes de pantallas</li>
+            <li><span class="dot dot-r"></span> Primer mockup del editor</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Aaron</h4>
+          <ul>
+            <li><span class="dot dot-aa"></span> Diseño del esquema de datos</li>
+            <li><span class="dot dot-aa"></span> Estructura de proyectos y carpetas</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Agustín</h4>
+          <ul>
+            <li><span class="dot dot-a"></span> Setup con Vite + React + TypeScript</li>
+            <li><span class="dot dot-a"></span> Navegación entre pantallas</li>
+            <li><span class="dot dot-a"></span> Onboarding y Home iniciales</li>
+            <li><span class="dot dot-a"></span> Integración de Fabric.js</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="sprint">
+      <div class="sprint-header">
+        <div class="sprint-num">2</div>
+        <div>
+          <h3>Editor Básico y Herramientas Iniciales</h3>
+          <p>Tener un editor funcional con las herramientas más esenciales</p>
+        </div>
+      </div>
+      <div class="sprint-body">
+        <div class="sprint-person">
+          <h4>Ramiro</h4>
+          <ul>
+            <li><span class="dot dot-r"></span> Refinamiento visual de componentes</li>
+            <li><span class="dot dot-r"></span> Ajustes de tipografía y colores</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Aaron</h4>
+          <ul>
+            <li><span class="dot dot-aa"></span> Guardar y cargar canvas como JSON</li>
+            <li><span class="dot dot-aa"></span> Persistencia entre sesiones</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Agustín</h4>
+          <ul>
+            <li><span class="dot dot-a"></span> Herramienta Lápiz (dibujo libre)</li>
+            <li><span class="dot dot-a"></span> Herramienta Selección</li>
+            <li><span class="dot dot-a"></span> Sistema de undo/redo</li>
+            <li><span class="dot dot-a"></span> Panel de propiedades (color, grosor)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="sprint">
+      <div class="sprint-header">
+        <div class="sprint-num">3</div>
+        <div>
+          <h3>Herramientas Avanzadas y Pantallas</h3>
+          <p>Las herramientas de trazado vectorial más complejas y el flujo completo de la app</p>
+        </div>
+      </div>
+      <div class="sprint-body">
+        <div class="sprint-person">
+          <h4>Aaron</h4>
+          <ul>
+            <li><span class="dot dot-aa"></span> Gestión de múltiples proyectos</li>
+            <li><span class="dot dot-aa"></span> Estructura de carpetas</li>
+            <li><span class="dot dot-aa"></span> Importación de proyectos</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Agustín</h4>
+          <ul>
+            <li><span class="dot dot-a"></span> Herramienta Pluma (bezier)</li>
+            <li><span class="dot dot-a"></span> Herramienta Curvatura</li>
+            <li><span class="dot dot-a"></span> Herramienta Relleno</li>
+            <li><span class="dot dot-a"></span> Herramienta Texto</li>
+            <li><span class="dot dot-a"></span> Sistema de fuentes (Google Fonts)</li>
+            <li><span class="dot dot-a"></span> Pantalla de exportación</li>
+            <li><span class="dot dot-a"></span> Pestañas de proyectos múltiples</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="sprint">
+      <div class="sprint-header">
+        <div class="sprint-num">4</div>
+        <div>
+          <h3>Pulido y Funcionalidades Extra</h3>
+          <p>Terminar las funcionalidades pendientes y pulir la experiencia de usuario</p>
+        </div>
+      </div>
+      <div class="sprint-body">
+        <div class="sprint-person">
+          <h4>Ramiro</h4>
+          <ul>
+            <li><span class="dot dot-r"></span> Ajustes finales de diseño</li>
+            <li><span class="dot dot-r"></span> Validación de UX en pantallas</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Aaron</h4>
+          <ul>
+            <li><span class="dot dot-aa"></span> Ajustes de rendimiento de datos</li>
+            <li><span class="dot dot-aa"></span> Revisión de integridad del guardado</li>
+          </ul>
+        </div>
+        <div class="sprint-person">
+          <h4>Agustín</h4>
+          <ul>
+            <li><span class="dot dot-a"></span> Herramienta Goma de Borrar por radio</li>
+            <li><span class="dot dot-a"></span> Edición de anchors en trazos</li>
+            <li><span class="dot dot-a"></span> Cursores SVG personalizados</li>
+            <li><span class="dot dot-a"></span> Animaciones (transiciones, spotlight)</li>
+            <li><span class="dot dot-a"></span> Miniatura automática del proyecto</li>
+            <li><span class="dot dot-a"></span> Notificaciones (toast)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ── FUNCIONALIDADES ── -->
+<section>
+  <p class="section-tag">Qué entregamos</p>
+  <h2>Funcionalidades principales</h2>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="icon">✏️</div>
+      <h4>Lápiz</h4>
+      <p>Dibujo libre con suavizado automático de curvas</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🖊️</div>
+      <h4>Pluma (Pen)</h4>
+      <p>Trazos bezier con puntos de control, igual que en Figma</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">〜</div>
+      <h4>Curvatura</h4>
+      <p>Edición suave de curvas con preservación de esquinas</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🪣</div>
+      <h4>Relleno</h4>
+      <p>Aplicar color de fondo a cualquier forma cerrada</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">T</div>
+      <h4>Texto</h4>
+      <p>Insertar texto con fuentes propias, Google Fonts y del sistema</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">⭕</div>
+      <h4>Goma de Borrar</h4>
+      <p>Borrado parcial por radio, no borra el trazo completo</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">↩️</div>
+      <h4>Undo / Redo</h4>
+      <p>Historial ilimitado de deshacer y rehacer</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📁</div>
+      <h4>Proyectos</h4>
+      <p>Crear, renombrar, organizar en carpetas y exportar</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ── HERRAMIENTAS TÉCNICAS ── -->
+<section>
+  <p class="section-tag">Stack tecnológico</p>
+  <h2>Herramientas que usamos y por qué</h2>
+  <div class="tools-grid">
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-vite">Vite</span>
+        <h3>Bundler y Dev Server</h3>
+      </div>
+      <p class="why">
+        Es la herramienta que sirve el código al navegador mientras desarrollamos y que lo empaqueta para producción.<br><br>
+        <strong>¿Por qué Vite?</strong> Cuando cambiás un archivo, el navegador actualiza solo ese módulo en menos de un segundo, sin recargar la página. Esto es crítico cuando ajustás una herramienta del editor y no querés perder lo que tenías dibujado.
+      </p>
+      <div class="pill-list">
+        <span class="pill">Hot reload instantáneo</span>
+        <span class="pill">npm run dev</span>
+        <span class="pill">npm run build</span>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-react">React 19</span>
+        <h3>Interfaz de Usuario</h3>
+      </div>
+      <p class="why">
+        Librería para construir la UI mediante componentes reutilizables.<br><br>
+        <strong>¿Por qué React?</strong> Cuando cambia la herramienta activa o el color del trazo, React actualiza automáticamente solo los componentes que lo necesitan. Sin React tendríamos que actualizar el DOM a mano en cada acción.
+      </p>
+      <div class="pill-list">
+        <span class="pill">Componentes</span>
+        <span class="pill">useState</span>
+        <span class="pill">useEffect</span>
+        <span class="pill">useRef</span>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-ts">TypeScript</span>
+        <h3>JavaScript con Tipos</h3>
+      </div>
+      <p class="why">
+        Agrega un sistema de tipos estáticos sobre JavaScript.<br><br>
+        <strong>¿Por qué TypeScript?</strong> El editor tiene muchos tipos de objetos y estados distintos. Con TypeScript el editor te avisa si te equivocás de tipo antes de correr el código. También da autocompletado completo de la API de Fabric.js, que es enorme.
+      </p>
+      <div class="pill-list">
+        <span class="pill">Errores en tiempo de edición</span>
+        <span class="pill">Autocompletado</span>
+        <span class="pill">Tipos personalizados</span>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-fabric">Fabric.js 6</span>
+        <h3>Motor del Canvas</h3>
+      </div>
+      <p class="why">
+        Librería que convierte el Canvas HTML5 (que solo dibuja píxeles) en un sistema de objetos: cada trazo es un objeto que se puede seleccionar, mover, editar y borrar.<br><br>
+        <strong>¿Por qué Fabric?</strong> Sin él, tendríamos que manejar a mano toda la lógica de selección, transformación y renderizado de objetos. Fabric nos da todo eso ya resuelto.
+      </p>
+      <div class="pill-list">
+        <span class="pill">Objetos editables</span>
+        <span class="pill">Eventos de mouse</span>
+        <span class="pill">Transformaciones</span>
+        <span class="pill">Serialización JSON</span>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-svg">SVG / Curvas Bezier</span>
+        <h3>El Lenguaje de los Trazos</h3>
+      </div>
+      <p class="why">
+        Los trazos se guardan como paths SVG: texto que describe curvas matemáticamente.<br><br>
+        <strong>¿Por qué SVG?</strong> A diferencia de los píxeles, los paths SVG se pueden escalar infinitamente sin perder calidad, editar punto a punto, y reconstruir parcialmente (lo que permite la goma de borrar por radio).
+      </p>
+      <div class="pill-list">
+        <span class="pill">Curvas cúbicas</span>
+        <span class="pill">Escalado infinito</span>
+        <span class="pill">Catmull-Rom</span>
+        <span class="pill">Bezier</span>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-header">
+        <span class="tool-badge badge-local">localStorage</span>
+        <h3>Persistencia de Datos</h3>
+      </div>
+      <p class="why">
+        Almacenamiento del navegador que guarda datos entre sesiones sin necesitar un servidor.<br><br>
+        <strong>¿Cómo lo usamos?</strong> Al guardar, el canvas se serializa a JSON y se guarda junto con una miniatura. Al abrir la app, se restaura automáticamente el estado exacto del proyecto.
+      </p>
+      <div class="pill-list">
+        <span class="pill">Sin servidor</span>
+        <span class="pill">Miniatura automática</span>
+        <span class="pill">JSON del canvas</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr class="divider" />
+
+<footer>
+  <p>RAW Design &nbsp;·&nbsp; <span>Presentación Bimestre 2025</span></p>
+</footer>
+
+</body>
+</html>

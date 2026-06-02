@@ -21,6 +21,7 @@ type HistoryEntry =
   | { type: 'remove'; obj: fabric.FabricObject }
   | { type: 'fill';   obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
+  | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -31,10 +32,25 @@ function catmullRomToBezier(pts: fabric.Point[]): string {
     const p1 = pts[i]
     const p2 = pts[i + 1]
     const p3 = pts[Math.min(pts.length - 1, i + 2)]
-    const cp1x = p1.x + (p2.x - p0.x) / 6
-    const cp1y = p1.y + (p2.y - p0.y) / 6
-    const cp2x = p2.x - (p3.x - p1.x) / 6
-    const cp2y = p2.y - (p3.y - p1.y) / 6
+    // Centripetal Catmull-Rom (alpha=0.5): never overshoots or loops at sharp corners
+    const d0 = Math.sqrt(Math.hypot(p1.x - p0.x, p1.y - p0.y))
+    const d1 = Math.sqrt(Math.hypot(p2.x - p1.x, p2.y - p1.y))
+    const d2 = Math.sqrt(Math.hypot(p3.x - p2.x, p3.y - p2.y))
+    let cp1x: number, cp1y: number, cp2x: number, cp2y: number
+    if (d0 < 1e-4 || d1 < 1e-4) {
+      cp1x = p1.x + (p2.x - p1.x) / 3; cp1y = p1.y + (p2.y - p1.y) / 3
+    } else {
+      const tx = d1 * ((p1.x - p0.x) / d0 - (p2.x - p0.x) / (d0 + d1) + (p2.x - p1.x) / d1)
+      const ty = d1 * ((p1.y - p0.y) / d0 - (p2.y - p0.y) / (d0 + d1) + (p2.y - p1.y) / d1)
+      cp1x = p1.x + tx / 3; cp1y = p1.y + ty / 3
+    }
+    if (d2 < 1e-4 || d1 < 1e-4) {
+      cp2x = p2.x + (p1.x - p2.x) / 3; cp2y = p2.y + (p1.y - p2.y) / 3
+    } else {
+      const tx = d1 * ((p2.x - p1.x) / d1 - (p3.x - p1.x) / (d1 + d2) + (p3.x - p2.x) / d2)
+      const ty = d1 * ((p2.y - p1.y) / d1 - (p3.y - p1.y) / (d1 + d2) + (p3.y - p2.y) / d2)
+      cp2x = p2.x - tx / 3; cp2y = p2.y - ty / 3
+    }
     d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
   }
   return d
@@ -203,60 +219,60 @@ function rebuildFromAnchors(
 }
 
 // Reconstruye un path mezclando segmentos rectos (corners) y curvas suaves.
-// Usa la dirección tangente Catmull-Rom pero escala cada handle a 1/3 del segmento
-// actual (chord-length parameterization). Esto evita que handles en segmentos cortos
-// sean demasiado grandes (curvas exageradas) o pequeños (puntas afiladas) cuando los
-// vecinos están muy lejos o muy cerca, dando transiciones equilibradas en cualquier polígono.
+// Usa Catmull-Rom centripetal (alpha=0.5) para anchors suaves: garantiza sin overshoots
+// ni loops incluso en curvas muy cerradas, con C1 continuidad en los anchors suaves.
+// Anchors esquina (corner) reciben handles en dirección del chord (1/3 de longitud),
+// dando una transición natural sin cúspide.
 function buildMixedPath(positions: fabric.Point[], smoothAnchors: Set<number>, closed = false): string {
   const n = positions.length
   if (n < 2) return ''
-
-  // Helper: tangent-scaled handle at point P in direction (toward - away), length = segLen/3
-  function scaledHandle(
-    P: fabric.Point, toward: fabric.Point, away: fabric.Point, segLen: number, sign: 1 | -1,
-  ): [number, number] {
-    const tx = toward.x - away.x
-    const ty = toward.y - away.y
-    const tLen = Math.hypot(tx, ty)
-    if (tLen < 1e-9 || segLen < 1e-9) return [P.x, P.y]
-    const sc = (segLen / 3) / tLen * sign
-    return [P.x + tx * sc, P.y + ty * sc]
-  }
 
   let d = `M ${positions[0].x} ${positions[0].y}`
   const segments = closed ? n : n - 1
 
   for (let j = 0; j < segments; j++) {
-    const j1  = (j + 1) % n
-    const Pj  = positions[j]
-    const Pj1 = positions[j1]
-    const s0  = smoothAnchors.has(j)
-    const s1  = smoothAnchors.has(j1)
+    const j1    = (j + 1) % n
+    const Pj    = positions[j]
+    const Pj1   = positions[j1]
+    const s0    = smoothAnchors.has(j)
+    const s1    = smoothAnchors.has(j1)
 
     if (!s0 && !s1) { d += ` L ${Pj1.x} ${Pj1.y}`; continue }
 
-    const segLen = Math.hypot(Pj1.x - Pj.x, Pj1.y - Pj.y)
-
-    // Catmull-Rom neighbor lookup (wrap/clamp for open paths)
     const jPrev  = j   === 0     ? (closed ? n - 1 : 0)     : j   - 1
     const j1Next = j1  === n - 1 ? (closed ? 0     : n - 1) : j1  + 1
     const pPrev  = positions[jPrev]
     const pNext  = positions[j1Next]
 
+    // Centripetal (alpha=0.5) chord lengths
+    const d0 = Math.sqrt(Math.hypot(Pj.x  - pPrev.x, Pj.y  - pPrev.y))
+    const d1 = Math.sqrt(Math.hypot(Pj1.x - Pj.x,    Pj1.y - Pj.y))
+    const d2 = Math.sqrt(Math.hypot(pNext.x - Pj1.x,  pNext.y - Pj1.y))
+
     let cp1x: number, cp1y: number
-    if (!s0) {
-      cp1x = Pj.x; cp1y = Pj.y           // corner → zero-length outgoing handle
+    if (!s0 || d0 < 1e-4 || d1 < 1e-4) {
+      // corner or degenerate endpoint → chord-direction handle (1/3 along chord)
+      cp1x = Pj.x + (Pj1.x - Pj.x) / 3
+      cp1y = Pj.y + (Pj1.y - Pj.y) / 3
     } else {
-      // Tangent direction at Pj: from pPrev toward Pj1, scaled to segLen/3
-      ;[cp1x, cp1y] = scaledHandle(Pj, Pj1, pPrev, segLen, 1)
+      // Centripetal tangent at Pj (outgoing), scaled to d1
+      const tx = d1 * ((Pj.x - pPrev.x) / d0 - (Pj1.x - pPrev.x) / (d0 + d1) + (Pj1.x - Pj.x) / d1)
+      const ty = d1 * ((Pj.y - pPrev.y) / d0 - (Pj1.y - pPrev.y) / (d0 + d1) + (Pj1.y - Pj.y) / d1)
+      cp1x = Pj.x + tx / 3
+      cp1y = Pj.y + ty / 3
     }
 
     let cp2x: number, cp2y: number
-    if (!s1) {
-      cp2x = Pj1.x; cp2y = Pj1.y         // corner → zero-length incoming handle
+    if (!s1 || d2 < 1e-4 || d1 < 1e-4) {
+      // corner or degenerate endpoint → chord-direction handle (1/3 along chord)
+      cp2x = Pj1.x + (Pj.x - Pj1.x) / 3
+      cp2y = Pj1.y + (Pj.y - Pj1.y) / 3
     } else {
-      // Tangent direction at Pj1: from Pj toward pNext, scaled to segLen/3
-      ;[cp2x, cp2y] = scaledHandle(Pj1, pNext, Pj, segLen, -1)
+      // Centripetal tangent at Pj1 (incoming), scaled to d1
+      const tx = d1 * ((Pj1.x - Pj.x) / d1 - (pNext.x - Pj.x) / (d1 + d2) + (pNext.x - Pj1.x) / d2)
+      const ty = d1 * ((Pj1.y - Pj.y) / d1 - (pNext.y - Pj.y) / (d1 + d2) + (pNext.y - Pj1.y) / d2)
+      cp2x = Pj1.x - tx / 3
+      cp2y = Pj1.y - ty / 3
     }
 
     d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${Pj1.x} ${Pj1.y}`
@@ -385,6 +401,123 @@ function extractBezierCmds(obj: fabric.FabricObject): BCmd[] {
   })
 }
 
+// ── Eraser math ─────────────────────────────────────────────────────────────
+
+function cubicAt(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const mt = 1 - t
+  return mt*mt*mt*p0 + 3*mt*mt*t*p1 + 3*mt*t*t*p2 + t*t*t*p3
+}
+
+function splitCubic2(
+  p0: fabric.Point, cp1: fabric.Point, cp2: fabric.Point, p1: fabric.Point, t: number
+): [[fabric.Point, fabric.Point, fabric.Point, fabric.Point], [fabric.Point, fabric.Point, fabric.Point, fabric.Point]] {
+  const lp = (a: fabric.Point, b: fabric.Point, u: number) => new fabric.Point(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u)
+  const m1 = lp(p0, cp1, t), m2 = lp(cp1, cp2, t), m3 = lp(cp2, p1, t)
+  const m4 = lp(m1, m2, t),  m5 = lp(m2, m3, t),   m6 = lp(m4, m5, t)
+  return [[p0, m1, m4, m6], [m6, m5, m3, p1]]
+}
+
+function subBezier(
+  p0: fabric.Point, cp1: fabric.Point, cp2: fabric.Point, p1: fabric.Point, t0: number, t1: number
+): [fabric.Point, fabric.Point, fabric.Point, fabric.Point] {
+  let piece: [fabric.Point, fabric.Point, fabric.Point, fabric.Point] = [p0, cp1, cp2, p1]
+  if (t0 > 1e-9)  piece = splitCubic2(...piece, t0)[1]
+  if (t1 < 1-1e-9) piece = splitCubic2(...piece, (t1 - t0) / (1 - t0))[0]
+  return piece
+}
+
+function findCircleCrossings(
+  p0: fabric.Point, cp1: fabric.Point, cp2: fabric.Point, p1: fabric.Point,
+  cx: number, cy: number, r: number
+): number[] {
+  const SAMPLES = 48, r2 = r * r
+  const f = (x: number, y: number) => (x - cx) ** 2 + (y - cy) ** 2 - r2
+  const ts: number[] = []
+  let prev = f(p0.x, p0.y)
+  for (let i = 1; i <= SAMPLES; i++) {
+    const t = i / SAMPLES
+    const cur = f(cubicAt(p0.x, cp1.x, cp2.x, p1.x, t), cubicAt(p0.y, cp1.y, cp2.y, p1.y, t))
+    if (prev * cur < 0) {
+      let lo = (i - 1) / SAMPLES, hi = t
+      for (let j = 0; j < 20; j++) {
+        const m = (lo + hi) / 2
+        const fm = f(cubicAt(p0.x, cp1.x, cp2.x, p1.x, m), cubicAt(p0.y, cp1.y, cp2.y, p1.y, m))
+        if (fm * prev > 0) lo = m; else hi = m
+      }
+      ts.push((lo + hi) / 2)
+    }
+    if (cur !== 0) prev = cur
+  }
+  return ts
+}
+
+// Returns null if the eraser doesn't actually intersect the path centerline (no change needed).
+// Returns [] if the entire path falls inside the eraser (path fully erased).
+// Returns path fragments otherwise.
+function eraseCircleFromPath(path: fabric.Path, cx: number, cy: number, r: number): string[] | null {
+  const r2 = r * r
+  const cmds = extractBezierCmds(path)
+  if (!cmds.length) return null
+
+  const samples: { x: number; y: number; newSub: boolean }[] = []
+  let prev = new fabric.Point(0, 0)
+  const N = 48
+
+  for (const cmd of cmds) {
+    if (cmd.type === 'Z') continue
+    if (cmd.type === 'M') {
+      prev = cmd.pts[0]
+      samples.push({ x: prev.x, y: prev.y, newSub: true })
+      continue
+    }
+    const p0 = prev
+    let cp1: fabric.Point, cp2: fabric.Point, endPt: fabric.Point
+    if (cmd.type === 'L') {
+      endPt = cmd.pts[0]
+      cp1 = new fabric.Point(p0.x + (endPt.x - p0.x) / 3, p0.y + (endPt.y - p0.y) / 3)
+      cp2 = new fabric.Point(p0.x + 2 * (endPt.x - p0.x) / 3, p0.y + 2 * (endPt.y - p0.y) / 3)
+    } else {
+      cp1 = cmd.pts[0]; cp2 = cmd.pts[1]; endPt = cmd.pts[2]
+    }
+    for (let i = 1; i <= N; i++) {
+      const t = i / N
+      samples.push({
+        x: cubicAt(p0.x, cp1.x, cp2.x, endPt.x, t),
+        y: cubicAt(p0.y, cp1.y, cp2.y, endPt.y, t),
+        newSub: false,
+      })
+    }
+    prev = endPt
+  }
+
+  // If no sample lands inside the eraser circle, the centerline is not actually hit.
+  // Return null so the caller skips the remove/re-add cycle entirely.
+  const anyInside = samples.some(s => !s.newSub && (s.x - cx) ** 2 + (s.y - cy) ** 2 < r2)
+  if (!anyInside) return null
+
+  const groups: fabric.Point[][] = []
+  let cur: fabric.Point[] = []
+
+  for (const s of samples) {
+    if (s.newSub) {
+      if (cur.length >= 2) groups.push(cur)
+      cur = []
+    }
+    const inside = (s.x - cx) ** 2 + (s.y - cy) ** 2 < r2
+    if (inside) {
+      if (cur.length >= 2) groups.push(cur)
+      cur = []
+    } else {
+      cur.push(new fabric.Point(s.x, s.y))
+    }
+  }
+  if (cur.length >= 2) groups.push(cur)
+
+  return groups
+    .map(pts => catmullRomToBezier(pts))
+    .filter(d => d.length > 0)
+}
+
 // Lápiz: punta abajo-izquierda, borrador arriba-derecha
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
@@ -482,7 +615,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     const cvRect   = cv.getBoundingClientRect()
     const areaRect = area.getBoundingClientRect()
     const scale = cvRect.width / 600
-    const r = (brushSizeRef.current / 2) * scale
+    const r = brushSizeRef.current * scale
     div.style.left    = `${clientX - areaRect.left - r}px`
     div.style.top     = `${clientY - areaRect.top  - r}px`
     div.style.width   = `${r * 2}px`
@@ -1471,18 +1604,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           if (positions.length === 2) {
             d = `M ${positions[0].x} ${positions[0].y} L ${positions[1].x} ${positions[1].y}`
           } else if (smoothAnchors !== null) {
-            // Any corner sandwiched between two smooth anchors inherits smoothness.
-            const n = positions.length
-            const extended = new Set(smoothAnchors)
-            for (let i = 0; i < n; i++) {
-              if (extended.has(i)) continue
-              const prev = isClosed ? (i - 1 + n) % n : i - 1
-              const next = isClosed ? (i + 1) % n : i + 1
-              if (prev >= 0 && next < n && extended.has(prev) && extended.has(next))
-                extended.add(i)
-            }
-            smoothAnchors = extended
-            d = buildMixedPath(positions, extended, isClosed)
+            d = buildMixedPath(positions, smoothAnchors, isClosed)
           } else {
             d = catmullRomToBezier(positions)
             if (isClosed) d += ' Z'
@@ -1517,21 +1639,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             setSelectedAnchor(i)
             canvas.requestRenderAll()
             preDragObj = editObj; draggingIdx = i; dragging = true
-            // If this corner sits between two smooth anchors, smooth it on drag start.
-            // This preserves corners next to straight segments but flows curves correctly.
-            if (smoothAnchors !== null && !smoothAnchors.has(i)) {
-              const n = aHandles.length
-              const pathCmds = (editObj as any).path
-                ? ((editObj as fabric.Path).path as any[][]) : null
-              const isClosed = !!pathCmds && pathCmds.some((c: any[]) => c[0] === 'Z')
-              const prevIdx = i > 0 ? i - 1 : (isClosed ? n - 1 : -1)
-              const nextIdx = i < n - 1 ? i + 1 : (isClosed ? 0 : -1)
-              if (prevIdx >= 0 && nextIdx >= 0
-                && smoothAnchors.has(prevIdx) && smoothAnchors.has(nextIdx)) {
-                smoothAnchors = new Set(smoothAnchors)
-                smoothAnchors.add(i)
-              }
-            }
             return
           }
         }
@@ -1683,15 +1790,23 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     if (tool === 'eraser') {
       canvas.selection     = false
       canvas.defaultCursor = 'none'
-      let removedThisStroke: fabric.FabricObject[] = []
 
-      const onDown  = () => { isMouseDown.current = true; removedThisStroke = [] }
-      const onUp    = () => {
+      // Track all changes in one stroke for atomic undo
+      const strokeRemoved = new Set<fabric.FabricObject>()
+      const strokeAdded   = new Set<fabric.FabricObject>()
+
+      const onDown = () => { isMouseDown.current = true }
+      const onUp   = () => {
         isMouseDown.current = false
-        if (removedThisStroke.length > 0) {
-          removedThisStroke.forEach(obj => undoHistory.current.push({ type: 'remove', obj }))
+        if (strokeRemoved.size > 0 || strokeAdded.size > 0) {
+          undoHistory.current.push({
+            type: 'erase',
+            removed: [...strokeRemoved],
+            added:   [...strokeAdded],
+          })
           redoHistory.current = []
-          removedThisStroke = []
+          strokeRemoved.clear()
+          strokeAdded.clear()
         }
       }
 
@@ -1699,50 +1814,74 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         const p = e.scenePoint
         const r = brushSizeRef.current
         showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
+        if (!isMouseDown.current) return
 
-        if (isMouseDown.current) {
-          const toRemove = canvas.getObjects().filter(obj => {
-            if (mockupObjects.current.includes(obj)) return false
-            // Fast bounding-box pre-reject
-            const b = obj.getBoundingRect()
-            const sw = (obj.strokeWidth ?? 2) / 2
-            if (b.left - sw > p.x + r || b.left + b.width  + sw < p.x - r ||
-                b.top  - sw > p.y + r || b.top  + b.height + sw < p.y - r) return false
-            const hit = r + sw
-            // For paths: sample actual bezier geometry (not just anchor chords)
-            if ((obj as any).path) {
-              let prev = new fabric.Point(0, 0)
-              for (const cmd of extractBezierCmds(obj)) {
-                if (cmd.type === 'Z') continue
-                if (cmd.type === 'M') { prev = cmd.pts[0]; continue }
-                if (cmd.type === 'L') {
-                  if (distPointToSegment(p.x, p.y, prev.x, prev.y, cmd.pts[0].x, cmd.pts[0].y) < hit) return true
-                  prev = cmd.pts[0]
-                } else if (cmd.type === 'C') {
-                  const [cp1, cp2, ep] = cmd.pts
-                  for (let i = 0; i <= 8; i++) {
-                    const t = i / 8, mt = 1 - t
-                    const bx = mt*mt*mt*prev.x + 3*mt*mt*t*cp1.x + 3*mt*t*t*cp2.x + t*t*t*ep.x
-                    const by = mt*mt*mt*prev.y + 3*mt*mt*t*cp1.y + 3*mt*t*t*cp2.y + t*t*t*ep.y
-                    if (Math.hypot(bx - p.x, by - p.y) < hit) return true
-                  }
-                  prev = ep
-                }
+        // Collect candidates (bbox pre-filter, exclude mockup objects)
+        const candidates = canvas.getObjects().filter(obj => {
+          if (mockupObjects.current.includes(obj)) return false
+          if (!(obj as any).path) return false
+          const b = obj.getBoundingRect()
+          return !(b.left > p.x + r || b.left + b.width  < p.x - r ||
+                   b.top  > p.y + r || b.top  + b.height < p.y - r)
+        })
+
+        for (const obj of candidates) {
+          // Pre-check: eraser circle must actually touch the path stroke
+          const sw2 = (obj.strokeWidth ?? 0) * (obj.strokeWidth ?? 0) / 4
+          const hitR2 = (r + Math.sqrt(sw2)) ** 2
+          let pathHit = false
+          {
+            let pp = new fabric.Point(0, 0)
+            outer: for (const cmd of extractBezierCmds(obj as fabric.Path)) {
+              if (cmd.type === 'Z') continue
+              if (cmd.type === 'M') { pp = cmd.pts[0]; continue }
+              const ep = cmd.pts[cmd.pts.length - 1]
+              const c1 = cmd.type === 'C' ? cmd.pts[0] : new fabric.Point(pp.x + (ep.x - pp.x) / 3, pp.y + (ep.y - pp.y) / 3)
+              const c2 = cmd.type === 'C' ? cmd.pts[1] : new fabric.Point(pp.x + 2*(ep.x - pp.x) / 3, pp.y + 2*(ep.y - pp.y) / 3)
+              for (let qi = 0; qi <= 16; qi++) {
+                const qt = qi / 16
+                const qx = cubicAt(pp.x, c1.x, c2.x, ep.x, qt)
+                const qy = cubicAt(pp.y, c1.y, c2.y, ep.y, qt)
+                if ((qx - p.x) ** 2 + (qy - p.y) ** 2 < hitR2) { pathHit = true; break outer }
               }
-              return false
+              pp = ep
             }
-            // Fallback for line objects
-            const pts = getAnchorPositions(obj)
-            for (let i = 0; i < pts.length; i++) {
-              if (Math.hypot(pts[i].x - p.x, pts[i].y - p.y) < hit) return true
-              if (i < pts.length - 1 &&
-                  distPointToSegment(p.x, p.y, pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y) < hit)
-                return true
+          }
+          if (!pathHit) continue
+
+          const pathStrings = eraseCircleFromPath(obj as fabric.Path, p.x, p.y, r)
+
+          // null means the eraser only touched the visual stroke but not the centerline —
+          // skip to avoid the remove/reconstruct loop that degrades path quality.
+          if (pathStrings === null) continue
+
+          const isNewPiece = strokeAdded.has(obj)
+          canvas.remove(obj)
+          if (isNewPiece) {
+            strokeAdded.delete(obj)
+          } else {
+            strokeRemoved.add(obj)
+          }
+
+          for (const pathStr of pathStrings) {
+            let newPath: fabric.Path
+            try {
+              newPath = new fabric.Path(pathStr, {
+                stroke:          obj.stroke as string,
+                strokeWidth:     obj.strokeWidth,
+                strokeLineCap:   (obj.strokeLineCap  ?? 'round') as string,
+                strokeLineJoin:  (obj.strokeLineJoin ?? 'round') as string,
+                fill:            (obj.fill as string | null) ?? null,
+                selectable:      false,
+                evented:         false,
+                strokeUniform:   true,
+                clipPath:        clipPath.current ?? undefined,
+              })
+            } catch {
+              continue
             }
-            return false
-          })
-          if (toRemove.length > 0) {
-            toRemove.forEach(obj => { canvas.remove(obj); removedThisStroke.push(obj) })
+            canvas.add(newPath)
+            strokeAdded.add(newPath)
           }
         }
         canvas.requestRenderAll()
@@ -1958,13 +2097,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       // Delete selected
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const active = canvas.getActiveObject()
-        if (active && !mockupObjects.current.includes(active) && !(active instanceof fabric.IText && (active as fabric.IText).isEditing)) {
-          e.preventDefault()
-          undoHistory.current.push({ type: 'remove', obj: active })
-          canvas.remove(active)
-          canvas.discardActiveObject()
-          canvas.requestRenderAll()
-          redoHistory.current = []
+        if (active && !(active instanceof fabric.IText && (active as fabric.IText).isEditing)) {
+          const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+          if (targets.length > 0) {
+            e.preventDefault()
+            canvas.discardActiveObject()
+            for (const obj of targets) {
+              undoHistory.current.push({ type: 'remove', obj })
+              canvas.remove(obj)
+            }
+            canvas.requestRenderAll()
+            redoHistory.current = []
+          }
           return
         }
       }
@@ -2022,6 +2166,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           canvas.remove(entry.prev)
           canvas.add(entry.next)
           undoHistory.current.push(entry)
+        } else if (entry.type === 'erase') {
+          entry.removed.forEach(obj => canvas.remove(obj))
+          entry.added.forEach(obj => canvas.add(obj))
+          undoHistory.current.push(entry)
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -2046,6 +2194,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         } else if (entry.type === 'modify') {
           canvas.remove(entry.next)
           canvas.add(entry.prev)
+          redoHistory.current.push(entry)
+        } else if (entry.type === 'erase') {
+          entry.added.forEach(obj => canvas.remove(obj))
+          entry.removed.forEach(obj => canvas.add(obj))
           redoHistory.current.push(entry)
         } else {
           const curFill = entry.obj.fill

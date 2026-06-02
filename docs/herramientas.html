@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAW Design — Herramientas y Sprints</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0d0d0d;
+      --surface: #161616;
+      --surface2: #1e1e1e;
+      --border: #2a2a2a;
+      --accent: #5b8af0;
+      --accent2: #a78bfa;
+      --green: #4ade80;
+      --orange: #fb923c;
+      --red: #f87171;
+      --text: #e8e8e8;
+      --muted: #888;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.75;
+    }
+
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(13,13,13,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 40px;
+      display: flex; align-items: center; gap: 32px; height: 52px;
+    }
+    nav .brand { font-weight: 700; font-size: 15px; color: var(--text); text-decoration: none; }
+    nav a { color: var(--muted); text-decoration: none; font-size: 13px; transition: color .2s; }
+    nav a:hover { color: var(--text); }
+
+    .page { max-width: 860px; margin: 0 auto; padding: 60px 32px 120px; }
+
+    .hero { text-align: center; padding: 56px 0 64px; }
+    .hero .tag {
+      display: inline-block;
+      background: rgba(91,138,240,0.12);
+      border: 1px solid rgba(91,138,240,0.3);
+      color: var(--accent);
+      font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 4px 14px; border-radius: 20px; margin-bottom: 20px;
+    }
+    .hero h1 { font-size: clamp(26px, 5vw, 42px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+    .hero h1 span { color: var(--accent); }
+    .hero p { margin-top: 14px; color: var(--muted); max-width: 500px; margin-left: auto; margin-right: auto; }
+
+    section { margin-bottom: 64px; }
+
+    .section-label {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 24px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+    h2 { font-size: 20px; font-weight: 700; margin-bottom: 10px; }
+    h3 { font-size: 15px; font-weight: 600; margin: 22px 0 8px; color: #ccc; }
+    p { color: #b8b8b8; margin-bottom: 10px; }
+    strong { color: var(--text); font-weight: 600; }
+
+    /* CARDS */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 26px 28px;
+      margin-bottom: 16px;
+    }
+    .card-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+    .card-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; flex-shrink: 0;
+    }
+    .card-header h2 { font-size: 17px; margin-bottom: 2px; }
+    .card-header .sub { font-size: 12px; color: var(--muted); }
+
+    /* HERRAMIENTA HIGHLIGHT */
+    .highlight {
+      background: var(--surface2);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin: 14px 0;
+      font-size: 14px;
+      color: #bbb;
+    }
+    .highlight.orange { border-left-color: var(--orange); }
+    .highlight.green { border-left-color: var(--green); }
+    .highlight.purple { border-left-color: var(--accent2); }
+    .highlight strong { color: var(--text); }
+
+    /* SPRINTS */
+    .sprint-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+    @media (max-width: 600px) { .sprint-grid { grid-template-columns: 1fr; } }
+
+    .sprint-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .sprint-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .sprint-header .badge {
+      font-size: 11px; font-weight: 700; padding: 3px 10px;
+      border-radius: 20px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .sprint-header .sprint-title { font-weight: 600; font-size: 14px; }
+    .sprint-header .sprint-status { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    .rol-block { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+    .rol-block:last-child { border-bottom: none; }
+    .rol-name {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; margin-bottom: 8px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .rol-name .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .task-list { list-style: none; }
+    .task-list li {
+      font-size: 13px; color: #aaa; padding: 3px 0;
+      padding-left: 14px; position: relative;
+    }
+    .task-list li::before {
+      content: '–';
+      position: absolute; left: 0; color: var(--muted);
+    }
+    .task-list li.done::before { content: '✓'; color: var(--green); }
+    .task-list li.done { color: #888; text-decoration: line-through; text-decoration-color: #444; }
+
+    /* LIB GRID */
+    .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .lib-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px 22px;
+    }
+    .lib-card .lib-name { font-size: 15px; font-weight: 700; }
+    .lib-card .lib-simple { font-size: 13px; color: #aaa; margin-top: 8px; line-height: 1.5; }
+    .lib-card .lib-why {
+      font-size: 12px; color: var(--accent); margin-top: 10px;
+      padding-top: 10px; border-top: 1px solid var(--border);
+    }
+
+    hr { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+    .footnote { font-size: 12px; color: var(--muted); text-align: center; padding-top: 24px; }
+
+    /* TOOL LIST */
+    .tool-row {
+      display: flex; align-items: flex-start; gap: 14px;
+      padding: 16px 0; border-bottom: 1px solid var(--border);
+    }
+    .tool-row:last-child { border-bottom: none; }
+    .tool-emoji { font-size: 22px; flex-shrink: 0; width: 36px; text-align: center; margin-top: 2px; }
+    .tool-row h3 { margin: 0 0 4px; font-size: 15px; }
+    .tool-row p { font-size: 13px; margin: 0; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="#" class="brand">RAW Design</a>
+  <a href="#herramientas">Herramientas</a>
+  <a href="#librerias">Librerías</a>
+  <a href="#sprints">Sprints</a>
+</nav>
+
+<div class="page">
+
+  <div class="hero">
+    <div class="tag">Documentación del proyecto</div>
+    <h1>Qué usamos y<br><span>cómo lo hicimos</span></h1>
+    <p>Explicado sin tecnicismos: qué tecnologías tiene el proyecto y cómo funcionan las herramientas más complejas.</p>
+  </div>
+
+  <!-- HERRAMIENTAS -->
+  <section id="herramientas">
+    <div class="section-label">Las herramientas del editor</div>
+
+    <p style="margin-bottom:24px;">El editor tiene 7 herramientas de dibujo. Todas están hechas a mano dentro del proyecto — no son plugins ni nada externo.</p>
+
+    <div class="card">
+      <div class="tool-row">
+        <div class="tool-emoji">✏️</div>
+        <div>
+          <h3>Lápiz</h3>
+          <p>Dibujás a mano alzada. El programa va juntando los puntos por donde pasó el mouse y después los suaviza solo para que el trazo no quede dentado. Usa una fórmula matemática (Catmull-Rom) que conecta los puntos con curvas suaves en vez de líneas rectas.</p>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">🖊️</div>
+        <div>
+          <h3>Pluma</h3>
+          <p>Cada click pone un punto. Podés arrastrar ese punto para doblar la línea entre los puntos, como si tiraras de una gomita. Es la misma herramienta que tiene Illustrator o Figma, que sirve para hacer formas perfectas y contornos de prenda. Es la más compleja que implementamos.</p>
+          <div class="highlight" style="margin-top:10px;">
+            <strong>¿Cómo funciona por dentro?</strong> Cada punto que ponés guarda tres posiciones: el punto en sí, y dos "manijas" invisibles a los costados. Cuando arrastrás, las manijas se mueven y eso cambia la curvatura del trazo. El programa traduce eso a una fórmula matemática llamada Bézier que la pantalla puede dibujar.
+          </div>
+          <div class="highlight orange">
+            <strong>Lo más difícil:</strong> hacer que cuando hacés click sobre una línea ya dibujada, se inserte un nuevo punto exactamente ahí sin deformar nada. Esto lo resuelve un algoritmo llamado De Casteljau que divide la curva matemáticamente en el lugar exacto donde clickeaste.
+          </div>
+          <div class="highlight green">
+            <strong>El snapping:</strong> la pluma tiene un sistema que "jala" el cursor automáticamente cuando estás cerca de otro punto o en la misma fila/columna. Si activó el snap horizontal, aparece una guía azul para que veas por qué se está jalando.
+          </div>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">〜</div>
+        <div>
+          <h3>Pluma de curvatura</h3>
+          <p>Edita una figura que ya dibujaste. Aparecen los puntos de la figura y los podés arrastrar para moverlos. A diferencia de la pluma normal, no tenés que tocar ninguna manija: el programa calcula solo cómo tiene que quedar la curva para que todo siga viéndose suave y natural.</p>
+          <div class="highlight purple">
+            <strong>Lo interesante:</strong> el programa distingue los puntos que deben ser "suaves" (la curva pasa fluidamente) de los que deben ser "esquina" (la curva hace un quiebre brusco), y aplica fórmulas diferentes para cada tipo. Así podés tener una manga con curva suave arriba y esquina en el codo, todo en la misma figura.
+          </div>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">⬡</div>
+        <div>
+          <h3>Relleno</h3>
+          <p>Hacés click en una figura del mockup y le ponés color. Funciona como el balde de Paint pero en vectores.</p>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">⌫</div>
+        <div>
+          <h3>Borrador</h3>
+          <p>Borra partes de lo que dibujaste. Si pasás el borrador por el medio de un trazo, lo parte en dos y elimina la parte del medio. Esto es complicado porque tiene que calcular exactamente dónde empieza y termina cada trozo que no tocó el borrador.</p>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">↖️</div>
+        <div>
+          <h3>Selección</h3>
+          <p>Seleccioná, mové, girá y escalá cualquier figura. También tiene deshacer/rehacer (Ctrl+Z / Ctrl+Y) que funciona para todas las herramientas.</p>
+        </div>
+      </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">T</div>
+        <div>
+          <h3>Texto</h3>
+          <p>Agregás texto con cualquier fuente de Google Fonts. Las fuentes se descargan en el momento cuando las elegís.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIBRERÍAS -->
+  <section id="librerias">
+    <div class="section-label">Librerías que usamos</div>
+    <p style="margin-bottom:20px;">Una librería es código que alguien más escribió y que nosotros usamos para no tener que hacerlo desde cero.</p>
+
+    <div class="lib-grid">
+
+      <div class="lib-card">
+        <div class="lib-name">⬡ &nbsp;Fabric.js</div>
+        <div class="lib-simple">Es la que hace andar el canvas. Sin ella, cada figura que dibujás serían pixeles fijos que no podés editar. Con Fabric, las figuras son objetos que podés mover, rotar, escalar y modificar.</div>
+        <div class="lib-why">La elegimos porque es la única librería que permite manipular figuras vectoriales en canvas con el nivel de detalle que necesitamos (mover puntos de una curva, escalar sin perder calidad, etc.).</div>
+      </div>
+
+      <div class="lib-card">
+        <div class="lib-name">⚛️ &nbsp;React</div>
+        <div class="lib-simple">Es el framework con el que está hecha la interfaz: los botones, el menú lateral, la barra de color, las pantallas. No tiene nada que ver con el dibujo en sí, solo con la parte visual de la app.</div>
+        <div class="lib-why">Separamos la UI (React) del canvas (Fabric) para que cada uno se encargue de una cosa y no se mezclen.</div>
+      </div>
+
+      <div class="lib-card">
+        <div class="lib-name">📘 &nbsp;TypeScript</div>
+        <div class="lib-simple">Es JavaScript pero con "tipos". Cuando decís que una variable es un número, el editor te avisa si en algún lugar la tratás como texto por accidente.</div>
+        <div class="lib-why">El archivo principal tiene casi 2800 líneas. Sin tipos, sería imposible saber qué guarda cada variable en cada momento.</div>
+      </div>
+
+      <div class="lib-card">
+        <div class="lib-name">⚡ &nbsp;Vite</div>
+        <div class="lib-simple">Es el que compila el proyecto y lo sirve en el navegador mientras trabajás. Cuando guardás un archivo, actualiza la página en menos de un segundo.</div>
+        <div class="lib-why">Es mucho más rápido que las alternativas viejas. Esencial para no esperar 30 segundos cada vez que cambiás algo.</div>
+      </div>
+
+      <div class="lib-card">
+        <div class="lib-name">🟢 &nbsp;Supabase</div>
+        <div class="lib-simple">Es la base de datos y el sistema de login. Guarda los usuarios y los proyectos en la nube. También maneja el login con Google.</div>
+        <div class="lib-why">Nos ahorra tener que montar un servidor propio. El login con Google OAuth sale configurarlo en minutos.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- SPRINTS -->
+  <section id="sprints">
+    <div class="section-label">Planificación por sprints</div>
+
+    <!-- SPRINT 1 -->
+    <h2 style="margin-bottom:6px;">Sprint 1 — Base del editor</h2>
+    <p style="margin-bottom:16px; font-size:13px; color:var(--muted);">Estado: <span style="color:var(--green); font-weight:600;">En progreso / Completado</span></p>
+
+    <div class="sprint-grid">
+
+      <!-- AGUSTÍN -->
+      <div class="sprint-card">
+        <div class="sprint-header">
+          <div class="badge" style="background:rgba(91,138,240,0.15); color:var(--accent);">Agustín</div>
+          <div class="sprint-title">Frontend y herramientas</div>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--accent);"></div>
+            Pantallas
+          </div>
+          <ul class="task-list">
+            <li class="done">Pantalla de inicio (Home)</li>
+            <li class="done">Editor de diseño (canvas principal)</li>
+            <li class="done">Biblioteca de proyectos</li>
+            <li class="done">Pantalla de exportación</li>
+            <li class="done">Onboarding (bienvenida)</li>
+            <li class="done">Pantalla de nuevo proyecto</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--accent);"></div>
+            Herramientas de dibujo
+          </div>
+          <ul class="task-list">
+            <li class="done">Lápiz con suavizado automático</li>
+            <li class="done">Pluma (curvas Bézier estilo Illustrator)</li>
+            <li class="done">Pluma de curvatura (edición de figuras)</li>
+            <li class="done">Borrador (por segmentos)</li>
+            <li class="done">Relleno de color</li>
+            <li class="done">Selección, mover, escalar, rotar</li>
+            <li class="done">Herramienta de texto con Google Fonts</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--accent);"></div>
+            Otros
+          </div>
+          <ul class="task-list">
+            <li class="done">Sistema de deshacer / rehacer (Ctrl+Z)</li>
+            <li class="done">Zoom y paneo del canvas</li>
+            <li class="done">Snapping y guías de alineación</li>
+            <li class="done">Selector de color y tamaño de pincel</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- AARON -->
+      <div class="sprint-card">
+        <div class="sprint-header">
+          <div class="badge" style="background:rgba(251,146,60,0.15); color:var(--orange);">Aaron</div>
+          <div class="sprint-title">Base de datos</div>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--orange);"></div>
+            Supabase / Backend
+          </div>
+          <ul class="task-list">
+            <li class="done">Estructura de la base de datos (tablas)</li>
+            <li class="done">Login con email y contraseña</li>
+            <li class="done">Login con Google (OAuth)</li>
+            <li class="done">Guardado de proyectos por usuario</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--orange);"></div>
+            Diseño inicial
+          </div>
+          <ul class="task-list">
+            <li class="done">Boceto inicial del mockup</li>
+            <li class="done">Logo y nombre de la app</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SPRINT 2 -->
+    <h2 style="margin-top:40px; margin-bottom:6px;">Sprint 2 — Funcionalidades avanzadas</h2>
+    <p style="margin-bottom:16px; font-size:13px; color:var(--muted);">Estado: <span style="color:var(--orange); font-weight:600;">Próximo</span></p>
+
+    <div class="sprint-grid">
+
+      <!-- AGUSTÍN -->
+      <div class="sprint-card">
+        <div class="sprint-header">
+          <div class="badge" style="background:rgba(91,138,240,0.15); color:var(--accent);">Agustín</div>
+          <div class="sprint-title">Texturas y materiales</div>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--accent);"></div>
+            Herramienta de texturas
+          </div>
+          <ul class="task-list">
+            <li>Aplicar texturas (telas, materiales) a las figuras</li>
+            <li>Biblioteca de texturas predefinidas</li>
+            <li>Subir textura personalizada desde archivo</li>
+            <li>Ajustar opacidad y escala de la textura</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--accent);"></div>
+            Mejoras al editor
+          </div>
+          <ul class="task-list">
+            <li>Panel de capas (para ordenar elementos)</li>
+            <li>Grupos de objetos</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- AARON -->
+      <div class="sprint-card">
+        <div class="sprint-header">
+          <div class="badge" style="background:rgba(251,146,60,0.15); color:var(--orange);">Aaron</div>
+          <div class="sprint-title">Exportación Tech Pack</div>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--orange);"></div>
+            Exportación
+          </div>
+          <ul class="task-list">
+            <li>Exportar diseño como PDF estructurado (Tech Pack)</li>
+            <li>Incluir medidas y especificaciones en el PDF</li>
+            <li>Exportar como imagen (PNG / SVG)</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name">
+            <div class="dot" style="background:var(--orange);"></div>
+            Base de datos
+          </div>
+          <ul class="task-list">
+            <li>Guardado automático del canvas</li>
+            <li>Historial de versiones de un proyecto</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+  </section>
+
+  <hr />
+  <div class="footnote">RAW Design · TP Bimestral · Informática Aplicada</div>
+
+</div>
+</body>
+</html>
