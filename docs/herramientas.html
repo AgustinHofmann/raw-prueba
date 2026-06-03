@@ -71,7 +71,6 @@
     p { color: #b8b8b8; margin-bottom: 10px; }
     strong { color: var(--text); font-weight: 600; }
 
-    /* CARDS */
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -88,7 +87,6 @@
     .card-header h2 { font-size: 17px; margin-bottom: 2px; }
     .card-header .sub { font-size: 12px; color: var(--muted); }
 
-    /* HERRAMIENTA HIGHLIGHT */
     .highlight {
       background: var(--surface2);
       border-left: 3px solid var(--accent);
@@ -99,11 +97,11 @@
       color: #bbb;
     }
     .highlight.orange { border-left-color: var(--orange); }
-    .highlight.green { border-left-color: var(--green); }
+    .highlight.green  { border-left-color: var(--green); }
     .highlight.purple { border-left-color: var(--accent2); }
+    .highlight.red    { border-left-color: var(--red); }
     .highlight strong { color: var(--text); }
 
-    /* SPRINTS */
     .sprint-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
     @media (max-width: 600px) { .sprint-grid { grid-template-columns: 1fr; } }
 
@@ -138,14 +136,10 @@
       font-size: 13px; color: #aaa; padding: 3px 0;
       padding-left: 14px; position: relative;
     }
-    .task-list li::before {
-      content: '–';
-      position: absolute; left: 0; color: var(--muted);
-    }
+    .task-list li::before { content: '–'; position: absolute; left: 0; color: var(--muted); }
     .task-list li.done::before { content: '✓'; color: var(--green); }
     .task-list li.done { color: #888; text-decoration: line-through; text-decoration-color: #444; }
 
-    /* LIB GRID */
     .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
     .lib-card {
       background: var(--surface); border: 1px solid var(--border);
@@ -161,7 +155,6 @@
     hr { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
     .footnote { font-size: 12px; color: var(--muted); text-align: center; padding-top: 24px; }
 
-    /* TOOL LIST */
     .tool-row {
       display: flex; align-items: flex-start; gap: 14px;
       padding: 16px 0; border-bottom: 1px solid var(--border);
@@ -170,6 +163,13 @@
     .tool-emoji { font-size: 22px; flex-shrink: 0; width: 36px; text-align: center; margin-top: 2px; }
     .tool-row h3 { margin: 0 0 4px; font-size: 15px; }
     .tool-row p { font-size: 13px; margin: 0; }
+
+    .kbd {
+      display: inline-block; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 5px;
+      padding: 1px 7px; font-family: monospace; font-size: 12px;
+      color: var(--muted); vertical-align: middle;
+    }
   </style>
 </head>
 <body>
@@ -193,22 +193,23 @@
   <section id="herramientas">
     <div class="section-label">Las herramientas del editor</div>
 
-    <p style="margin-bottom:24px;">El editor tiene 7 herramientas de dibujo. Todas están hechas a mano dentro del proyecto — no son plugins ni nada externo.</p>
+    <p style="margin-bottom:24px;">El editor tiene 9 herramientas de dibujo. Todas están hechas a mano dentro del proyecto — no son plugins ni nada externo.</p>
 
     <div class="card">
+
       <div class="tool-row">
         <div class="tool-emoji">✏️</div>
         <div>
-          <h3>Lápiz</h3>
-          <p>Dibujás a mano alzada. El programa va juntando los puntos por donde pasó el mouse y después los suaviza solo para que el trazo no quede dentado. Usa una fórmula matemática (Catmull-Rom) que conecta los puntos con curvas suaves en vez de líneas rectas.</p>
+          <h3>Lápiz <span class="kbd">L</span></h3>
+          <p>Dibujás a mano alzada. El programa va juntando los puntos por donde pasó el mouse y después los suaviza solo para que el trazo no quede dentado. Usa una fórmula matemática (Catmull-Rom) que conecta los puntos con curvas suaves en vez de líneas rectas, y después aplica Ramer-Douglas-Peucker para eliminar los puntos innecesarios sin que se note.</p>
         </div>
       </div>
 
       <div class="tool-row">
         <div class="tool-emoji">🖊️</div>
         <div>
-          <h3>Pluma</h3>
-          <p>Cada click pone un punto. Podés arrastrar ese punto para doblar la línea entre los puntos, como si tiraras de una gomita. Es la misma herramienta que tiene Illustrator o Figma, que sirve para hacer formas perfectas y contornos de prenda. Es la más compleja que implementamos.</p>
+          <h3>Pluma <span class="kbd">P</span></h3>
+          <p>Cada click pone un punto. Podés arrastrar ese punto para doblar la línea entre los puntos, como si tiraras de una gomita. Es la misma herramienta que tiene Illustrator o Figma, que sirve para hacer formas perfectas y contornos de prenda.</p>
           <div class="highlight" style="margin-top:10px;">
             <strong>¿Cómo funciona por dentro?</strong> Cada punto que ponés guarda tres posiciones: el punto en sí, y dos "manijas" invisibles a los costados. Cuando arrastrás, las manijas se mueven y eso cambia la curvatura del trazo. El programa traduce eso a una fórmula matemática llamada Bézier que la pantalla puede dibujar.
           </div>
@@ -216,6 +217,9 @@
             <strong>Lo más difícil:</strong> hacer que cuando hacés click sobre una línea ya dibujada, se inserte un nuevo punto exactamente ahí sin deformar nada. Esto lo resuelve un algoritmo llamado De Casteljau que divide la curva matemáticamente en el lugar exacto donde clickeaste.
           </div>
           <div class="highlight green">
+            <strong>Fill en tiempo real:</strong> si tenés un color de relleno activo, la pluma muestra cómo quedaría la figura rellena mientras la dibujás, igual que Illustrator. El programa cierra provisionalmente la forma usando la posición del cursor como punto final y la rellena con semitransparencia para que puedas ver cómo va quedando.
+          </div>
+          <div class="highlight purple">
             <strong>El snapping:</strong> la pluma tiene un sistema que "jala" el cursor automáticamente cuando estás cerca de otro punto o en la misma fila/columna. Si activó el snap horizontal, aparece una guía azul para que veas por qué se está jalando.
           </div>
         </div>
@@ -233,6 +237,23 @@
       </div>
 
       <div class="tool-row">
+        <div class="tool-emoji">⌫</div>
+        <div>
+          <h3>Borrador</h3>
+          <p>Borra partes de lo que dibujaste. Si pasás el borrador por el medio de un trazo, lo parte en dos y elimina la parte del medio. Funciona tanto en trazos como en figuras con relleno.</p>
+          <div class="highlight orange">
+            <strong>Cómo funciona exactamente:</strong> el borrador tiene un radio circular. Para cada trazo que toca, el programa calcula con precisión matemática en qué punto exacto el círculo entra y sale de la curva (usando bisección numérica con 20 iteraciones). Después corta el trazo ahí con exactitud usando De Casteljau, y construye los fragmentos que sobreviven con los segmentos Bézier originales, sin aproximaciones. Esto significa que podés borrar y desborrar (Ctrl+Z) muchas veces sin que el trazo pierda calidad.
+          </div>
+          <div class="highlight">
+            <strong>Rendimiento:</strong> el cálculo corre máximo una vez por fotograma (no por cada movimiento del mouse), así que no traba aunque el canvas tenga muchas figuras.
+          </div>
+          <div class="highlight purple">
+            <strong>Figuras con relleno:</strong> cuando la goma corta una figura cerrada con relleno, el relleno se quita de los fragmentos resultantes. Así no aparecen bordes extraños donde el relleno "se escapa" por el corte.
+          </div>
+        </div>
+      </div>
+
+      <div class="tool-row">
         <div class="tool-emoji">⬡</div>
         <div>
           <h3>Relleno</h3>
@@ -241,18 +262,27 @@
       </div>
 
       <div class="tool-row">
-        <div class="tool-emoji">⌫</div>
+        <div class="tool-emoji">🔬</div>
         <div>
-          <h3>Borrador</h3>
-          <p>Borra partes de lo que dibujaste. Si pasás el borrador por el medio de un trazo, lo parte en dos y elimina la parte del medio. Esto es complicado porque tiene que calcular exactamente dónde empieza y termina cada trozo que no tocó el borrador.</p>
+          <h3>Gotero <span class="kbd">I</span></h3>
+          <p>Hacés click en cualquier punto del canvas y tomás el color exacto de ese pixel. El color queda guardado como el color activo y se aplica al objeto que tengas seleccionado. Igual que el gotero de Illustrator o Photoshop.</p>
+          <div class="highlight green">
+            <strong>Por dentro:</strong> el programa lee el pixel exacto del canvas usando <code>getImageData()</code> — básicamente saca una foto de un pixel y convierte sus valores RGB a un código de color hexadecimal (#rrggbb).
+          </div>
         </div>
       </div>
 
       <div class="tool-row">
         <div class="tool-emoji">↖️</div>
         <div>
-          <h3>Selección</h3>
-          <p>Seleccioná, mové, girá y escalá cualquier figura. También tiene deshacer/rehacer (Ctrl+Z / Ctrl+Y) que funciona para todas las herramientas.</p>
+          <h3>Selección <span class="kbd">V</span></h3>
+          <p>Seleccioná, mové, girá y escalá cualquier figura. También tiene deshacer/rehacer (Ctrl+Z / Ctrl+Y) que funciona para todas las herramientas, y podés seleccionar varios objetos a la vez con Shift+click o arrastrando un rectángulo.</p>
+          <div class="highlight">
+            <strong>UI estilo Illustrator:</strong> los 8 handles (esquinas + puntos medios) son cuadraditos blancos de 6px con borde azul, posicionados exactamente sobre el objeto sin margen extra. Al seleccionar un path aparece una línea azul de 1px que sigue el contorno exacto de la figura — no el bounding box rectangular, sino la curva real.
+          </div>
+          <div class="highlight purple">
+            <strong>Opacidad:</strong> en el panel de propiedades de la derecha aparece un slider de opacidad (0–100%) para el objeto seleccionado. Los cambios de opacidad también entran al historial de deshacer.
+          </div>
         </div>
       </div>
 
@@ -260,9 +290,21 @@
         <div class="tool-emoji">T</div>
         <div>
           <h3>Texto</h3>
-          <p>Agregás texto con cualquier fuente de Google Fonts. Las fuentes se descargan en el momento cuando las elegís.</p>
+          <p>Agregás texto con cualquier fuente de Google Fonts. Las fuentes se descargan en el momento cuando las elegís. También podés subir fuentes propias en formato .ttf, .otf o .woff.</p>
         </div>
       </div>
+
+      <div class="tool-row">
+        <div class="tool-emoji">🖼️</div>
+        <div>
+          <h3>Importar imagen y vectorizar</h3>
+          <p>Desde la barra superior (botón "Importar") podés abrir una imagen PNG, JPG o similar y el programa la convierte automáticamente a vectores. Útil para pasar bocetos escaneados o fotos a formato editable.</p>
+          <div class="highlight orange">
+            <strong>Cómo funciona:</strong> la imagen se dibuja en un canvas temporal para leer sus pixels (ImageData). Después una librería llamada ImageTracer.js analiza los colores y bordes y genera un SVG con polígonos que imitan la imagen. Fabric.js carga ese SVG y lo convierte en un grupo de objetos editables.
+          </div>
+        </div>
+      </div>
+
     </div>
   </section>
 
@@ -288,7 +330,7 @@
       <div class="lib-card">
         <div class="lib-name">📘 &nbsp;TypeScript</div>
         <div class="lib-simple">Es JavaScript pero con "tipos". Cuando decís que una variable es un número, el editor te avisa si en algún lugar la tratás como texto por accidente.</div>
-        <div class="lib-why">El archivo principal tiene casi 2800 líneas. Sin tipos, sería imposible saber qué guarda cada variable en cada momento.</div>
+        <div class="lib-why">El archivo principal tiene más de 3000 líneas. Sin tipos, sería imposible saber qué guarda cada variable en cada momento.</div>
       </div>
 
       <div class="lib-card">
@@ -303,6 +345,12 @@
         <div class="lib-why">Nos ahorra tener que montar un servidor propio. El login con Google OAuth sale configurarlo en minutos.</div>
       </div>
 
+      <div class="lib-card">
+        <div class="lib-name">🔀 &nbsp;ImageTracer.js</div>
+        <div class="lib-simple">Convierte imágenes (fotos, PNGs) en vectores SVG analizando sus colores pixel a pixel. Toma una imagen y genera polígonos coloreados que la imitan.</div>
+        <div class="lib-why">Permite importar bocetos escaneados o fotos de referencia y convertirlos en figuras editables sin salir de la app.</div>
+      </div>
+
     </div>
   </section>
 
@@ -312,21 +360,17 @@
 
     <!-- SPRINT 1 -->
     <h2 style="margin-bottom:6px;">Sprint 1 — Base del editor</h2>
-    <p style="margin-bottom:16px; font-size:13px; color:var(--muted);">Estado: <span style="color:var(--green); font-weight:600;">En progreso / Completado</span></p>
+    <p style="margin-bottom:16px; font-size:13px; color:var(--muted);">Estado: <span style="color:var(--green); font-weight:600;">Completado</span></p>
 
     <div class="sprint-grid">
 
-      <!-- AGUSTÍN -->
       <div class="sprint-card">
         <div class="sprint-header">
           <div class="badge" style="background:rgba(91,138,240,0.15); color:var(--accent);">Agustín</div>
           <div class="sprint-title">Frontend y herramientas</div>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--accent);"></div>
-            Pantallas
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>Pantallas</div>
           <ul class="task-list">
             <li class="done">Pantalla de inicio (Home)</li>
             <li class="done">Editor de diseño (canvas principal)</li>
@@ -337,57 +381,59 @@
           </ul>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--accent);"></div>
-            Herramientas de dibujo
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>Herramientas de dibujo</div>
           <ul class="task-list">
-            <li class="done">Lápiz con suavizado automático</li>
+            <li class="done">Lápiz con suavizado automático (Catmull-Rom + RDP)</li>
             <li class="done">Pluma (curvas Bézier estilo Illustrator)</li>
             <li class="done">Pluma de curvatura (edición de figuras)</li>
-            <li class="done">Borrador (por segmentos)</li>
+            <li class="done">Borrador exacto (De Casteljau, sin degradación)</li>
             <li class="done">Relleno de color</li>
+            <li class="done">Gotero — tomar color del canvas (atajo I)</li>
             <li class="done">Selección, mover, escalar, rotar</li>
             <li class="done">Herramienta de texto con Google Fonts</li>
+            <li class="done">Importar PNG y vectorizar automáticamente</li>
           </ul>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--accent);"></div>
-            Otros
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>Panel de propiedades</div>
           <ul class="task-list">
-            <li class="done">Sistema de deshacer / rehacer (Ctrl+Z)</li>
+            <li class="done">Color de trazo y relleno</li>
+            <li class="done">Grosor de trazo</li>
+            <li class="done">Posición (X, Y), tamaño (W, H) y rotación</li>
+            <li class="done">Opacidad con slider (0–100%) y undo/redo</li>
+            <li class="done">Fuente, tamaño y picker de fuentes para texto</li>
+          </ul>
+        </div>
+        <div class="rol-block">
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>UI / Experiencia</div>
+          <ul class="task-list">
+            <li class="done">Deshacer / rehacer (Ctrl+Z / Ctrl+Y)</li>
             <li class="done">Zoom y paneo del canvas</li>
             <li class="done">Snapping y guías de alineación</li>
-            <li class="done">Selector de color y tamaño de pincel</li>
+            <li class="done">Fill preview en pluma (igual que Illustrator)</li>
+            <li class="done">UI de selección estilo Illustrator (handles blancos, trazo azul en path)</li>
+            <li class="done">Mockup de remera actualizado</li>
           </ul>
         </div>
       </div>
 
-      <!-- AARON -->
       <div class="sprint-card">
         <div class="sprint-header">
           <div class="badge" style="background:rgba(251,146,60,0.15); color:var(--orange);">Aaron</div>
           <div class="sprint-title">Base de datos</div>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--orange);"></div>
-            Supabase / Backend
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--orange);"></div>Supabase / Backend</div>
           <ul class="task-list">
             <li class="done">Estructura de la base de datos (tablas)</li>
             <li class="done">Login con email y contraseña</li>
             <li class="done">Login con Google (OAuth)</li>
             <li class="done">Guardado de proyectos por usuario</li>
+            <li class="done">Carpetas para organizar proyectos</li>
           </ul>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--orange);"></div>
-            Diseño inicial
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--orange);"></div>Diseño inicial</div>
           <ul class="task-list">
             <li class="done">Boceto inicial del mockup</li>
             <li class="done">Logo y nombre de la app</li>
@@ -403,58 +449,45 @@
 
     <div class="sprint-grid">
 
-      <!-- AGUSTÍN -->
       <div class="sprint-card">
         <div class="sprint-header">
           <div class="badge" style="background:rgba(91,138,240,0.15); color:var(--accent);">Agustín</div>
           <div class="sprint-title">Texturas y materiales</div>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--accent);"></div>
-            Herramienta de texturas
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>Herramienta de texturas</div>
           <ul class="task-list">
             <li>Aplicar texturas (telas, materiales) a las figuras</li>
             <li>Biblioteca de texturas predefinidas</li>
             <li>Subir textura personalizada desde archivo</li>
-            <li>Ajustar opacidad y escala de la textura</li>
+            <li>Ajustar escala y orientación de la textura</li>
           </ul>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--accent);"></div>
-            Mejoras al editor
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--accent);"></div>Mejoras al editor</div>
           <ul class="task-list">
-            <li>Panel de capas (para ordenar elementos)</li>
-            <li>Grupos de objetos</li>
+            <li>Panel de capas con visibilidad y orden</li>
+            <li>Grupos de objetos (agrupar / desagrupar)</li>
+            <li>Mockups adicionales (pantalón, buzo, etc.)</li>
           </ul>
         </div>
       </div>
 
-      <!-- AARON -->
       <div class="sprint-card">
         <div class="sprint-header">
           <div class="badge" style="background:rgba(251,146,60,0.15); color:var(--orange);">Aaron</div>
           <div class="sprint-title">Exportación Tech Pack</div>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--orange);"></div>
-            Exportación
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--orange);"></div>Exportación</div>
           <ul class="task-list">
             <li>Exportar diseño como PDF estructurado (Tech Pack)</li>
             <li>Incluir medidas y especificaciones en el PDF</li>
-            <li>Exportar como imagen (PNG / SVG)</li>
+            <li>Exportar como SVG (además de PNG)</li>
           </ul>
         </div>
         <div class="rol-block">
-          <div class="rol-name">
-            <div class="dot" style="background:var(--orange);"></div>
-            Base de datos
-          </div>
+          <div class="rol-name"><div class="dot" style="background:var(--orange);"></div>Base de datos</div>
           <ul class="task-list">
             <li>Guardado automático del canvas</li>
             <li>Historial de versiones de un proyecto</li>
