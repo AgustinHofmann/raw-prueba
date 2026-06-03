@@ -599,6 +599,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
   const clipEnabledRef = useRef(true)
+  const mockupLockedRef = useRef(true)
 
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
@@ -628,6 +629,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
+  const [mockupLocked,   setMockupLocked]   = useState(true)
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
@@ -983,12 +985,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         obj.set({ selectable: false, evented: false })
         return
       }
+      if (isMockup) {
+        const unlocked = !mockupLockedRef.current
+        obj.set({
+          evented:    tool === 'fill' || (unlocked && tool === 'select'),
+          selectable: unlocked && tool === 'select',
+        })
+        return
+      }
       obj.set({
-        evented:    isMockup
-          ? tool === 'fill'
-          : (tool === 'select' || tool === 'curve' || tool === 'pen' || (tool === 'text' && isIText)),
-        selectable: isMockup ? false : tool === 'select',
-        ...(!isMockup ? { hoverCursor: drawnHoverCursor } : {}),
+        evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || (tool === 'text' && isIText),
+        selectable: tool === 'select',
+        hoverCursor: drawnHoverCursor,
       })
     })
 
@@ -2569,6 +2577,35 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.requestRenderAll()
   }
 
+  // ── Bloqueo del mockup ───────────────────────────────────────────────────────
+  function toggleMockupLock() {
+    const canvas = fc.current
+    if (!canvas) return
+    const next = !mockupLocked
+    setMockupLocked(next)
+    mockupLockedRef.current = next
+    const unlocked = !next
+    mockupObjects.current.forEach(o => {
+      o.set({
+        selectable: unlocked && tool === 'select',
+        evented:    tool === 'fill' || (unlocked && tool === 'select'),
+      })
+    })
+    if (next) canvas.discardActiveObject()  // al bloquear, soltar selección de piezas del mockup
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function selectMockupShape(obj: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas || mockupLocked) return
+    setTool('select')
+    obj.set({ selectable: true, evented: true })
+    canvas.setActiveObject(obj)
+    setSelectedObj(obj)
+    canvas.requestRenderAll()
+  }
+
   // ── Agrupar / desagrupar ─────────────────────────────────────────────────────
   // Helpers reutilizables (también para undo/redo). Asumen coords absolutas en los hijos.
   function makeGroup(children: fabric.FabricObject[]): fabric.Group {
@@ -3059,6 +3096,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 onToggleLock={toggleLayerLock}
                 onMove={moveLayer}
                 onDelete={deleteLayer}
+                mockupLocked={mockupLocked}
+                onToggleMockupLock={toggleMockupLock}
+                onSelectMockup={selectMockupShape}
               />
             </div>
           )}
@@ -3099,7 +3139,7 @@ function getLayerIcon(obj: fabric.FabricObject): string {
   return '·'
 }
 
-function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onDelete }: {
+function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onDelete, mockupLocked, onToggleMockupLock, onSelectMockup }: {
   layers: fabric.FabricObject[]
   version: number
   mockupObjects: fabric.FabricObject[]
@@ -3109,8 +3149,12 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
   onToggleLock: (obj: fabric.FabricObject) => void
   onMove: (obj: fabric.FabricObject, dir: 'up' | 'down') => void
   onDelete: (obj: fabric.FabricObject) => void
+  mockupLocked: boolean
+  onToggleMockupLock: () => void
+  onSelectMockup: (obj: fabric.FabricObject) => void
 }) {
   void version  // forces re-render when visibility/lock toggles mutate objects in place
+  const [mockupOpen, setMockupOpen] = useState(false)
 
   // User objects in stacking order, front-most first (top of the list = top of the canvas)
   const userObjs = layers.filter(o => !mockupObjects.includes(o))
@@ -3191,15 +3235,57 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
       })}
 
       {hasMockup && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '6px 10px', marginTop: 4,
-          borderTop: '1px solid var(--line-soft)',
-          color: 'var(--muted)', fontFamily: 'var(--ui)', fontSize: 11,
-        }}>
-          <span style={{ fontSize: 11, width: 12, textAlign: 'center' }}>◈</span>
-          <span style={{ flex: 1 }}>Mockup (remera)</span>
-          <span style={{ fontSize: 10 }}>🔒</span>
+        <div style={{ marginTop: 4, borderTop: '1px solid var(--line-soft)' }}>
+          {/* Encabezado del grupo Mockup */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 8px 7px 10px',
+            color: 'var(--fg-2)', fontFamily: 'var(--ui)', fontSize: 11,
+          }}>
+            <span role="button" onClick={() => setMockupOpen(v => !v)}
+              style={{ fontSize: 9, cursor: 'pointer', transition: 'transform 0.15s', transform: mockupOpen ? 'none' : 'rotate(-90deg)', width: 10 }}>▾</span>
+            <span style={{ fontSize: 11, width: 12, textAlign: 'center' }}>⬡</span>
+            <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => setMockupOpen(v => !v)}>Mockup (remera)</span>
+            <span style={{ fontSize: 9, color: 'var(--muted)', marginRight: 2 }}>{mockupObjects.length}</span>
+            <span
+              role="button"
+              title={mockupLocked ? 'Desbloquear mockup' : 'Bloquear mockup'}
+              onClick={onToggleMockupLock}
+              style={{
+                width: 20, height: 20, borderRadius: 5, cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, color: mockupLocked ? 'var(--accent)' : 'var(--muted)',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >{mockupLocked ? '🔒' : '🔓'}</span>
+          </div>
+
+          {/* Sub-capas del mockup */}
+          {mockupOpen && mockupObjects.map((obj, i) => {
+            const isSelected = obj === selectedObj
+            return (
+              <div
+                key={i}
+                onClick={() => onSelectMockup(obj)}
+                title={mockupLocked ? 'Desbloqueá el mockup para editar' : 'Seleccionar pieza'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '5px 10px 5px 30px',
+                  background: isSelected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+                  borderLeft: '2px solid ' + (isSelected ? 'var(--accent)' : 'transparent'),
+                  cursor: mockupLocked ? 'default' : 'pointer',
+                  fontFamily: 'var(--ui)', fontSize: 11,
+                  color: mockupLocked ? 'var(--muted)' : 'var(--fg-2)',
+                }}
+                onMouseEnter={e => { if (!mockupLocked && !isSelected) e.currentTarget.style.background = 'var(--surface)' }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
+              >
+                <span style={{ fontSize: 10, color: 'var(--muted)', width: 12, textAlign: 'center' }}>{getLayerIcon(obj)}</span>
+                <span>Pieza {mockupObjects.length - i}</span>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
