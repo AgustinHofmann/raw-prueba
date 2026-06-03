@@ -14,12 +14,13 @@ interface Props {
   onActionsReady: (a: EditorActions | null) => void
 }
 
-type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text'
+type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
 
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
-  | { type: 'fill';   obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
+  | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
+  | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
 
@@ -572,6 +573,8 @@ try {
 } catch (_) {}
 // ────────────────────────────────────────────────────────────────────────────
 
+const EYEDROPPER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M15 2 L20 7 L9 18 L6 21 L1 16 L12 5 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M15 2 L20 7 L17 10 L12 5 Z' fill='%23ccc'/%3E%3Crect x='3' y='14' width='4' height='4' rx='1' fill='%23555'/%3E%3C/svg%3E") 2 20, crosshair`
+
 // Lápiz: punta abajo-izquierda, borrador arriba-derecha
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
@@ -611,6 +614,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [propW,         setPropW]         = useState(0)
   const [propH,         setPropH]         = useState(0)
   const [propAngle,     setPropAngle]     = useState(0)
+  const [propOpacity,    setPropOpacity]    = useState(100)
   const [propFontFamily, setPropFontFamily] = useState('Arial')
   const [propFontSize,  setPropFontSize]  = useState(24)
   const [userFonts,      setUserFonts]      = useState<string[]>([])
@@ -1991,6 +1995,40 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       offs.push(() => canvas.off('mouse:down', onDown))
     }
 
+    // ── Gotero ───────────────────────────────────────────────────────────────
+    if (tool === 'eyedropper') {
+      canvas.selection     = false
+      canvas.defaultCursor = EYEDROPPER_CURSOR
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
+        const p   = e.scenePoint
+        // Convert scene coords → canvas element pixels
+        const px = Math.round(vpt[0] * p.x + vpt[4])
+        const py = Math.round(vpt[3] * p.y + vpt[5])
+        const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
+        if (!ctx) return
+        const [r, g, b, a] = ctx.getImageData(px, py, 1, 1).data
+        if (a < 10) return   // transparent pixel — skip
+        const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+        // Set as active color (stroke)
+        colorRef.current = hex
+        setPropStroke(hex)
+        // If a non-mockup object is selected, apply to its stroke too
+        const active = canvas.getActiveObject()
+        if (active && !mockupObjects.current.includes(active)) {
+          active.set({ stroke: hex })
+          canvas.requestRenderAll()
+        }
+      }
+
+      canvas.on('mouse:down', onDown)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
@@ -2004,6 +2042,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
         setPropH(Math.round((obj.height ?? 0) * Math.abs(obj.scaleY ?? 1)))
         setPropAngle(Math.round((obj.angle ?? 0) * 10) / 10)
+        setPropOpacity(Math.round((obj.opacity ?? 1) * 100))
         if (obj instanceof fabric.IText) {
           setIsText(true)
           setPropFontFamily(obj.fontFamily ?? 'Arial')
@@ -2203,6 +2242,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     }
   }
 
+  function applyOpacity(val: number) {
+    const clamped = Math.min(100, Math.max(0, val))
+    setPropOpacity(clamped)
+    const obj = fc.current?.getActiveObject()
+    if (!obj || mockupObjects.current.includes(obj)) return
+    const prev = obj.opacity ?? 1
+    obj.set({ opacity: clamped / 100 })
+    undoHistory.current.push({ type: 'opacity', obj, prevOpacity: prev })
+    redoHistory.current = []
+    fc.current?.requestRenderAll()
+  }
+
   function applyFontFamily(val: string) {
     setPropFontFamily(val)
     fontFamilyRef.current = val
@@ -2249,6 +2300,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       const ctrl = e.ctrlKey || e.metaKey
+
+      // I — gotero
+      if (!ctrl && (e.key === 'i' || e.key === 'I')) { setTool('eyedropper'); return }
 
       // Ctrl+C — copy
       if (ctrl && e.key === 'c') {
@@ -2305,6 +2359,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           entry.removed.forEach(obj => canvas.remove(obj))
           entry.added.forEach(obj => canvas.add(obj))
           undoHistory.current.push(entry)
+        } else if (entry.type === 'opacity') {
+          const cur = entry.obj.opacity ?? 1
+          entry.obj.set({ opacity: entry.prevOpacity })
+          undoHistory.current.push({ type: 'opacity', obj: entry.obj, prevOpacity: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -2334,6 +2392,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           entry.added.forEach(obj => canvas.remove(obj))
           entry.removed.forEach(obj => canvas.add(obj))
           redoHistory.current.push(entry)
+        } else if (entry.type === 'opacity') {
+          const cur = entry.obj.opacity ?? 1
+          entry.obj.set({ opacity: entry.prevOpacity })
+          redoHistory.current.push({ type: 'opacity', obj: entry.obj, prevOpacity: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -2427,7 +2489,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           <ToolBtn icon="∿" label="Pluma curvatura"  active={tool === 'curve'}  onClick={() => setTool('curve')} />
           <ToolBtn icon="T" label="Texto"             active={tool === 'text'}   onClick={() => setTool('text')} />
           <ToolBtn icon={<IconEraser />} label="Goma"    active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon={<IconBucket />} label="Relleno" active={tool === 'fill'}   onClick={() => setTool('fill')} />
+          <ToolBtn icon={<IconBucket />} label="Relleno"        active={tool === 'fill'}        onClick={() => setTool('fill')} />
+          <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"  active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
           <div style={{ width: '100%', borderTop: '1px solid var(--line-soft)', marginTop: 4, paddingTop: 4 }}>
             <ToolBtn
               icon="🖼"
@@ -2668,7 +2731,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 ))}
               </div>
               {/* Rotación */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <span className="label">Rotación</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <input type="number" step={1} min={-360} max={360} value={propAngle}
@@ -2678,6 +2741,23 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                       color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
                   <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>°</span>
                 </div>
+              </div>
+              {/* Opacidad */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span className="label">Opacidad</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="number" step={1} min={0} max={100} value={propOpacity}
+                      onChange={e => applyOpacity(Number(e.target.value))}
+                      style={{ width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
+                        background: 'var(--surface)', border: '1px solid var(--line)',
+                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>%</span>
+                  </div>
+                </div>
+                <input type="range" min={0} max={100} step={1} value={propOpacity}
+                  onChange={e => applyOpacity(Number(e.target.value))}
+                  style={{ width: '100%', accentColor: 'var(--accent)' }} />
               </div>
             </div>
           )}
@@ -2923,6 +3003,14 @@ const IconBucket = () => (
     <path d="M5 4.5 Q8 1.5 11 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     <path d="M3.5 5.5 L5 14 L11 14 L12.5 5.5 Z" />
     <rect x="3.5" y="5" width="9" height="1.5" rx="0.5" />
+  </svg>
+)
+
+const IconEyedropper = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M11.5 1.5 L14.5 4.5 L7 12 L5 14 L2 11 L4 9 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="M11.5 1.5 L14.5 4.5 L12.5 6.5 L9.5 3.5 Z" />
+    <rect x="3" y="11" width="3" height="3" rx="0.8" opacity="0.6" />
   </svg>
 )
 
