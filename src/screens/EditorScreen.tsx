@@ -604,7 +604,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
-  const [rightTab,     setRightTab]     = useState<'props' | 'layers'>('props')
+  const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
   const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
@@ -2248,6 +2248,21 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     }
   }
 
+  // ── Texturas ─────────────────────────────────────────────────────────────────
+  function applyTexture(kind: TextureKind) {
+    const canvas = fc.current
+    if (!canvas) return
+    const obj = canvas.getActiveObject()
+    if (!obj || obj.type === 'activeselection') return
+    const tile = makeTextureCanvas(kind)
+    const pattern = new fabric.Pattern({ source: tile, repeat: 'repeat' })
+    const prevFill = obj.fill as fabric.TFiller | string | null
+    obj.set({ fill: pattern as any, dirty: true })
+    undoHistory.current.push({ type: 'fill', obj, prevFill })
+    redoHistory.current = []
+    canvas.requestRenderAll()
+  }
+
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
     setPropFill(val)
@@ -2815,7 +2830,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             display: 'flex', flexShrink: 0,
             borderBottom: '1px solid var(--line-soft)',
           }}>
-            {(['props', 'layers'] as const).map(tab => (
+            {(['props', 'layers', 'textures'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setRightTab(tab)}
@@ -2824,11 +2839,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                   background: rightTab === tab ? 'var(--surface)' : 'transparent',
                   borderBottom: '2px solid ' + (rightTab === tab ? 'var(--accent)' : 'transparent'),
                   color: rightTab === tab ? 'var(--fg)' : 'var(--muted)',
-                  fontSize: 11, fontFamily: 'var(--ui)', letterSpacing: '0.06em',
+                  fontSize: 11, fontFamily: 'var(--ui)', letterSpacing: '0.04em',
                   transition: 'all 0.15s var(--ease)',
                 }}
               >
-                {tab === 'props' ? 'Propiedades' : 'Capas'}
+                {tab === 'props' ? 'Propiedades' : tab === 'layers' ? 'Capas' : 'Texturas'}
               </button>
             ))}
           </div>
@@ -3102,6 +3117,49 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               />
             </div>
           )}
+
+          {/* Textures tab */}
+          {rightTab === 'textures' && (
+            <div style={{ overflowY: 'auto', flex: 1, padding: '16px 14px' }}>
+              <div className="label" style={{ marginBottom: 6 }}>Texturas de tela</div>
+              <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                Seleccioná una figura (o desbloqueá el mockup y elegí una pieza) y tocá una textura para aplicarla.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {TEXTURES.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => applyTexture(t.id)}
+                    disabled={selKind === 'none' || selKind === 'multi'}
+                    title={selKind === 'none' || selKind === 'multi' ? 'Seleccioná una sola figura primero' : `Aplicar ${t.label}`}
+                    style={{
+                      display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
+                      background: 'none', border: 'none',
+                      cursor: (selKind === 'none' || selKind === 'multi') ? 'not-allowed' : 'pointer',
+                      opacity: (selKind === 'none' || selKind === 'multi') ? 0.45 : 1,
+                    }}
+                  >
+                    <div style={{
+                      width: '100%', aspectRatio: '1', borderRadius: 8,
+                      backgroundImage: `url(${makeTextureCanvas(t.id).toDataURL()})`,
+                      backgroundSize: '56px 56px',
+                      border: '1px solid var(--line)',
+                    }} />
+                    <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+              {(selKind === 'single' || selKind === 'group') && (
+                <button
+                  onClick={() => applyFill('#ffffff')}
+                  className="btn btn-ghost"
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 16, fontSize: 12 }}
+                >
+                  Quitar textura (color sólido)
+                </button>
+              )}
+            </div>
+          )}
         </aside>
       {/* Hidden font file input */}
       <input
@@ -3116,6 +3174,71 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 }
 
 // ── Layers panel ─────────────────────────────────────────────────────────────
+
+// ── Texturas de tela ─────────────────────────────────────────────────────────
+type TextureKind = 'rayas' | 'cuadrille' | 'lunares' | 'denim' | 'camuflado' | 'animal'
+
+const TEXTURES: { id: TextureKind; label: string }[] = [
+  { id: 'rayas',     label: 'Rayas' },
+  { id: 'cuadrille', label: 'Cuadrillé' },
+  { id: 'lunares',   label: 'Lunares' },
+  { id: 'denim',     label: 'Denim' },
+  { id: 'camuflado', label: 'Camuflado' },
+  { id: 'animal',    label: 'Animal print' },
+]
+
+// Dibuja un tile repetible de la textura sobre un canvas y lo devuelve
+function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
+  const s = 56
+  const c = document.createElement('canvas'); c.width = s; c.height = s
+  const x = c.getContext('2d')!
+  const rnd = (seed: number) => { const v = Math.sin(seed * 99.13) * 43758.5453; return v - Math.floor(v) }
+
+  if (kind === 'rayas') {
+    x.fillStyle = '#f4f1e8'; x.fillRect(0, 0, s, s)
+    x.fillStyle = '#2b3a67'
+    for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
+  } else if (kind === 'cuadrille') {
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, s, s)
+    x.fillStyle = 'rgba(196,30,58,0.55)'
+    x.fillRect(0, 0, s / 2, s); x.fillRect(0, 0, s, s / 2)
+    x.fillStyle = 'rgba(196,30,58,0.55)'
+    x.fillRect(0, 0, s / 2, s / 2); x.fillRect(s / 2, s / 2, s / 2, s / 2)
+  } else if (kind === 'lunares') {
+    x.fillStyle = '#e8c5d0'; x.fillRect(0, 0, s, s)
+    x.fillStyle = '#7a2a45'
+    const dot = (cx: number, cy: number) => { x.beginPath(); x.arc(cx, cy, 5, 0, Math.PI * 2); x.fill() }
+    dot(s * 0.25, s * 0.25); dot(s * 0.75, s * 0.75); dot(s * 0.75, s * 0.25); dot(s * 0.25, s * 0.75); dot(s * 0.5, s * 0.5)
+  } else if (kind === 'denim') {
+    x.fillStyle = '#3b5b8c'; x.fillRect(0, 0, s, s)
+    for (let i = 0; i < 1400; i++) {
+      const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
+      x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
+      x.fillRect(px, py, 1, 1)
+    }
+    x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
+    for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
+  } else if (kind === 'camuflado') {
+    const cols = ['#4b5320', '#6b6b3a', '#3a3f24', '#8a8559']
+    x.fillStyle = cols[0]; x.fillRect(0, 0, s, s)
+    for (let i = 0; i < 22; i++) {
+      x.fillStyle = cols[Math.floor(rnd(i) * cols.length)]
+      const cx = rnd(i + 1) * s, cy = rnd(i + 2) * s, r = 6 + rnd(i + 3) * 10
+      x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill()
+    }
+  } else { // animal (leopardo)
+    x.fillStyle = '#d9a441'; x.fillRect(0, 0, s, s)
+    const spot = (cx: number, cy: number) => {
+      x.strokeStyle = '#3a2410'; x.lineWidth = 2.5
+      for (let a = 0; a < 3; a++) {
+        x.beginPath()
+        x.arc(cx + (a - 1) * 5, cy + (a - 1) * 3, 4 + a, a, a + 2.4); x.stroke()
+      }
+    }
+    spot(s * 0.25, s * 0.3); spot(s * 0.7, s * 0.6); spot(s * 0.5, s * 0.85); spot(s * 0.85, s * 0.2)
+  }
+  return c
+}
 
 function getLayerLabel(obj: fabric.FabricObject): string {
   const t = (obj as any).type as string
