@@ -18,6 +18,7 @@ import PageTransition from './components/PageTransition'
 import Spotlight from './components/Spotlight'
 
 type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
+export type Theme = 'dark' | 'light' | 'illustrator'
 
 export default function App() {
   const [user, setUser]             = useState<User | null>(null)
@@ -33,7 +34,15 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
-  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void } | null>(null)
+  const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark')
+  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void } | null>(null)
+
+  // Aplica y persiste el tema (dark = por defecto, sin atributo)
+  useEffect(() => {
+    if (theme === 'dark') document.documentElement.removeAttribute('data-theme')
+    else document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
 
   // Verifica sesión activa y escucha cambios de auth
   useEffect(() => {
@@ -202,6 +211,7 @@ export default function App() {
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
           onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
+          onPlaceImage={(f: File) => editorActionsRef.current?.placeImage(f)}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
         />
@@ -244,7 +254,7 @@ export default function App() {
       )}
 
       {showProfile && (
-        <ProfilePanel user={user} projects={projects} onClose={() => setShowProfile(false)} />
+        <ProfilePanel user={user} projects={projects} theme={theme} onThemeChange={setTheme} onClose={() => setShowProfile(false)} />
       )}
     </div>
   )

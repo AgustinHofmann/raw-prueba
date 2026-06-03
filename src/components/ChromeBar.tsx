@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Logo from './Logo'
 import { Project } from '../types/project'
 
@@ -18,6 +18,7 @@ interface Props {
   onSave: () => void
   onExport: () => void
   onImportImage: (f: File) => void
+  onPlaceImage: (f: File) => void
   onRename: (name: string) => void
   onProfileOpen: () => void
 }
@@ -25,13 +26,43 @@ interface Props {
 export default function ChromeBar({
   route, openTabs, activeProject, saved, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onImportImage, onRename, onProfileOpen,
+  onSave, onExport, onImportImage, onPlaceImage, onRename, onProfileOpen,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const isEditor = route === 'editor' && activeProject !== null
 
+  // En pantalla completa la barra crece para aprovechar el espacio y verse más cómoda
+  const barH    = isFullscreen ? 56 : 40
+  const fsScale = isFullscreen ? 1.18 : 1
+
+  // Abre el selector de archivos y ejecuta la acción elegida (importar / calco)
+  function pickImage(action: (f: File) => void) {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
+    input.onchange = () => { const f = input.files?.[0]; if (f) action(f) }
+    input.click()
+    setFileMenuOpen(false)
+  }
+
   const initial = (email?.[0] ?? '?').toUpperCase()
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {})
+    } else {
+      document.documentElement.requestFullscreen().catch(() => {})
+    }
+  }
 
   function startEdit() {
     if (!activeProject) return
@@ -46,8 +77,9 @@ export default function ChromeBar({
 
   return (
     <div style={{
-      height: 40, flexShrink: 0, display: 'flex', alignItems: 'stretch',
+      height: barH, flexShrink: 0, display: 'flex', alignItems: 'stretch',
       borderBottom: '1px solid var(--line-soft)', background: 'var(--bg)',
+      transition: 'height 0.18s var(--ease)',
     }}>
 
       {/* Left: logo clickeable + slogan + home button */}
@@ -175,7 +207,7 @@ export default function ChromeBar({
                 title="Editar nombre"
                 style={{
                   background: 'none', border: 'none', cursor: 'text',
-                  fontFamily: 'var(--display)', fontStyle: 'italic', fontSize: 15,
+                  fontFamily: 'var(--display)', fontStyle: 'italic', fontSize: Math.round(15 * fsScale),
                   color: 'var(--fg)', padding: '3px 6px', borderRadius: 6,
                   transition: 'background 0.15s',
                 }}
@@ -185,31 +217,56 @@ export default function ChromeBar({
                 {activeProject!.name}
               </button>
             )}
-            <button
-              className="btn btn-ghost"
-              title="Importar imagen y vectorizar"
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              onClick={() => {
-                const input = document.createElement('input')
-                input.type = 'file'
-                input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
-                input.onchange = () => {
-                  const f = input.files?.[0]
-                  if (f) onImportImage(f)
-                }
-                input.click()
-              }}
-            >
-              🖼 Importar
-            </button>
-            <button className="btn btn-ghost" onClick={onSave} style={{ fontSize: 12, padding: '4px 12px', minWidth: 84 }}>
-              {saved ? '✓ Guardado' : 'Guardar'}
-            </button>
-            <button className="btn btn-primary" onClick={onExport} style={{ fontSize: 12, padding: '4px 12px' }}>
-              PNG ↓
-            </button>
+
+            {/* Menú Archivo (estilo Illustrator) */}
+            <div style={{ position: 'relative' }}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setFileMenuOpen(v => !v)}
+                style={{ fontSize: Math.round(12 * fsScale), padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 5 }}
+              >
+                Archivo <span style={{ fontSize: 9 }}>{fileMenuOpen ? '▴' : '▾'}</span>
+              </button>
+
+              {fileMenuOpen && (
+                <>
+                  {/* backdrop para cerrar al clickear afuera */}
+                  <div onClick={() => setFileMenuOpen(false)}
+                    style={{ position: 'fixed', inset: 0, zIndex: 90 }} />
+                  <div style={{
+                    position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 91,
+                    background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 10,
+                    boxShadow: 'var(--shadow-lg)', minWidth: 220, padding: 6,
+                    display: 'flex', flexDirection: 'column', gap: 2,
+                  }}>
+                    <MenuItem icon="📥" label="Importar imagen"   hint="colocar tal cual" onClick={() => pickImage(onPlaceImage)} />
+                    <MenuItem icon="🔀" label="Calco de imagen"   hint="vectorizar"       onClick={() => pickImage(onImportImage)} />
+                    <div style={{ height: 1, background: 'var(--line-soft)', margin: '4px 0' }} />
+                    <MenuItem icon="💾" label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
+                    <MenuItem icon="⬇" label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
+                  </div>
+                </>
+              )}
+            </div>
           </>
         )}
+
+        {/* Pantalla completa */}
+        <button
+          onClick={toggleFullscreen}
+          title={isFullscreen ? 'Salir de pantalla completa (F11)' : 'Pantalla completa (F11)'}
+          style={{
+            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+            background: 'transparent', border: '1px solid var(--line)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'var(--fg-2)', padding: 0, fontSize: 14,
+            transition: 'all 0.15s var(--ease)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
+        >
+          {isFullscreen ? '⛶' : '⛶'}
+        </button>
 
         {/* Avatar — abre el panel de perfil */}
         <button
@@ -238,5 +295,28 @@ export default function ChromeBar({
 
       </div>
     </div>
+  )
+}
+
+function MenuItem({ icon, label, hint, onClick }: {
+  icon: string; label: string; hint?: string; onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+        background: 'none', border: 'none', borderRadius: 6, cursor: 'pointer',
+        padding: '8px 10px', textAlign: 'left', color: 'var(--fg)',
+        fontFamily: 'var(--ui)', fontSize: 13,
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+      onMouseLeave={e => e.currentTarget.style.background = 'none'}
+    >
+      <span style={{ fontSize: 15, width: 18, textAlign: 'center', flexShrink: 0 }}>{icon}</span>
+      <span style={{ flex: 1 }}>{label}</span>
+      {hint && <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{hint}</span>}
+    </button>
   )
 }

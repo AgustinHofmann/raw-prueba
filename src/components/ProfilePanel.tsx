@@ -1,12 +1,21 @@
 import type { User } from '@supabase/supabase-js'
 import type { Project } from '../types/project'
+import type { Theme } from '../App'
 import { supabase } from '../lib/supabase'
 
 interface Props {
   user: User
   projects: Project[]
+  theme: Theme
+  onThemeChange: (t: Theme) => void
   onClose: () => void
 }
+
+const THEMES: { id: Theme; label: string; swatch: [string, string, string] }[] = [
+  { id: 'dark',        label: 'Oscuro',      swatch: ['#272a30', '#3a3e46', '#dfff57'] },
+  { id: 'light',       label: 'Claro',       swatch: ['#ffffff', '#e9ebef', '#a6d400'] },
+  { id: 'illustrator', label: 'Gris (AI)',   swatch: ['#3a3a3a', '#535353', '#dfff57'] },
+]
 
 function formatJoinDate(iso: string): string {
   const d = new Date(iso)
@@ -15,7 +24,7 @@ function formatJoinDate(iso: string): string {
   return `${date} a las ${time}`
 }
 
-export default function ProfilePanel({ user, projects, onClose }: Props) {
+export default function ProfilePanel({ user, projects, theme, onThemeChange, onClose }: Props) {
   const meta       = user.user_metadata ?? {}
   const name       = meta.full_name ?? meta.name ?? user.email?.split('@')[0] ?? 'Usuario'
   const avatar     = meta.avatar_url as string | undefined
@@ -155,6 +164,44 @@ export default function ProfilePanel({ user, projects, onClose }: Props) {
               {projects.filter(p => p.canvasJson).length}
             </div>
             <div className="label" style={{ marginTop: 6 }}>Guardados</div>
+          </div>
+        </div>
+
+        {/* Selector de tema */}
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--line-soft)' }}>
+          <div className="label" style={{ marginBottom: 12 }}>Apariencia</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+            {THEMES.map(t => {
+              const active = theme === t.id
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => onThemeChange(t.id)}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+                    padding: '12px 8px', cursor: 'pointer',
+                    background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',
+                    border: '1.5px solid ' + (active ? 'var(--accent)' : 'var(--line-soft)'),
+                    borderRadius: 'var(--radius)',
+                    transition: 'all 0.15s var(--ease)',
+                  }}
+                >
+                  {/* mini preview de colores */}
+                  <div style={{
+                    display: 'flex', borderRadius: 6, overflow: 'hidden',
+                    border: '1px solid var(--line-soft)', width: 44, height: 26,
+                  }}>
+                    <div style={{ flex: 1, background: t.swatch[0] }} />
+                    <div style={{ flex: 1, background: t.swatch[1] }} />
+                    <div style={{ width: 8, background: t.swatch[2] }} />
+                  </div>
+                  <span style={{
+                    fontSize: 11, fontFamily: 'var(--ui)',
+                    color: active ? 'var(--accent)' : 'var(--fg-2)',
+                  }}>{t.label}</span>
+                </button>
+              )
+            })}
           </div>
         </div>
 

@@ -4,7 +4,7 @@ import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import './EditorScreen.css'
 
-interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void }
+interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void }
 
 interface Props {
   project: Project
@@ -596,6 +596,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
+  const clipEnabledRef = useRef(true)
 
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
@@ -622,7 +623,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [fontFilter,     setFontFilter]     = useState('')
   const [fontLoading,    setFontLoading]    = useState(false)
   const [vectorizing,    setVectorizing]    = useState(false)
+  const [clipEnabled,    setClipEnabled]    = useState(true)
+  const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
 
+  useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
   useEffect(() => { fillRef.current       = propFill      }, [propFill])
@@ -633,7 +637,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng })
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -702,7 +706,37 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     })
     fc.current = canvas
 
+    // Mantener el canvas ajustado al área disponible (F11, Ctrl+/-, redimensionar ventana).
+    // Se conserva el centro de lo que estabas mirando trasladando el viewport por la mitad
+    // de la diferencia de tamaño — no destructivo (no mueve los objetos en escena).
+    let ro: ResizeObserver | null = null
+    if (area) {
+      ro = new ResizeObserver(() => {
+        const w = area.clientWidth, h = area.clientHeight
+        const oldW = canvas.getWidth(), oldH = canvas.getHeight()
+        if (!w || !h || (w === oldW && h === oldH)) return
+        canvas.setDimensions({ width: w, height: h })
+        const vpt = canvas.viewportTransform
+        if (vpt) {
+          vpt[4] += (w - oldW) / 2
+          vpt[5] += (h - oldH) / 2
+          canvas.setViewportTransform(vpt)
+        }
+        canvas.requestRenderAll()
+      })
+      ro.observe(area)
+    }
+
     const refreshLayers = () => setLayers([...canvas.getObjects()])
+    // Enforce clip toggle on newly created objects (creation sites always set clipPath;
+    // strip it when the user has clipping turned off so drawings show outside the shirt)
+    canvas.on('object:added', (e: any) => {
+      const o = e.target
+      if (o && !mockupObjects.current.includes(o) && !clipEnabledRef.current) {
+        o.clipPath = undefined
+        o.dirty = true
+      }
+    })
     canvas.on('object:added',   refreshLayers)
     canvas.on('object:removed', refreshLayers)
     canvas.on('object:modified', refreshLayers)
@@ -718,8 +752,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
       if (!ctx) return
       const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
+      // On high-DPI / Windows display scaling the backing store is larger than CSS px.
+      // Reset to the retina transform so our CSS-px coordinates land on the right device px.
+      const rs = (canvas.getRetinaScaling?.() ?? 1)
       ctx.save()
-      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.setTransform(rs, 0, 0, rs, 0, 0)
       ctx.strokeStyle = SEL_BLUE
       ctx.lineWidth   = 1
       for (const obj of active) {
@@ -758,28 +795,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     }
     canvas.on('after:render', onAfterRender)
 
-    // Keep stroke width visually constant when scaling
-    // Capture pre-scale values on mouse:down because Fabric v6 doesn't include
-    // strokeWidth in e.transform.original during object:scaling
-    canvas.on('mouse:down', () => {
-      const obj = canvas.getActiveObject()
-      if (!obj) return
-      ;(obj as any)._preSW = obj.strokeWidth ?? 0
-      ;(obj as any)._preSX = obj.scaleX ?? 1
-      ;(obj as any)._preSY = obj.scaleY ?? 1
-    })
-    canvas.on('object:scaling', (e: any) => {
-      const obj = e.target
-      if (!obj) return
-      const preSW = (obj as any)._preSW
-      if (!preSW) return
-      const preSX = (obj as any)._preSX ?? 1
-      const preSY = (obj as any)._preSY ?? 1
-      const curSX = obj.scaleX ?? 1
-      const curSY = obj.scaleY ?? 1
-      const factor = Math.sqrt((curSX / preSX) * (curSY / preSY))
-      obj.strokeWidth = Math.max(0.1, preSW / factor)
-    })
+    // Stroke width stays visually constant during scaling via strokeUniform:true on
+    // every object — no manual strokeWidth mutation needed (that caused the bounding-box
+    // to recompute mid-transform and made one-sided scaling jump). This matches Illustrator.
 
     // Marquee drag-selection box
     canvas.selectionColor       = 'rgba(18, 86, 200, 0.06)'
@@ -868,7 +886,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       canvas.renderAll()
     })
 
-    return () => { cancelled = true; canvas.off('after:render', onAfterRender); canvas.dispose() }
+    return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.dispose() }
   }, [project.mockupId])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
@@ -949,6 +967,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.getObjects().forEach(obj => {
       const isMockup = mockupObjects.current.includes(obj)
       const isIText  = obj instanceof fabric.IText
+      const isLocked = !!(obj as any)._locked
+      if (isLocked && !isMockup) {
+        // Locked objects stay non-interactive regardless of the active tool
+        obj.set({ selectable: false, evented: false })
+        return
+      }
       obj.set({
         evented:    isMockup
           ? tool === 'fill'
@@ -2181,6 +2205,31 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     }
   }
 
+  // Importar imagen tal cual (raster), sin vectorizar — como "Colocar" de Illustrator
+  async function handlePlaceImage(file: File) {
+    const canvas = fc.current
+    if (!canvas) return
+    try {
+      const url = URL.createObjectURL(file)
+      const img = await fabric.FabricImage.fromURL(url, { crossOrigin: 'anonymous' })
+      URL.revokeObjectURL(url)
+      const cw = canvas.width  ?? 800
+      const ch = canvas.height ?? 600
+      const scale = Math.min(cw / (img.width ?? 1), ch / (img.height ?? 1)) * 0.85
+      img.set({ scaleX: scale, scaleY: scale, left: cw / 2, top: ch / 2, originX: 'center', originY: 'center' })
+      if (clipEnabledRef.current && clipPath.current) img.clipPath = clipPath.current
+      img.setCoords()
+      canvas.add(img)
+      canvas.setActiveObject(img)
+      undoHistory.current.push({ type: 'add', obj: img })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      setTool('select')
+    } catch (err) {
+      console.error('Error al importar la imagen:', err)
+    }
+  }
+
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
     setPropFill(val)
@@ -2473,6 +2522,74 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     setPanned(false)
   }
 
+  // ── Clip toggle: mostrar/ocultar lo que está fuera de la remera ──────────────
+  function toggleClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const next = !clipEnabled
+    setClipEnabled(next)
+    clipEnabledRef.current = next
+    canvas.getObjects().forEach(obj => {
+      if (mockupObjects.current.includes(obj)) return
+      if (obj instanceof fabric.IText) return  // el texto nunca se recorta
+      obj.clipPath = next ? (clipPath.current ?? undefined) : undefined
+      // Fabric cachea el render del objeto; sin marcar dirty reusa la versión recortada
+      obj.dirty = true
+    })
+    canvas.requestRenderAll()
+  }
+
+  // ── Acciones del panel de capas ─────────────────────────────────────────────
+  function refreshLayersNow() {
+    const canvas = fc.current
+    if (canvas) setLayers([...canvas.getObjects()])
+    setLayersVersion(v => v + 1)
+  }
+
+  function toggleLayerVisible(obj: fabric.FabricObject) {
+    obj.visible = !obj.visible
+    if (!obj.visible && obj === fc.current?.getActiveObject()) {
+      fc.current?.discardActiveObject()
+    }
+    fc.current?.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function toggleLayerLock(obj: fabric.FabricObject) {
+    const locked = !((obj as any)._locked)
+    ;(obj as any)._locked = locked
+    obj.selectable = !locked && tool === 'select'
+    obj.evented    = !locked
+    if (locked && obj === fc.current?.getActiveObject()) {
+      fc.current?.discardActiveObject()
+    }
+    fc.current?.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function moveLayer(obj: fabric.FabricObject, dir: 'up' | 'down') {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = canvas.getObjects()
+    const idx  = objs.indexOf(obj)
+    const minIdx = mockupObjects.current.length  // mantener objetos por encima del mockup
+    if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
+    if (dir === 'down' && idx > minIdx)        canvas.sendObjectBackwards(obj)
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function deleteLayer(obj: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas) return
+    undoHistory.current.push({ type: 'remove', obj })
+    redoHistory.current = []
+    if (obj === canvas.getActiveObject()) canvas.discardActiveObject()
+    canvas.remove(obj)
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
   const viewChanged = Math.abs(zoom - 1) > 0.01 || panned
 
   return (
@@ -2491,25 +2608,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           <ToolBtn icon={<IconEraser />} label="Goma"    active={tool === 'eraser'} onClick={() => setTool('eraser')} />
           <ToolBtn icon={<IconBucket />} label="Relleno"        active={tool === 'fill'}        onClick={() => setTool('fill')} />
           <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"  active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
-          <div style={{ width: '100%', borderTop: '1px solid var(--line-soft)', marginTop: 4, paddingTop: 4 }}>
-            <ToolBtn
-              icon="🖼"
-              label="Importar imagen y vectorizar"
-              active={false}
-              onClick={() => {
-                const input = document.createElement('input')
-                input.type = 'file'
-                input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
-                document.body.appendChild(input)
-                input.addEventListener('change', () => {
-                  const f = input.files?.[0]
-                  if (f) handleImportPng(f)
-                  document.body.removeChild(input)
-                })
-                input.click()
-              }}
-            />
-          </div>
           <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-soft)', paddingTop: 8, width: '100%' }}>
             <div className="mono" style={{ fontSize: 8, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.8 }}>Z<br/>⇧Z</div>
           </div>
@@ -2525,6 +2623,26 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
+
+          {/* Toggle: recortar / mostrar lo que está fuera de la remera */}
+          <button
+            onClick={toggleClip}
+            title={clipEnabled ? 'Mostrar lo que está fuera de la remera' : 'Recortar a la remera (ocultar lo de afuera)'}
+            style={{
+              position: 'absolute', top: 14, left: 14, zIndex: 20,
+              display: 'flex', alignItems: 'center', gap: 7,
+              background: 'var(--bg)',
+              border: '1px solid ' + (clipEnabled ? 'var(--line)' : 'var(--accent)'),
+              borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+              fontFamily: 'var(--ui)', fontSize: 11,
+              color: clipEnabled ? 'var(--fg-2)' : 'var(--accent)',
+              boxShadow: 'var(--shadow-lg)',
+              transition: 'all 0.15s var(--ease)',
+            }}
+          >
+            <span style={{ fontSize: 13 }}>{clipEnabled ? '✂️' : '👁'}</span>
+            <span>{clipEnabled ? 'Recortado a la remera' : 'Mostrando todo'}</span>
+          </button>
           {vectorizing && (
             <div style={{
               position: 'absolute', inset: 0, zIndex: 50,
@@ -2833,10 +2951,13 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
               <LayersPanel
                 layers={layers}
+                version={layersVersion}
+                mockupObjects={mockupObjects.current}
                 selectedObj={selectedObj}
                 onSelect={obj => {
                   const canvas = fc.current
                   if (!canvas) return
+                  if ((obj as any)._locked || obj.visible === false) return
                   setTool('select')
                   setSelectedObj(obj)
                   canvas.isDrawingMode = false
@@ -2846,6 +2967,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                   canvas.setActiveObject(obj)
                   canvas.requestRenderAll()
                 }}
+                onToggleVisible={toggleLayerVisible}
+                onToggleLock={toggleLayerLock}
+                onMove={moveLayer}
+                onDelete={deleteLayer}
               />
             </div>
           )}
@@ -2863,8 +2988,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 }
 
 // ── Layers panel ─────────────────────────────────────────────────────────────
-
-type LayerGroup = { label: string; icon: string; items: fabric.FabricObject[] }
 
 function getLayerLabel(obj: fabric.FabricObject): string {
   const t = (obj as any).type as string
@@ -2888,85 +3011,109 @@ function getLayerIcon(obj: fabric.FabricObject): string {
   return '·'
 }
 
-function LayersPanel({ layers, selectedObj, onSelect }: {
+function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onDelete }: {
   layers: fabric.FabricObject[]
+  version: number
+  mockupObjects: fabric.FabricObject[]
   selectedObj: fabric.FabricObject | null
   onSelect: (obj: fabric.FabricObject) => void
+  onToggleVisible: (obj: fabric.FabricObject) => void
+  onToggleLock: (obj: fabric.FabricObject) => void
+  onMove: (obj: fabric.FabricObject, dir: 'up' | 'down') => void
+  onDelete: (obj: fabric.FabricObject) => void
 }) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  void version  // forces re-render when visibility/lock toggles mutate objects in place
 
-  const mockup   = layers.filter(o => (o as any)._rawMockup)
-  const texts    = layers.filter(o => !((o as any)._rawMockup) && ((o as any).type === 'i-text' || (o as any).type === 'text'))
-  const paths    = layers.filter(o => !((o as any)._rawMockup) && ((o as any).type === 'path' || (o as any).type === 'line'))
-  const others   = layers.filter(o => !((o as any)._rawMockup) && (o as any).type !== 'i-text' && (o as any).type !== 'text' && (o as any).type !== 'path' && (o as any).type !== 'line')
+  // User objects in stacking order, front-most first (top of the list = top of the canvas)
+  const userObjs = layers.filter(o => !mockupObjects.includes(o))
+  const ordered  = [...userObjs].reverse()
+  const hasMockup = mockupObjects.length > 0
 
-  const groups: LayerGroup[] = [
-    { label: 'Trazados',  icon: '∿', items: [...paths].reverse()  },
-    { label: 'Texto',     icon: 'T', items: [...texts].reverse()  },
-    { label: 'Otros',     icon: '▭', items: [...others].reverse() },
-    { label: 'Mockup',    icon: '◈', items: [...mockup].reverse() },
-  ].filter(g => g.items.length > 0)
-
-  if (groups.length === 0) {
+  if (ordered.length === 0 && !hasMockup) {
     return (
       <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
-        Sin capas
+        Sin capas todavía. Dibujá algo para empezar.
       </div>
     )
   }
 
-  function toggle(label: string) {
-    setCollapsed(prev => ({ ...prev, [label]: !prev[label] }))
-  }
+  const iconBtn = (content: React.ReactNode, title: string, onClick: () => void, active = false, danger = false): React.ReactNode => (
+    <span
+      role="button"
+      title={title}
+      onClick={e => { e.stopPropagation(); onClick() }}
+      style={{
+        width: 20, height: 20, flexShrink: 0, borderRadius: 5,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 11, cursor: 'pointer', userSelect: 'none',
+        color: danger ? 'var(--muted)' : (active ? 'var(--accent)' : 'var(--muted)'),
+        transition: 'background 0.1s, color 0.1s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = danger ? 'var(--red, #f87171)' : 'var(--fg)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = danger ? 'var(--muted)' : (active ? 'var(--accent)' : 'var(--muted)') }}
+    >
+      {content}
+    </span>
+  )
 
   return (
     <div>
-      {groups.map(group => (
-        <div key={group.label}>
-          {/* Group header */}
-          <button
-            onClick={() => toggle(group.label)}
+      {ordered.map((obj, i) => {
+        const isSelected = obj === selectedObj
+        const locked  = !!(obj as any)._locked
+        const hidden  = obj.visible === false
+        const isFirst = i === 0                       // front-most → can't go further up
+        const isLast  = i === ordered.length - 1      // back-most → can't go further down
+        return (
+          <div
+            key={i}
+            onClick={() => onSelect(obj)}
             style={{
-              width: '100%', display: 'flex', alignItems: 'center', gap: 7,
-              padding: '5px 12px', border: 'none', background: 'none', cursor: 'pointer',
-              color: 'var(--muted)', fontFamily: 'var(--ui)', fontSize: 10,
-              letterSpacing: '0.12em', textTransform: 'uppercase',
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '5px 8px 5px 10px',
+              background: isSelected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+              borderLeft: '2px solid ' + (isSelected ? 'var(--accent)' : 'transparent'),
+              cursor: 'pointer', fontFamily: 'var(--ui)', fontSize: 11,
+              color: hidden ? 'var(--muted)' : (isSelected ? 'var(--fg)' : 'var(--fg-2)'),
               borderBottom: '1px solid var(--line-soft)',
+              opacity: hidden ? 0.55 : 1,
+              transition: 'background 0.1s, color 0.1s',
             }}
+            onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--surface)' }}
+            onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
           >
-            <span style={{ fontSize: 9, transition: 'transform 0.15s', transform: collapsed[group.label] ? 'rotate(-90deg)' : 'none' }}>▾</span>
-            <span style={{ fontSize: 11, marginRight: 2 }}>{group.icon}</span>
-            {group.label}
-            <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{group.items.length}</span>
-          </button>
+            <span style={{ fontSize: 10, color: isSelected ? 'var(--accent)' : 'var(--muted)', width: 12, textAlign: 'center', flexShrink: 0 }}>{getLayerIcon(obj)}</span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: locked ? 'none' : 'none' }}>
+              {getLayerLabel(obj)}
+            </span>
 
-          {/* Layer rows */}
-          {!collapsed[group.label] && group.items.map((obj, i) => {
-            const isSelected = obj === selectedObj
-            return (
-              <button
-                key={i}
-                onClick={() => onSelect(obj)}
-                style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '6px 12px 6px 24px', border: 'none',
-                  background: isSelected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'none',
-                  borderLeft: '2px solid ' + (isSelected ? 'var(--accent)' : 'transparent'),
-                  cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--ui)', fontSize: 11,
-                  color: isSelected ? 'var(--fg)' : 'var(--fg-2)',
-                  borderBottom: '1px solid var(--line-soft)',
-                  transition: 'background 0.1s, color 0.1s',
-                }}
-                onMouseEnter={e => { if (!isSelected) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' } }}
-                onMouseLeave={e => { if (!isSelected) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--fg-2)' } }}
-              >
-                <span style={{ fontSize: 10, color: isSelected ? 'var(--accent)' : 'var(--muted)', width: 12, textAlign: 'center', flexShrink: 0 }}>{getLayerIcon(obj)}</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getLayerLabel(obj)}</span>
-              </button>
-            )
-          })}
+            {/* Reorder */}
+            <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 0.7, flexShrink: 0 }}>
+              <span role="button" title="Subir" onClick={e => { e.stopPropagation(); if (!isFirst) onMove(obj, 'up') }}
+                style={{ fontSize: 9, cursor: isFirst ? 'default' : 'pointer', color: isFirst ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▲</span>
+              <span role="button" title="Bajar" onClick={e => { e.stopPropagation(); if (!isLast) onMove(obj, 'down') }}
+                style={{ fontSize: 9, cursor: isLast ? 'default' : 'pointer', color: isLast ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▼</span>
+            </span>
+
+            {iconBtn(hidden ? '🚫' : '👁', hidden ? 'Mostrar' : 'Ocultar', () => onToggleVisible(obj), !hidden)}
+            {iconBtn(locked ? '🔒' : '🔓', locked ? 'Desbloquear' : 'Bloquear', () => onToggleLock(obj), locked)}
+            {iconBtn('✕', 'Eliminar', () => onDelete(obj), false, true)}
+          </div>
+        )
+      })}
+
+      {hasMockup && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 10px', marginTop: 4,
+          borderTop: '1px solid var(--line-soft)',
+          color: 'var(--muted)', fontFamily: 'var(--ui)', fontSize: 11,
+        }}>
+          <span style={{ fontSize: 11, width: 12, textAlign: 'center' }}>◈</span>
+          <span style={{ flex: 1 }}>Mockup (remera)</span>
+          <span style={{ fontSize: 10 }}>🔒</span>
         </div>
-      ))}
+      )}
     </div>
   )
 }
