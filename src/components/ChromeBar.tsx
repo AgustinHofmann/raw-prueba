@@ -17,6 +17,7 @@ interface Props {
   onNewProject: () => void
   onSave: () => void
   onExport: () => void
+  onImportImage: (f: File) => void
   onRename: (name: string) => void
   onProfileOpen: () => void
 }
@@ -24,7 +25,7 @@ interface Props {
 export default function ChromeBar({
   route, openTabs, activeProject, saved, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onRename, onProfileOpen,
+  onSave, onExport, onImportImage, onRename, onProfileOpen,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -184,6 +185,23 @@ export default function ChromeBar({
                 {activeProject!.name}
               </button>
             )}
+            <button
+              className="btn btn-ghost"
+              title="Importar imagen y vectorizar"
+              style={{ fontSize: 12, padding: '4px 10px' }}
+              onClick={() => {
+                const input = document.createElement('input')
+                input.type = 'file'
+                input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
+                input.onchange = () => {
+                  const f = input.files?.[0]
+                  if (f) onImportImage(f)
+                }
+                input.click()
+              }}
+            >
+              🖼 Importar
+            </button>
             <button className="btn btn-ghost" onClick={onSave} style={{ fontSize: 12, padding: '4px 12px', minWidth: 84 }}>
               {saved ? '✓ Guardado' : 'Guardar'}
             </button>

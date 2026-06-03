@@ -1,19 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 450" width="400" height="450">
-  <!-- T-Shirt flat mockup -->
-  <!-- Body -->
-  <path id="body" d="M 100 120 L 60 140 L 40 220 L 90 230 L 90 420 L 310 420 L 310 230 L 360 220 L 340 140 L 300 120 Z"
-    fill="#CCCCCC" stroke="#999999" stroke-width="2"/>
-  <!-- Left sleeve -->
-  <path id="sleeve-left" d="M 100 120 L 60 140 L 40 220 L 90 230 L 90 160 Z"
-    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
-  <!-- Right sleeve -->
-  <path id="sleeve-right" d="M 300 120 L 340 140 L 360 220 L 310 230 L 310 160 Z"
-    fill="#BBBBBB" stroke="#999999" stroke-width="2"/>
-  <!-- Collar -->
-  <path id="collar" d="M 160 120 Q 200 145 240 120 Q 220 100 200 98 Q 180 100 160 120 Z"
-    fill="#AAAAAA" stroke="#999999" stroke-width="1.5"/>
-  <!-- Shoulder seam left -->
-  <line x1="100" y1="120" x2="160" y2="120" stroke="#999999" stroke-width="1.5"/>
-  <!-- Shoulder seam right -->
-  <line x1="240" y1="120" x2="300" y2="120" stroke="#999999" stroke-width="1.5"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Capa_1" data-name="Capa 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 494.59 358.29">
+  
+  <path fill="#b2b2b2" stroke="#010101" stroke-miterlimit="10" stroke-width="2" d="M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M208.82,15.39s38.5,12.6,80.07,2.15"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M101.36,26.21s24.92,50.85-8.87,146.95"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M392.43,31.46s-25.26,45.67,8.53,141.78"/>
+  <path d="M 462.27 174.84 L 485.7 56.86" fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M207.82,10.09s39.45,12.6,82.06,2.15"/>
+  <path fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2" d="M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25"/>
+  <path d="M 30.48 176.77 L 8.82 49.98" fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2"/>
+  <path d="M 86.04 343.69 L 407.63 343.69" fill="none" stroke="#1d1d1b" stroke-miterlimit="10" stroke-width="2"/>
 </svg>

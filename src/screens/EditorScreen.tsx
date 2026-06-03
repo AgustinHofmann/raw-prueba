@@ -4,7 +4,7 @@ import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import './EditorScreen.css'
 
-interface EditorActions { save: () => void; export: () => void }
+interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void }
 
 interface Props {
   project: Project
@@ -451,25 +451,64 @@ function findCircleCrossings(
   return ts
 }
 
-// Returns null if the eraser doesn't actually intersect the path centerline (no change needed).
-// Returns [] if the entire path falls inside the eraser (path fully erased).
-// Returns path fragments otherwise.
+// Cuts exact bezier sub-segments using findCircleCrossings + subBezier.
+// Returns null  → eraser doesn't touch any centerline (skip remove/re-add entirely).
+// Returns []    → entire path is inside the eraser (delete it).
+// Returns [...] → SVG path strings for each surviving fragment.
 function eraseCircleFromPath(path: fabric.Path, cx: number, cy: number, r: number): string[] | null {
-  const r2 = r * r
   const cmds = extractBezierCmds(path)
   if (!cmds.length) return null
 
-  const samples: { x: number; y: number; newSub: boolean }[] = []
+  const r2 = r * r
+  type SubSeg = [fabric.Point, fabric.Point, fabric.Point, fabric.Point]
+  const fragments: SubSeg[][] = []
+  let current: SubSeg[] = []
+  let anyErased = false
   let prev = new fabric.Point(0, 0)
-  const N = 48
+  let subpathStart = new fabric.Point(0, 0)
+
+  const breakFragment = () => {
+    if (current.length > 0) { fragments.push(current); current = [] }
+  }
+
+  // Processes one bezier segment (p0→endPt via cp1,cp2) against the eraser
+  const processSegment = (p0: fabric.Point, cp1: fabric.Point, cp2: fabric.Point, endPt: fabric.Point) => {
+    const crossings = findCircleCrossings(p0, cp1, cp2, endPt, cx, cy, r)
+    if (crossings.length === 0) {
+      if ((p0.x - cx) ** 2 + (p0.y - cy) ** 2 < r2) { anyErased = true; breakFragment() }
+      else { current.push([p0, cp1, cp2, endPt]) }
+      return
+    }
+    anyErased = true
+    const ts: number[] = [0, ...crossings.sort((a, b) => a - b), 1]
+    const cleanTs: number[] = [ts[0]]
+    for (let i = 1; i < ts.length; i++)
+      if (ts[i] - cleanTs[cleanTs.length - 1] > 1e-6) cleanTs.push(ts[i])
+    for (let i = 0; i < cleanTs.length - 1; i++) {
+      const t0 = cleanTs[i], t1 = cleanTs[i + 1]
+      const mx = cubicAt(p0.x, cp1.x, cp2.x, endPt.x, (t0 + t1) / 2)
+      const my = cubicAt(p0.y, cp1.y, cp2.y, endPt.y, (t0 + t1) / 2)
+      if ((mx - cx) ** 2 + (my - cy) ** 2 < r2) breakFragment()
+      else current.push(subBezier(p0, cp1, cp2, endPt, t0, t1))
+    }
+  }
 
   for (const cmd of cmds) {
-    if (cmd.type === 'Z') continue
-    if (cmd.type === 'M') {
-      prev = cmd.pts[0]
-      samples.push({ x: prev.x, y: prev.y, newSub: true })
+    if (cmd.type === 'Z') {
+      // Expand Z → explicit line from prev back to subpath start so this edge can be erased too
+      if (Math.hypot(prev.x - subpathStart.x, prev.y - subpathStart.y) > 0.5) {
+        const ep = subpathStart
+        processSegment(prev,
+          new fabric.Point(prev.x + (ep.x - prev.x) / 3, prev.y + (ep.y - prev.y) / 3),
+          new fabric.Point(prev.x + 2 * (ep.x - prev.x) / 3, prev.y + 2 * (ep.y - prev.y) / 3),
+          ep)
+      }
+      breakFragment()
+      prev = subpathStart
       continue
     }
+    if (cmd.type === 'M') { breakFragment(); subpathStart = cmd.pts[0]; prev = cmd.pts[0]; continue }
+
     const p0 = prev
     let cp1: fabric.Point, cp2: fabric.Point, endPt: fabric.Point
     if (cmd.type === 'L') {
@@ -479,44 +518,59 @@ function eraseCircleFromPath(path: fabric.Path, cx: number, cy: number, r: numbe
     } else {
       cp1 = cmd.pts[0]; cp2 = cmd.pts[1]; endPt = cmd.pts[2]
     }
-    for (let i = 1; i <= N; i++) {
-      const t = i / N
-      samples.push({
-        x: cubicAt(p0.x, cp1.x, cp2.x, endPt.x, t),
-        y: cubicAt(p0.y, cp1.y, cp2.y, endPt.y, t),
-        newSub: false,
-      })
-    }
     prev = endPt
+    processSegment(p0, cp1, cp2, endPt)
   }
 
-  // If no sample lands inside the eraser circle, the centerline is not actually hit.
-  // Return null so the caller skips the remove/re-add cycle entirely.
-  const anyInside = samples.some(s => !s.newSub && (s.x - cx) ** 2 + (s.y - cy) ** 2 < r2)
-  if (!anyInside) return null
+  breakFragment()
+  if (!anyErased) return null
 
-  const groups: fabric.Point[][] = []
-  let cur: fabric.Point[] = []
-
-  for (const s of samples) {
-    if (s.newSub) {
-      if (cur.length >= 2) groups.push(cur)
-      cur = []
-    }
-    const inside = (s.x - cx) ** 2 + (s.y - cy) ** 2 < r2
-    if (inside) {
-      if (cur.length >= 2) groups.push(cur)
-      cur = []
-    } else {
-      cur.push(new fabric.Point(s.x, s.y))
-    }
-  }
-  if (cur.length >= 2) groups.push(cur)
-
-  return groups
-    .map(pts => catmullRomToBezier(pts))
-    .filter(d => d.length > 0)
+  return fragments
+    .filter(f => f.length > 0)
+    .map(segs => {
+      let d = `M ${segs[0][0].x} ${segs[0][0].y}`
+      for (const [sp0, scp1, scp2, sp1] of segs)
+        d += ` C ${scp1.x} ${scp1.y} ${scp2.x} ${scp2.y} ${sp1.x} ${sp1.y}`
+      return d
+    })
 }
+
+// ── Illustrator-style selection controls ────────────────────────────────────
+// Defined at module level so hot-reload re-applies them instantly (useEffect
+// only runs on mount and would be stale after HMR).
+const SEL_BLUE  = '#1256C8'   // darker AI-like blue
+const SEL_H     = 6           // handle visual size in screen px
+
+function renderAIHandle(ctx: CanvasRenderingContext2D, left: number, top: number) {
+  const x = Math.round(left - SEL_H / 2) + 0.5
+  const y = Math.round(top  - SEL_H / 2) + 0.5
+  const s = SEL_H - 1
+  ctx.save()
+  ctx.fillStyle   = '#ffffff'
+  ctx.fillRect(x, y, s, s)
+  ctx.strokeStyle = SEL_BLUE
+  ctx.lineWidth   = 1
+  ctx.strokeRect(x, y, s, s)
+  ctx.restore()
+}
+
+Object.assign(fabric.FabricObject.ownDefaults, {
+  borderColor:        SEL_BLUE,
+  borderScaleFactor:  1,
+  cornerSize:         SEL_H + 4,
+  cornerStyle:        'rect',
+  transparentCorners: false,   // false = Fabric also draws white fill as fallback
+  cornerColor:        '#ffffff',
+  cornerStrokeColor:  SEL_BLUE,
+})
+fabric.FabricObject.prototype.padding = 0
+try {
+  const _c = fabric.FabricObject.prototype.controls
+  Object.keys(_c).forEach(k => {
+    _c[k].render = k === 'mtr' ? (() => {}) as any : renderAIHandle as any
+  })
+} catch (_) {}
+// ────────────────────────────────────────────────────────────────────────────
 
 // Lápiz: punta abajo-izquierda, borrador arriba-derecha
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
@@ -563,6 +617,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [fontPickerOpen, setFontPickerOpen] = useState(false)
   const [fontFilter,     setFontFilter]     = useState('')
   const [fontLoading,    setFontLoading]    = useState(false)
+  const [vectorizing,    setVectorizing]    = useState(false)
 
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
@@ -574,7 +629,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef })
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -652,6 +707,53 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.on('selection:updated', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
     canvas.on('selection:cleared', () => setSelectedObj(null))
 
+    // Illustrator-style path highlight: 1px blue stroke along the selected path(s)
+    const onAfterRender = () => {
+      const active = canvas.getActiveObjects()
+      if (!active.length) return
+      const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
+      if (!ctx) return
+      const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.strokeStyle = SEL_BLUE
+      ctx.lineWidth   = 1
+      for (const obj of active) {
+        const pathCmds = (obj as any).path as any[][] | undefined
+        if (!pathCmds) continue
+        const T  = obj.calcTransformMatrix() as number[]
+        const po = (obj as fabric.Path).pathOffset ?? { x: 0, y: 0 }
+        // Fabric renders: transform(calcTransformMatrix) → translate(-pathOffset) → draw path
+        // So screen = vpt * T * (point - pathOffset)
+        // Bake pathOffset into T: T'[4,5] shift by T * (-po)
+        const t4 = T[0]*(-po.x) + T[2]*(-po.y) + T[4]
+        const t5 = T[1]*(-po.x) + T[3]*(-po.y) + T[5]
+        const ft = [
+          vpt[0]*T[0] + vpt[2]*T[1], vpt[1]*T[0] + vpt[3]*T[1],
+          vpt[0]*T[2] + vpt[2]*T[3], vpt[1]*T[2] + vpt[3]*T[3],
+          vpt[0]*t4   + vpt[2]*t5   + vpt[4],
+          vpt[1]*t4   + vpt[3]*t5   + vpt[5],
+        ]
+        const tp = (x: number, y: number) =>
+          [ft[0]*x + ft[2]*y + ft[4], ft[1]*x + ft[3]*y + ft[5]] as const
+        ctx.beginPath()
+        for (const cmd of pathCmds) {
+          switch (cmd[0]) {
+            case 'M': case 'm': { const [px,py] = tp(cmd[1],cmd[2]); ctx.moveTo(px,py); break }
+            case 'L': case 'l': { const [px,py] = tp(cmd[1],cmd[2]); ctx.lineTo(px,py); break }
+            case 'C': case 'c': {
+              const [x1,y1] = tp(cmd[1],cmd[2]), [x2,y2] = tp(cmd[3],cmd[4]), [x3,y3] = tp(cmd[5],cmd[6])
+              ctx.bezierCurveTo(x1,y1,x2,y2,x3,y3); break
+            }
+            case 'Z': case 'z': ctx.closePath(); break
+          }
+        }
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+    canvas.on('after:render', onAfterRender)
+
     // Keep stroke width visually constant when scaling
     // Capture pre-scale values on mouse:down because Fabric v6 doesn't include
     // strokeWidth in e.transform.original during object:scaling
@@ -675,42 +777,13 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       obj.strokeWidth = Math.max(0.1, preSW / factor)
     })
 
-    // Marquee selection box — thin solid line, barely visible fill
-    canvas.selectionColor       = 'rgba(29, 119, 224, 0.04)'
-    canvas.selectionBorderColor = '#1D77E0'
+    // Marquee drag-selection box
+    canvas.selectionColor       = 'rgba(18, 86, 200, 0.06)'
+    canvas.selectionBorderColor = SEL_BLUE
     canvas.selectionLineWidth   = 1
     ;(canvas as any).selectionDashArray = []
     ;(canvas as any).uniformScaling     = false
     canvas.skipOffscreen = false
-
-    // Illustrator-style handle renderer: small white square, 1px blue stroke
-    const AI_HANDLE_SIZE = 6
-    function renderAIHandle(ctx: CanvasRenderingContext2D, left: number, top: number) {
-      const h = AI_HANDLE_SIZE
-      ctx.save()
-      ctx.fillStyle   = '#ffffff'
-      ctx.strokeStyle = '#1D77E0'
-      ctx.lineWidth   = 1
-      ctx.fillRect(  left - h / 2, top - h / 2, h, h)
-      ctx.strokeRect(left - h / 2, top - h / 2, h, h)
-      ctx.restore()
-    }
-
-    Object.assign(fabric.FabricObject.prototype, {
-      borderColor:       '#1D77E0',
-      borderScaleFactor: 1,
-      cornerSize:        AI_HANDLE_SIZE + 4,
-      cornerStyle:       'rect',
-      transparentCorners: true,
-      padding:            4,
-    })
-
-    try {
-      const controls = fabric.FabricObject.prototype.controls
-      Object.keys(controls).forEach(key => {
-        if (key !== 'mtr') controls[key].render = renderAIHandle as any
-      })
-    } catch (_) {}
 
     const svgUrl = `/mockups/${project.mockupId}.svg`
 
@@ -745,15 +818,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
       const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
       if (cancelled) return
-      const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[]).map(obj => {
-        obj.set({
-          left:   (obj.left   ?? 0) * sc + ox,
-          top:    (obj.top    ?? 0) * sc + oy,
-          scaleX: (obj.scaleX ?? 1) * sc,
-          scaleY: (obj.scaleY ?? 1) * sc,
+      // Only use filled shapes as clip path — stroke-only paths (fill=none) create
+      // hairline clip regions that make drawn objects invisible.
+      const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[])
+        .filter(obj => obj.fill && obj.fill !== 'none' && obj.fill !== '')
+        .map(obj => {
+          obj.set({
+            left:   (obj.left   ?? 0) * sc + ox,
+            top:    (obj.top    ?? 0) * sc + oy,
+            scaleX: (obj.scaleX ?? 1) * sc,
+            scaleY: (obj.scaleY ?? 1) * sc,
+          })
+          return obj
         })
-        return obj
-      })
       const cg = new fabric.Group(clipObjs)
       cg.absolutePositioned = true
       clipPath.current = cg
@@ -787,7 +864,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       canvas.renderAll()
     })
 
-    return () => { cancelled = true; canvas.dispose() }
+    return () => { cancelled = true; canvas.off('after:render', onAfterRender); canvas.dispose() }
   }, [project.mockupId])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
@@ -1127,7 +1204,24 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         clearTemp()
         if (anchors.length === 0) { canvas.requestRenderAll(); return }
 
-        // Path comprometido hasta ahora
+        // Relleno preview en tiempo real (igual que Illustrator: muestra el fill aunque el path esté abierto)
+        const hasFill = fillRef.current !== null && fillRef.current !== ''
+        if (hasFill && anchors.length >= 1) {
+          let fillPathStr: string
+          if (isClosing) {
+            fillPathStr = buildPenPath(anchors, true)
+          } else if (!mouseIsDown && cursor) {
+            fillPathStr = buildPenPath(anchors) + ` L ${cursor.x} ${cursor.y} Z`
+          } else {
+            fillPathStr = buildPenPath(anchors) + ' Z'
+          }
+          addTemp(new fabric.Path(fillPathStr, {
+            fill: fillRef.current, strokeWidth: 0,
+            selectable: false, evented: false,
+          }))
+        }
+
+        // Path comprometido hasta ahora (trazo)
         if (anchors.length >= 2) {
           const previewPathStr = buildPenPath(anchors)
           addTemp(new fabric.Path(previewPathStr, {
@@ -1810,13 +1904,15 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         }
       }
 
-      const onMove = (e: fabric.TPointerEventInfo) => {
-        const p = e.scenePoint
-        const r = brushSizeRef.current
-        showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
-        if (!isMouseDown.current) return
+      let eraseRafId: number | null = null
+      let eraseLastPt: fabric.Point | null = null
 
-        // Collect candidates (bbox pre-filter, exclude mockup objects)
+      const runErase = () => {
+        eraseRafId = null
+        if (!eraseLastPt || !isMouseDown.current) return
+        const p = eraseLastPt
+        const r = brushSizeRef.current
+
         const candidates = canvas.getObjects().filter(obj => {
           if (mockupObjects.current.includes(obj)) return false
           if (!(obj as any).path) return false
@@ -1826,65 +1922,43 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         })
 
         for (const obj of candidates) {
-          // Pre-check: eraser circle must actually touch the path stroke
-          const sw2 = (obj.strokeWidth ?? 0) * (obj.strokeWidth ?? 0) / 4
-          const hitR2 = (r + Math.sqrt(sw2)) ** 2
-          let pathHit = false
-          {
-            let pp = new fabric.Point(0, 0)
-            outer: for (const cmd of extractBezierCmds(obj as fabric.Path)) {
-              if (cmd.type === 'Z') continue
-              if (cmd.type === 'M') { pp = cmd.pts[0]; continue }
-              const ep = cmd.pts[cmd.pts.length - 1]
-              const c1 = cmd.type === 'C' ? cmd.pts[0] : new fabric.Point(pp.x + (ep.x - pp.x) / 3, pp.y + (ep.y - pp.y) / 3)
-              const c2 = cmd.type === 'C' ? cmd.pts[1] : new fabric.Point(pp.x + 2*(ep.x - pp.x) / 3, pp.y + 2*(ep.y - pp.y) / 3)
-              for (let qi = 0; qi <= 16; qi++) {
-                const qt = qi / 16
-                const qx = cubicAt(pp.x, c1.x, c2.x, ep.x, qt)
-                const qy = cubicAt(pp.y, c1.y, c2.y, ep.y, qt)
-                if ((qx - p.x) ** 2 + (qy - p.y) ** 2 < hitR2) { pathHit = true; break outer }
-              }
-              pp = ep
-            }
-          }
-          if (!pathHit) continue
-
           const pathStrings = eraseCircleFromPath(obj as fabric.Path, p.x, p.y, r)
-
-          // null means the eraser only touched the visual stroke but not the centerline —
-          // skip to avoid the remove/reconstruct loop that degrades path quality.
           if (pathStrings === null) continue
 
           const isNewPiece = strokeAdded.has(obj)
           canvas.remove(obj)
-          if (isNewPiece) {
-            strokeAdded.delete(obj)
-          } else {
-            strokeRemoved.add(obj)
-          }
+          if (isNewPiece) strokeAdded.delete(obj)
+          else strokeRemoved.add(obj)
 
           for (const pathStr of pathStrings) {
             let newPath: fabric.Path
             try {
               newPath = new fabric.Path(pathStr, {
-                stroke:          obj.stroke as string,
-                strokeWidth:     obj.strokeWidth,
-                strokeLineCap:   (obj.strokeLineCap  ?? 'round') as string,
-                strokeLineJoin:  (obj.strokeLineJoin ?? 'round') as string,
-                fill:            (obj.fill as string | null) ?? null,
-                selectable:      false,
-                evented:         false,
-                strokeUniform:   true,
-                clipPath:        clipPath.current ?? undefined,
+                stroke:         obj.stroke as string,
+                strokeWidth:    obj.strokeWidth,
+                strokeLineCap:  (obj.strokeLineCap  ?? 'round') as string,
+                strokeLineJoin: (obj.strokeLineJoin ?? 'round') as string,
+                // Open fragments with fill auto-close visually with a straight line, which looks wrong.
+                // Strip fill so only the stroke outline remains after erasing.
+                fill:           null,
+                selectable:     false,
+                evented:        false,
+                strokeUniform:  true,
+                clipPath:       clipPath.current ?? undefined,
               })
-            } catch {
-              continue
-            }
+            } catch { continue }
             canvas.add(newPath)
             strokeAdded.add(newPath)
           }
         }
         canvas.requestRenderAll()
+      }
+
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        showSizeCursor((e.e as MouseEvent).clientX, (e.e as MouseEvent).clientY)
+        if (!isMouseDown.current) return
+        eraseLastPt = e.scenePoint
+        if (eraseRafId === null) eraseRafId = requestAnimationFrame(runErase)
       }
 
       canvas.on('mouse:down', onDown)
@@ -2006,6 +2080,67 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     return () => offs.forEach(fn => fn())
   }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
+
+  // ── Importar y vectorizar PNG ────────────────────────────────────────────────
+  async function handleImportPng(file: File) {
+    const canvas = fc.current
+    if (!canvas) return
+    setVectorizing(true)
+    try {
+      // Cargar imagen en un canvas temporal para obtener ImageData
+      const url = URL.createObjectURL(file)
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image()
+        el.onload = () => resolve(el)
+        el.onerror = reject
+        el.src = url
+      })
+      URL.revokeObjectURL(url)
+
+      const tmp = document.createElement('canvas')
+      tmp.width  = img.width
+      tmp.height = img.height
+      const ctx = tmp.getContext('2d')!
+      ctx.drawImage(img, 0, 0)
+      const imageData = ctx.getImageData(0, 0, img.width, img.height)
+
+      // Vectorizar con imagetracerjs
+      const { default: ImageTracer } = await import('imagetracerjs')
+      const svgStr: string = ImageTracer.imagedataToSVG(imageData, {
+        numberofcolors: 8,
+        colorsampling: 2,
+        ltres: 1,
+        qtres: 1,
+        pathomit: 16,
+        rightangleenhance: false,
+        blurradius: 0,
+      })
+
+      // Cargar el SVG en Fabric
+      const { objects } = await fabric.loadSVGFromString(svgStr)
+      const validObjs = objects.filter(Boolean) as fabric.FabricObject[]
+      if (!validObjs.length) return
+
+      // Agrupar y escalar para que entre en el canvas
+      const group = new fabric.Group(validObjs, { selectable: true, evented: true })
+      const cw = canvas.width  ?? 800
+      const ch = canvas.height ?? 600
+      const scale = Math.min(cw / (group.width ?? 1), ch / (group.height ?? 1)) * 0.85
+      group.set({ scaleX: scale, scaleY: scale, left: cw / 2, top: ch / 2, originX: 'center', originY: 'center' })
+      group.setCoords()
+
+      canvas.add(group)
+      canvas.setActiveObject(group)
+      undoHistory.current.push({ type: 'add', obj: group })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      setTool('select')
+    } catch (err) {
+      console.error('Error al vectorizar:', err)
+    } finally {
+      setVectorizing(false)
+    }
+  }
 
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
@@ -2293,6 +2428,25 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           <ToolBtn icon="T" label="Texto"             active={tool === 'text'}   onClick={() => setTool('text')} />
           <ToolBtn icon={<IconEraser />} label="Goma"    active={tool === 'eraser'} onClick={() => setTool('eraser')} />
           <ToolBtn icon={<IconBucket />} label="Relleno" active={tool === 'fill'}   onClick={() => setTool('fill')} />
+          <div style={{ width: '100%', borderTop: '1px solid var(--line-soft)', marginTop: 4, paddingTop: 4 }}>
+            <ToolBtn
+              icon="🖼"
+              label="Importar imagen y vectorizar"
+              active={false}
+              onClick={() => {
+                const input = document.createElement('input')
+                input.type = 'file'
+                input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
+                document.body.appendChild(input)
+                input.addEventListener('change', () => {
+                  const f = input.files?.[0]
+                  if (f) handleImportPng(f)
+                  document.body.removeChild(input)
+                })
+                input.click()
+              }}
+            />
+          </div>
           <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-soft)', paddingTop: 8, width: '100%' }}>
             <div className="mono" style={{ fontSize: 8, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.8 }}>Z<br/>⇧Z</div>
           </div>
@@ -2308,6 +2462,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
+          {vectorizing && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 50,
+              background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
+            }}>
+              <div style={{ width: 32, height: 32, border: '3px solid #555', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+              <span style={{ color: '#fff', fontSize: 13 }}>Vectorizando imagen...</span>
+            </div>
+          )}
           {viewChanged && (
             <button
               onClick={resetView}

@@ -33,7 +33,7 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
-  const editorActionsRef = useRef<{ save: () => void; export: () => void } | null>(null)
+  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void } | null>(null)
 
   // Verifica sesión activa y escucha cambios de auth
   useEffect(() => {
@@ -201,6 +201,7 @@ export default function App() {
           onNewProject={() => setShowSheet(true)}
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
+          onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
         />
