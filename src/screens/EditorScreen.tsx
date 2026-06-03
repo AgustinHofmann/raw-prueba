@@ -23,6 +23,8 @@ type HistoryEntry =
   | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
+  | { type: 'group';   children: fabric.FabricObject[]; group: fabric.Group }
+  | { type: 'ungroup'; children: fabric.FabricObject[]; group: fabric.Group }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -625,6 +627,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [vectorizing,    setVectorizing]    = useState(false)
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
+  const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
@@ -741,9 +744,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     canvas.on('object:removed', refreshLayers)
     canvas.on('object:modified', refreshLayers)
 
-    canvas.on('selection:created', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
-    canvas.on('selection:updated', (e: any) => setSelectedObj(e.selected?.[0] ?? null))
-    canvas.on('selection:cleared', () => setSelectedObj(null))
+    const syncSelKind = () => {
+      const a = canvas.getActiveObject()
+      if (!a) setSelKind('none')
+      else if (a.type === 'activeselection') setSelKind('multi')
+      else if (a.type === 'group')           setSelKind('group')
+      else setSelKind('single')
+    }
+    canvas.on('selection:created', (e: any) => { setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
+    canvas.on('selection:updated', (e: any) => { setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
+    canvas.on('selection:cleared', () => { setSelectedObj(null); setSelKind('none') })
 
     // Illustrator-style path highlight: 1px blue stroke along the selected path(s)
     const onAfterRender = () => {
@@ -2353,6 +2363,14 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       // I — gotero
       if (!ctrl && (e.key === 'i' || e.key === 'I')) { setTool('eyedropper'); return }
 
+      // Ctrl+G — agrupar / Ctrl+Shift+G — desagrupar
+      if (ctrl && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault()
+        if (e.shiftKey) ungroupSelection()
+        else groupSelection()
+        return
+      }
+
       // Ctrl+C — copy
       if (ctrl && e.key === 'c') {
         const active = canvas.getActiveObject()
@@ -2412,6 +2430,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           const cur = entry.obj.opacity ?? 1
           entry.obj.set({ opacity: entry.prevOpacity })
           undoHistory.current.push({ type: 'opacity', obj: entry.obj, prevOpacity: cur })
+        } else if (entry.type === 'group') {
+          entry.group = makeGroup(entry.children)   // rehacer el grupo
+          undoHistory.current.push(entry)
+        } else if (entry.type === 'ungroup') {
+          dissolveGroup(entry.group)                // rehacer la disolución
+          undoHistory.current.push(entry)
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -2445,6 +2469,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           const cur = entry.obj.opacity ?? 1
           entry.obj.set({ opacity: entry.prevOpacity })
           redoHistory.current.push({ type: 'opacity', obj: entry.obj, prevOpacity: cur })
+        } else if (entry.type === 'group') {
+          dissolveGroup(entry.group)                // deshacer: disolver el grupo
+          redoHistory.current.push(entry)
+        } else if (entry.type === 'ungroup') {
+          entry.group = makeGroup(entry.children)   // deshacer: rehacer el grupo
+          redoHistory.current.push(entry)
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -2537,6 +2567,55 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       obj.dirty = true
     })
     canvas.requestRenderAll()
+  }
+
+  // ── Agrupar / desagrupar ─────────────────────────────────────────────────────
+  // Helpers reutilizables (también para undo/redo). Asumen coords absolutas en los hijos.
+  function makeGroup(children: fabric.FabricObject[]): fabric.Group {
+    const canvas = fc.current!
+    children.forEach(o => canvas.remove(o))
+    const group = new fabric.Group(children, { selectable: true, evented: true })
+    canvas.add(group)
+    return group
+  }
+  function dissolveGroup(group: fabric.Group): fabric.FabricObject[] {
+    const canvas = fc.current!
+    const children = group.removeAll() as fabric.FabricObject[]
+    canvas.remove(group)
+    children.forEach(o => { o.set({ selectable: true, evented: true }); canvas.add(o) })
+    return children
+  }
+
+  function groupSelection() {
+    const canvas = fc.current
+    if (!canvas) return
+    const active = canvas.getActiveObject()
+    if (!active || active.type !== 'activeselection') return
+    const children = (active as fabric.ActiveSelection).getObjects()
+      .filter(o => !mockupObjects.current.includes(o))
+    if (children.length < 2) return
+    canvas.discardActiveObject()  // restaura coords absolutas
+    const group = makeGroup(children)
+    canvas.setActiveObject(group)
+    undoHistory.current.push({ type: 'group', children, group })
+    redoHistory.current = []
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function ungroupSelection() {
+    const canvas = fc.current
+    if (!canvas) return
+    const active = canvas.getActiveObject()
+    if (!active || active.type !== 'group' || mockupObjects.current.includes(active)) return
+    const group = active as fabric.Group
+    const children = dissolveGroup(group)
+    const sel = new fabric.ActiveSelection(children, { canvas })
+    canvas.setActiveObject(sel)
+    undoHistory.current.push({ type: 'ungroup', children, group })
+    redoHistory.current = []
+    canvas.requestRenderAll()
+    refreshLayersNow()
   }
 
   // ── Acciones del panel de capas ─────────────────────────────────────────────
@@ -2719,6 +2798,15 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
           {/* Properties tab */}
           {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
+          {(selKind === 'multi' || selKind === 'group') && (
+            <button
+              className="btn btn-ghost"
+              onClick={() => selKind === 'multi' ? groupSelection() : ungroupSelection()}
+              style={{ justifyContent: 'center', fontSize: 12 }}
+            >
+              {selKind === 'multi' ? '⊞ Agrupar (Ctrl+G)' : '⊟ Desagrupar (Ctrl+Shift+G)'}
+            </button>
+          )}
           {isText && (
             <div>
               <div className="label" style={{ marginBottom: 8 }}>Tipografía</div>
