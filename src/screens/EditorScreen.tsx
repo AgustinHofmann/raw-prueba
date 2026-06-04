@@ -630,6 +630,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
   const [mockupLocked,   setMockupLocked]   = useState(true)
+  const [dragActive,     setDragActive]     = useState(false)
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
@@ -2798,7 +2799,17 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
         {/* Canvas */}
         <main style={{ flex: 1, position: 'relative', overflow: 'hidden', background: 'var(--bg-2)' }}
-          ref={canvasAreaRef as RefObject<HTMLElement>}>
+          ref={canvasAreaRef as RefObject<HTMLElement>}
+          onDragEnter={e => { e.preventDefault(); if (Array.from(e.dataTransfer.types).includes('Files')) setDragActive(true) }}
+          onDragOver={e => { e.preventDefault() }}
+          onDragLeave={e => { if (e.currentTarget === e.target) setDragActive(false) }}
+          onDrop={e => {
+            e.preventDefault()
+            setDragActive(false)
+            const f = Array.from(e.dataTransfer.files).find(file => file.type.startsWith('image/'))
+            if (f) handlePlaceImage(f)
+          }}
+        >
           <div style={{
             position: 'absolute', inset: 0, pointerEvents: 'none',
             backgroundImage: 'radial-gradient(circle, var(--line-soft) 1px, transparent 1px)',
@@ -2806,6 +2817,20 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
+
+          {/* Overlay al arrastrar una imagen */}
+          {dragActive && (
+            <div style={{
+              position: 'absolute', inset: 12, zIndex: 40, pointerEvents: 'none',
+              border: '2px dashed var(--accent)', borderRadius: 14,
+              background: 'color-mix(in oklch, var(--accent) 8%, rgb(0 0 0 / 0.35))',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
+            }}>
+              <span style={{ fontSize: 34 }}>🖼️</span>
+              <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>Soltá la imagen para importarla</span>
+              <span style={{ color: 'var(--muted)', fontSize: 12 }}>sin abrir el explorador · no sale de pantalla completa</span>
+            </div>
+          )}
 
           {/* Toggle: recortar / mostrar lo que está fuera de la remera */}
           <button

@@ -38,12 +38,20 @@ export default function ChromeBar({
   const barH    = isFullscreen ? 56 : 40
   const fsScale = isFullscreen ? 1.18 : 1
 
-  // Abre el selector de archivos y ejecuta la acción elegida (importar / calco)
+  // Abre el selector de archivos y ejecuta la acción elegida (importar / calco).
+  // El diálogo nativo puede sacar la pantalla completa (API): intentamos re-entrar al volver.
   function pickImage(action: (f: File) => void) {
+    const wasFs = !!document.fullscreenElement
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.png,.jpg,.jpeg,.webp,.gif,.bmp'
-    input.onchange = () => { const f = input.files?.[0]; if (f) action(f) }
+    input.onchange = () => {
+      const f = input.files?.[0]
+      if (f) action(f)
+      if (wasFs && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {})
+      }
+    }
     input.click()
     setFileMenuOpen(false)
   }
