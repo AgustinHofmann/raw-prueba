@@ -600,6 +600,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const snapPoints    = useRef<fabric.Point[]>([])
   const clipEnabledRef = useRef(true)
   const mockupLockedRef = useRef(true)
+  const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
+  const pxPerCmRef = useRef(0)
 
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
@@ -631,6 +633,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
+  const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
+  const isTee = project.mockupId === 'tshirt'
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
@@ -820,74 +824,22 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     ;(canvas as any).uniformScaling     = false
     canvas.skipOffscreen = false
 
-    const svgUrl = `/mockups/${project.mockupId}.svg`
-
-    fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
-      if (cancelled) return
-      const objs = objects.filter(Boolean) as fabric.FabricObject[]
-      mockupObjects.current = objs
-
-      objs.forEach(obj => {
-        ;(obj as any)._rawMockup = true
-        obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
-      })
-      objs.forEach(obj => canvas.add(obj))
-
-      const allL = objs.map(o => o.left ?? 0)
-      const allT = objs.map(o => o.top  ?? 0)
-      const allR = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
-      const allB = objs.map(o => (o.top  ?? 0) + (o.height ?? 0) * (o.scaleY ?? 1))
-      const bx = Math.min(...allL), by = Math.min(...allT)
-      const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
-      const pad = Math.min(CW, CH) * 0.1          // 10% de margen
-      const sc  = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
-      const ox  = (CW - bw * sc) / 2 - bx * sc
-      const oy  = (CH - bh * sc) / 2 - by * sc
-
-      objs.forEach(obj => obj.set({
-        left:   (obj.left   ?? 0) * sc + ox,
-        top:    (obj.top    ?? 0) * sc + oy,
-        scaleX: (obj.scaleX ?? 1) * sc,
-        scaleY: (obj.scaleY ?? 1) * sc,
-      }))
-
-      const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
-      if (cancelled) return
-      // Only use filled shapes as clip path — stroke-only paths (fill=none) create
-      // hairline clip regions that make drawn objects invisible.
-      const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[])
-        .filter(obj => obj.fill && obj.fill !== 'none' && obj.fill !== '')
-        .map(obj => {
-          obj.set({
-            left:   (obj.left   ?? 0) * sc + ox,
-            top:    (obj.top    ?? 0) * sc + oy,
-            scaleX: (obj.scaleX ?? 1) * sc,
-            scaleY: (obj.scaleY ?? 1) * sc,
-          })
-          return obj
-        })
-      const cg = new fabric.Group(clipObjs)
-      cg.absolutePositioned = true
-      clipPath.current = cg
-
-      // Restore saved user objects if any
+    // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
+    const restoreAndWire = async () => {
       if (project.canvasJson) {
         try {
           const saved = JSON.parse(project.canvasJson) as object[]
           const revived = await (fabric.util as any).enlivenObjects(saved) as fabric.FabricObject[]
+          if (cancelled) return
           for (const obj of revived) {
             obj.set({ strokeUniform: true })
-            if (!(obj instanceof fabric.IText) && clipPath.current) {
-              obj.set({ clipPath: clipPath.current })
-            }
+            if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
             canvas.add(obj)
           }
-          canvas.requestRenderAll()
         } catch (e) {
           console.warn('canvas restore failed', e)
         }
       }
-
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current
         e.path.set({ selectable: false, evented: false })
@@ -895,9 +847,50 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         redoHistory.current = []
         canvas.renderAll()
       })
-
       canvas.renderAll()
-    })
+    }
+
+    if (project.mockupId === 'tshirt') {
+      // Remera paramétrica generada por medidas
+      placeTee(measuresRef.current)
+      restoreAndWire()
+    } else {
+      // Mockups SVG (hoodie, pants)
+      const svgUrl = `/mockups/${project.mockupId}.svg`
+      fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
+        if (cancelled) return
+        const objs = objects.filter(Boolean) as fabric.FabricObject[]
+        mockupObjects.current = objs
+        objs.forEach(obj => { ;(obj as any)._rawMockup = true; obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' }) })
+        objs.forEach(obj => canvas.add(obj))
+
+        const allL = objs.map(o => o.left ?? 0)
+        const allT = objs.map(o => o.top  ?? 0)
+        const allR = objs.map(o => (o.left ?? 0) + (o.width  ?? 0) * (o.scaleX ?? 1))
+        const allB = objs.map(o => (o.top  ?? 0) + (o.height ?? 0) * (o.scaleY ?? 1))
+        const bx = Math.min(...allL), by = Math.min(...allT)
+        const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
+        const pad = Math.min(CW, CH) * 0.1
+        const sc  = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+        const ox  = (CW - bw * sc) / 2 - bx * sc
+        const oy  = (CH - bh * sc) / 2 - by * sc
+        objs.forEach(obj => obj.set({
+          left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy,
+          scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc,
+        }))
+
+        const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
+        if (cancelled) return
+        const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[])
+          .filter(obj => obj.fill && obj.fill !== 'none' && obj.fill !== '')
+          .map(obj => { obj.set({ left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy, scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc }); return obj })
+        const cg = new fabric.Group(clipObjs)
+        cg.absolutePositioned = true
+        clipPath.current = cg
+
+        await restoreAndWire()
+      })
+    }
 
     return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.dispose() }
   }, [project.mockupId])
@@ -2628,6 +2621,61 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     setPanned(false)
   }
 
+  // ── Remera paramétrica: (re)genera el mockup desde las medidas en cm ─────────
+  function placeTee(m: Measures, reassignClip = false) {
+    const canvas = fc.current
+    if (!canvas) return
+    const CW = canvas.getWidth(), CH = canvas.getHeight()
+    mockupObjects.current.forEach(o => canvas.remove(o))
+
+    const shapes = buildTeeShapes(m)
+    const objs = shapes.map(s => {
+      const p = new fabric.Path(s.d, {
+        fill: s.fill ?? null, stroke: s.stroke, strokeWidth: s.strokeWidth,
+        selectable: false, evented: true, hoverCursor: 'crosshair', strokeUniform: true,
+      })
+      ;(p as any)._rawMockup = true
+      return p
+    })
+    // Ajustar al área (mismo criterio que el mockup SVG)
+    const allL = objs.map(o => o.left ?? 0), allT = objs.map(o => o.top ?? 0)
+    const allR = objs.map(o => (o.left ?? 0) + (o.width ?? 0)), allB = objs.map(o => (o.top ?? 0) + (o.height ?? 0))
+    const bx = Math.min(...allL), by = Math.min(...allT)
+    const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
+    const pad = Math.min(CW, CH) * 0.1
+    const sc = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+    const ox = (CW - bw * sc) / 2 - bx * sc, oy = (CH - bh * sc) / 2 - by * sc
+    objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
+    objs.forEach(o => canvas.add(o))
+    mockupObjects.current = objs
+
+    // Clip = la silueta del cuerpo
+    const bodyShape = shapes.find(s => s.role === 'body')!
+    const clipP = new fabric.Path(bodyShape.d, { fill: '#000' })
+    clipP.set({ left: (clipP.left ?? 0) * sc + ox, top: (clipP.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc })
+    const cg = new fabric.Group([clipP]); cg.absolutePositioned = true
+    clipPath.current = cg
+    pxPerCmRef.current = sc
+
+    for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    if (reassignClip) {
+      canvas.getObjects().forEach(o => {
+        if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+        o.clipPath = clipEnabledRef.current ? cg : undefined
+        o.dirty = true
+      })
+    }
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  function updateMeasure(key: keyof Measures, val: number) {
+    const next = { ...measuresRef.current, [key]: val }
+    measuresRef.current = next
+    setMeasures(next)
+    placeTee(next, true)
+  }
+
   // ── Clip toggle: mostrar/ocultar lo que está fuera de la remera ──────────────
   function toggleClip() {
     const canvas = fc.current
@@ -2927,6 +2975,39 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
           {/* Properties tab */}
           {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
+          {isTee && !hasSel && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {MEASURE_FIELDS.map(mf => (
+                  <div key={mf.key}>
+                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)' }}>{mf.label}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <input
+                        type="number" min={mf.min} max={mf.max} step={0.5}
+                        value={measures[mf.key]}
+                        onChange={e => {
+                          const v = Math.min(mf.max, Math.max(mf.min, Number(e.target.value) || mf.min))
+                          updateMeasure(mf.key, v)
+                        }}
+                        style={{ width: '100%', padding: '5px 6px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+                          background: 'var(--surface)', border: '1px solid var(--line)',
+                          color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }}
+                      />
+                      <span className="mono" style={{ fontSize: 9, color: 'var(--muted)' }}>cm</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                className="btn btn-ghost"
+                onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}
+              >
+                Restablecer medidas
+              </button>
+            </div>
+          )}
           {(selKind === 'multi' || selKind === 'group') && (
             <button
               className="btn btn-ghost"
@@ -3325,6 +3406,50 @@ function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
     spot(s * 0.25, s * 0.3); spot(s * 0.7, s * 0.6); spot(s * 0.5, s * 0.85); spot(s * 0.85, s * 0.2)
   }
   return c
+}
+
+// ── Remera paramétrica (generada por medidas en cm) ──────────────────────────
+type Measures = {
+  largoTotal: number; anchoPecho: number; anchoCintura: number; anchoHombros: number
+  anchoCuello: number; profundidadCuello: number; largoManga: number; anchoManga: number
+}
+const DEFAULT_MEASURES: Measures = {
+  largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
+  anchoCuello: 18, profundidadCuello: 8, largoManga: 22, anchoManga: 18,
+}
+const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
+  { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
+  { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
+  { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 20, max: 90 },
+  { key: 'anchoHombros',      label: 'Ancho de hombros',     min: 20, max: 80 },
+  { key: 'anchoCuello',       label: 'Ancho de cuello',      min: 8,  max: 40 },
+  { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 1,  max: 25 },
+  { key: 'largoManga',        label: 'Largo de manga',       min: 5,  max: 80 },
+  { key: 'anchoManga',        label: 'Ancho de manga',       min: 8,  max: 40 },
+]
+
+// Devuelve las figuras de la remera en coordenadas cm (origen en el centro del cuello).
+function buildTeeShapes(m: Measures): { d: string; role: 'body' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
+  const L = m.largoTotal, ph = m.anchoPecho / 2, wh = m.anchoCintura / 2, sh = m.anchoHombros / 2
+  const nh = m.anchoCuello / 2, nd = m.profundidadCuello, sl = m.largoManga, sw = m.anchoManga
+  const drop = L * 0.05            // caída del hombro
+  const armY = drop + L * 0.30     // altura de la sisa (donde se mide el pecho)
+  const dx = 0.90, dy = 0.44       // dirección de la manga (abajo-afuera)
+  const f = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`
+  const ctR = [sh + sl * dx, drop + sl * dy]            // cuff top derecho
+  const cbR = [ctR[0] - sw * dy, ctR[1] + sw * dx]      // cuff bottom derecho
+  const body =
+    `M ${f(nh, 0)} L ${f(sh, drop)} L ${f(ctR[0], ctR[1])} L ${f(cbR[0], cbR[1])} ` +
+    `L ${f(ph, armY)} L ${f(wh, L)} L ${f(-wh, L)} L ${f(-ph, armY)} ` +
+    `L ${f(-cbR[0], cbR[1])} L ${f(-ctR[0], ctR[1])} L ${f(-sh, drop)} L ${f(-nh, 0)} ` +
+    `Q 0 ${nd.toFixed(1)} ${f(nh, 0)} Z`
+  const collar = `M ${f(-nh + 0.8, 0.6)} Q 0 ${(nd + 1.8).toFixed(1)} ${f(nh - 0.8, 0.6)}`
+  const hem    = `M ${f(-wh + 0.6, L - 2.2)} L ${f(wh - 0.6, L - 2.2)}`
+  return [
+    { d: body,   role: 'body',   fill: '#b9b9b9', stroke: '#2a2a28', strokeWidth: 2 },
+    { d: collar, role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.5 },
+    { d: hem,    role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.2 },
+  ]
 }
 
 // Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
