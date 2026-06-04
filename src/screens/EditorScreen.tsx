@@ -636,7 +636,49 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [dragActive,     setDragActive]     = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
+  const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
+  const measureEditRef = useRef(false)
   const isTee = project.mockupId === 'tshirt'
+  useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
+  // Salir del modo tiradores si cambiás de herramienta o de pestaña
+  useEffect(() => { if (tool !== 'select' || rightTab !== 'props') setMeasureEdit(false) }, [tool, rightTab])
+  // Arrastre de los tiradores de medida
+  useEffect(() => {
+    const canvas = fc.current
+    if (!canvas || !measureEdit || tool !== 'select') return
+    const prevSkip = canvas.skipTargetFind, prevSel = canvas.selection
+    canvas.skipTargetFind = true; canvas.selection = false; canvas.defaultCursor = 'pointer'
+    let drag: (typeof TEE_HANDLES)[number] | null = null
+    let raf: number | null = null
+    let pend: { x: number; y: number } | null = null
+    const hitR = () => 16 / (canvas.getZoom() || 1)
+    const onDown = (e: any) => {
+      const f = teeFitRef.current; if (!f) return
+      const p = e.scenePoint; const W = teeWarp(measuresRef.current)
+      for (const h of TEE_HANDLES) {
+        const [wx, wy] = W(h.base[0], h.base[1])
+        if (Math.hypot(p.x - (wx * f.sc + f.ox), p.y - (wy * f.sc + f.oy)) < hitR()) { drag = h; break }
+      }
+    }
+    const apply = () => {
+      raf = null
+      const f = teeFitRef.current; if (!drag || !pend || !f) return
+      const fld = MEASURE_FIELDS.find(ff => ff.key === drag!.key)!
+      let v = drag.toMeasure((pend.x - f.ox) / f.sc, (pend.y - f.oy) / f.sc, measuresRef.current)
+      v = Math.round(Math.min(fld.max, Math.max(fld.min, v)) * 10) / 10
+      applyMeasures({ ...measuresRef.current, [drag.key]: v })
+    }
+    const onMove = (e: any) => { if (!drag) return; pend = e.scenePoint; if (raf === null) raf = requestAnimationFrame(apply) }
+    const onUp = () => { drag = null }
+    canvas.on('mouse:down', onDown); canvas.on('mouse:move', onMove); canvas.on('mouse:up', onUp)
+    canvas.requestRenderAll()
+    return () => {
+      canvas.off('mouse:down', onDown); canvas.off('mouse:move', onMove); canvas.off('mouse:up', onUp)
+      canvas.skipTargetFind = prevSkip; canvas.selection = prevSel; canvas.defaultCursor = 'default'
+      if (raf) cancelAnimationFrame(raf)
+      canvas.requestRenderAll()
+    }
+  }, [measureEdit, tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
@@ -766,14 +808,31 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
     // Illustrator-style path highlight: 1px blue stroke along the selected path(s)
     const onAfterRender = () => {
-      const active = canvas.getActiveObjects()
-      if (!active.length) return
       const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
       if (!ctx) return
       const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
-      // On high-DPI / Windows display scaling the backing store is larger than CSS px.
-      // Reset to the retina transform so our CSS-px coordinates land on the right device px.
       const rs = (canvas.getRetinaScaling?.() ?? 1)
+
+      // Tiradores de medida (puntos arrastrables sobre la remera)
+      if (measureEditRef.current && teeFitRef.current) {
+        const { sc, ox, oy } = teeFitRef.current
+        const W = teeWarp(measuresRef.current)
+        ctx.save(); ctx.setTransform(rs, 0, 0, rs, 0, 0)
+        for (const h of TEE_HANDLES) {
+          const [wx, wy] = W(h.base[0], h.base[1])
+          const scX = wx * sc + ox, scY = wy * sc + oy
+          const cssX = vpt[0] * scX + vpt[2] * scY + vpt[4]
+          const cssY = vpt[1] * scX + vpt[3] * scY + vpt[5]
+          ctx.beginPath(); ctx.arc(cssX, cssY, 6, 0, Math.PI * 2)
+          ctx.fillStyle = '#fff'; ctx.fill()
+          ctx.lineWidth = 2; ctx.strokeStyle = SEL_BLUE; ctx.stroke()
+          ctx.beginPath(); ctx.arc(cssX, cssY, 2, 0, Math.PI * 2); ctx.fillStyle = SEL_BLUE; ctx.fill()
+        }
+        ctx.restore()
+      }
+
+      const active = canvas.getActiveObjects()
+      if (!active.length) return
       ctx.save()
       ctx.setTransform(rs, 0, 0, rs, 0, 0)
       ctx.strokeStyle = SEL_BLUE
@@ -3013,6 +3072,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             return (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
+              <button
+                onClick={() => setMeasureEdit(v => !v)}
+                title="Arrastrar puntos sobre la remera para cambiar las medidas"
+                style={{
+                  width: '100%', justifyContent: 'center', marginBottom: 10, fontSize: 11,
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 6, cursor: 'pointer',
+                  background: measureEdit ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                  border: '1px solid ' + (measureEdit ? 'var(--accent)' : 'var(--line)'),
+                  color: measureEdit ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
+                }}
+              >
+                {measureEdit ? '✋ Arrastrando medidas (tocá para salir)' : '✋ Ajustar arrastrando en la remera'}
+              </button>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {MEASURE_GROUPS.map(g => {
                   const single = g.keys.length === 1
@@ -3483,6 +3555,16 @@ const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] 
   { id: 'ancho',  label: 'Ancho (pecho/cintura)', keys: ['anchoPecho', 'anchoCintura'] },
   { id: 'cuello', label: 'Cuello',               keys: ['anchoCuello', 'profundidadCuello'] },
   { id: 'manga',  label: 'Manga',                keys: ['largoManga', 'anchoManga'] },
+]
+
+// Tiradores de medida: punto base en el SVG + cómo convertir su posición a cm.
+const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y'; toMeasure: (sx: number, sy: number, m: Measures) => number }[] = [
+  { key: 'anchoPecho',   base: [400.95, 173],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 153.65 * 54 },
+  { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 50 },
+  { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => (sy - 173) / 184 * 70 },
+  { key: 'anchoCuello',  base: [292.24, 4.64],   axis: 'x', toMeasure: (sx) => (sx - 247.3) / 44.94 * 18 },
+  { key: 'largoManga',   base: [493.43, 58.94],  axis: 'x', toMeasure: (sx, _sy, m) => { const nUR = 247.3 + 153.65 * (m.anchoPecho / 54); return (sx - nUR) / 92.48 * 20 } },
+  { key: 'anchoManga',   base: [470.28, 177.99], axis: 'y', toMeasure: (_sx, sy) => (sy - 50) / 127.99 * 18 },
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
