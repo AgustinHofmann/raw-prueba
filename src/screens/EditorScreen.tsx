@@ -3441,13 +3441,13 @@ const DEFAULT_MEASURES: Measures = {
 }
 const PARAMETRIC_TEE = true
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
-  { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
-  { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
-  { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 20, max: 90 },
-  { key: 'anchoCuello',       label: 'Ancho de cuello',      min: 8,  max: 40 },
-  { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 1,  max: 25 },
-  { key: 'largoManga',        label: 'Largo de manga',       min: 5,  max: 80 },
-  { key: 'anchoManga',        label: 'Ancho de manga',       min: 8,  max: 40 },
+  { key: 'largoTotal',        label: 'Largo total',          min: 55, max: 90 },
+  { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 42, max: 72 },
+  { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 40, max: 72 },
+  { key: 'anchoCuello',       label: 'Ancho de cuello',      min: 13, max: 26 },
+  { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 4,  max: 16 },
+  { key: 'largoManga',        label: 'Largo de manga',       min: 10, max: 45 },
+  { key: 'anchoManga',        label: 'Ancho de manga',       min: 13, max: 28 },
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
@@ -3493,12 +3493,13 @@ function transformPath(d: string, W: (x: number, y: number) => [number, number])
 
 // W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
 function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
-  const cx = 247.3, armY = 173, hemY = 357, smid = 118.46, URx = 400.95, ULx = 92.49
+  const cx = 247.3, armY = 173, hemY = 357, slvTop = 50, URx = 400.95, ULx = 92.49
   const fLen = m.largoTotal / 70, fP = m.anchoPecho / 54, fC = m.anchoCintura / 50, fN = m.anchoCuello / 18
   const fML = m.largoManga / 20, fMA = m.anchoManga / 18, dProf = (m.profundidadCuello - 8) * 5.0
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
-    if (rSlv || lSlv) { const URo = rSlv ? URx : ULx; const nUR = cx + (URo - cx) * fP; return [nUR + (x - URo) * fML, smid + (y - smid) * fMA] }
+    // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba)
+    if (rSlv || lSlv) { const URo = rSlv ? URx : ULx; const nUR = cx + (URo - cx) * fP; return [nUR + (x - URo) * fML, slvTop + (y - slvTop) * fMA] }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
     const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
     return [cx + (x - cx) * wf, y <= armY ? y : armY + (y - armY) * fLen]
