@@ -2488,6 +2488,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       const canvas = fc.current
       if (!canvas) return
 
+      const ae = document.activeElement as HTMLElement | null
+      const inField = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
+      const act0 = canvas.getActiveObject()
+      const editingText = act0 instanceof fabric.IText && (act0 as fabric.IText).isEditing
+      const typing = inField || editingText
+      const ctrl = e.ctrlKey || e.metaKey
+
+      // Ctrl+S — guardar (siempre; evita el "guardar página HTML" del navegador)
+      if (ctrl && (e.key === 's' || e.key === 'S')) { e.preventDefault(); handleSave(); return }
+      // Mientras escribís (texto en el lienzo o un campo), no disparar atajos del lienzo
+      if (typing) return
+
       // Delete selected
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const active = canvas.getActiveObject()
@@ -2505,15 +2517,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }
           return
         }
-      }
-
-      const ctrl = e.ctrlKey || e.metaKey
-
-      // Ctrl+S — guardar (preventDefault: si no, el navegador abre "Guardar página HTML")
-      if (ctrl && (e.key === 's' || e.key === 'S')) {
-        e.preventDefault()
-        handleSave()
-        return
       }
 
       // I — gotero
@@ -2566,10 +2569,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       if (!ctrl) return
-
-      // Don't intercept Ctrl+Z/Shift+Z when editing text
-      const editingText = canvas.getActiveObject()
-      if (editingText instanceof fabric.IText && (editingText as fabric.IText).isEditing) return
 
       // Ctrl+Shift+Z — redo
       if (e.shiftKey && (e.key === 'Z' || e.key === 'z')) {
