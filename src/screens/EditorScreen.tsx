@@ -757,6 +757,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       width: CW, height: CH,
       backgroundColor: '',
       selection: true,
+      preserveObjectStacking: true,  // el objeto seleccionado mantiene su orden Z (no salta al frente)
     })
     fc.current = canvas
 
