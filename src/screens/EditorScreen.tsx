@@ -573,6 +573,16 @@ try {
     _c[k].render = k === 'mtr' ? (() => {}) as any : renderAIHandle as any
   })
 } catch (_) {}
+// En multiselección Fabric dibuja el borde de CADA objeto + el del grupo. Sobreescribimos
+// para mostrar SOLO el recuadro englobante (los trazos los marca nuestro overlay aparte).
+try {
+  ;(fabric.ActiveSelection.prototype as any)._renderControls = function (ctx: CanvasRenderingContext2D, styleOverride: any) {
+    ctx.save()
+    ctx.globalAlpha = this.isMoving ? this.borderOpacityWhenMoving : 1
+    ;(fabric.FabricObject.prototype as any)._renderControls.call(this, ctx, styleOverride)
+    ctx.restore()
+  }
+} catch (_) {}
 // ────────────────────────────────────────────────────────────────────────────
 
 const EYEDROPPER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M15 2 L20 7 L9 18 L6 21 L1 16 L12 5 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M15 2 L20 7 L17 10 L12 5 Z' fill='%23ccc'/%3E%3Crect x='3' y='14' width='4' height='4' rx='1' fill='%23555'/%3E%3C/svg%3E") 2 20, crosshair`
