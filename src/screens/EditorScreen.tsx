@@ -602,6 +602,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
   const pxPerCmRef = useRef(0)
+  const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)  // escala fija: el tamaño refleja los cm
 
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
@@ -634,7 +635,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
-  const [linkCW,         setLinkCW]         = useState(true)   // pecho y cintura enlazados
+  const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const isTee = project.mockupId === 'tshirt'
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
@@ -2638,14 +2639,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       ;(p as any)._rawMockup = true
       return p
     })
-    // Ajustar al área (mismo criterio que el mockup SVG)
-    const allL = objs.map(o => o.left ?? 0), allT = objs.map(o => o.top ?? 0)
-    const allR = objs.map(o => (o.left ?? 0) + (o.width ?? 0)), allB = objs.map(o => (o.top ?? 0) + (o.height ?? 0))
-    const bx = Math.min(...allL), by = Math.min(...allT)
-    const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
-    const pad = Math.min(CW, CH) * 0.1
-    const sc = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
-    const ox = (CW - bw * sc) / 2 - bx * sc, oy = (CH - bh * sc) / 2 - by * sc
+    // Escala FIJA calculada con las medidas por defecto (una sola vez): así al cambiar
+    // una medida el tamaño en pantalla refleja los cm reales (alargar = más largo, no más fino).
+    if (!teeFitRef.current) {
+      const dObjs = buildTeeShapes(DEFAULT_MEASURES).map(s => new fabric.Path(s.d))
+      const dL = dObjs.map(o => o.left ?? 0), dT = dObjs.map(o => o.top ?? 0)
+      const dR = dObjs.map(o => (o.left ?? 0) + (o.width ?? 0)), dB = dObjs.map(o => (o.top ?? 0) + (o.height ?? 0))
+      const bx = Math.min(...dL), by = Math.min(...dT)
+      const bw = Math.max(...dR) - bx, bh = Math.max(...dB) - by
+      const pad = Math.min(CW, CH) * 0.12
+      const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+      teeFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
+    }
+    const { sc, ox, oy } = teeFitRef.current
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
@@ -2672,17 +2678,26 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     refreshLayersNow()
   }
 
-  function updateMeasure(key: keyof Measures, val: number) {
-    const next = { ...measuresRef.current, [key]: val }
-    // Pecho y cintura enlazados: se mueven a la par (mismo delta)
-    if (linkCW && (key === 'anchoPecho' || key === 'anchoCintura')) {
-      const other: keyof Measures = key === 'anchoPecho' ? 'anchoCintura' : 'anchoPecho'
-      const delta = val - measuresRef.current[key]
-      next[other] = Math.round(Math.min(90, Math.max(20, measuresRef.current[other] + delta)) * 10) / 10
-    }
+  function applyMeasures(next: Measures) {
     measuresRef.current = next
     setMeasures(next)
     placeTee(next, true)
+  }
+  function updateMeasure(key: keyof Measures, val: number) {
+    applyMeasures({ ...measuresRef.current, [key]: val })
+  }
+  // Edición "en general" de un grupo colapsado: escala todas sus medidas a la par.
+  function updateGroupGeneral(group: { keys: (keyof Measures)[] }, mainVal: number) {
+    const main = group.keys[0]
+    const oldMain = measuresRef.current[main] || 1
+    const ratio = mainVal / oldMain
+    const next = { ...measuresRef.current }
+    for (const k of group.keys) {
+      const fld = MEASURE_FIELDS.find(f => f.key === k)!
+      const raw = k === main ? mainVal : measuresRef.current[k] * ratio
+      next[k] = Math.round(Math.min(fld.max, Math.max(fld.min, raw)) * 10) / 10
+    }
+    applyMeasures(next)
   }
 
   // ── Clip toggle: mostrar/ocultar lo que está fuera de la remera ──────────────
@@ -2984,52 +2999,65 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
           {/* Properties tab */}
           {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
-          {PARAMETRIC_TEE && isTee && !hasSel && (
+          {PARAMETRIC_TEE && isTee && !hasSel && (() => {
+            const cmInput = (val: number, min: number, max: number, onCh: (v: number) => void) => (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <input type="number" min={min} max={max} step={0.5} value={val}
+                  onChange={e => onCh(Math.min(max, Math.max(min, Number(e.target.value) || min)))}
+                  onClick={e => e.stopPropagation()}
+                  style={{ width: 60, padding: '4px 6px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+                    background: 'var(--surface)', border: '1px solid var(--line)', color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                <span className="mono" style={{ fontSize: 9, color: 'var(--muted)' }}>cm</span>
+              </div>
+            )
+            return (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {MEASURE_FIELDS.map(mf => (
-                  <div key={mf.key}>
-                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)' }}>{mf.label}</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <input
-                        type="number" min={mf.min} max={mf.max} step={0.5}
-                        value={measures[mf.key]}
-                        onChange={e => {
-                          const v = Math.min(mf.max, Math.max(mf.min, Number(e.target.value) || mf.min))
-                          updateMeasure(mf.key, v)
-                        }}
-                        style={{ width: '100%', padding: '5px 6px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
-                          background: 'var(--surface)', border: '1px solid var(--line)',
-                          color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }}
-                      />
-                      <span className="mono" style={{ fontSize: 9, color: 'var(--muted)' }}>cm</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {MEASURE_GROUPS.map(g => {
+                  const single = g.keys.length === 1
+                  const open = !!openGroups[g.id]
+                  const mainFld = MEASURE_FIELDS.find(f => f.key === g.keys[0])!
+                  return (
+                    <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+                      <div
+                        onClick={() => { if (!single) setOpenGroups(p => ({ ...p, [g.id]: !p[g.id] })) }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+                          cursor: single ? 'default' : 'pointer', background: 'var(--surface)' }}
+                      >
+                        {!single && <span style={{ fontSize: 9, width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
+                        <span style={{ flex: 1, fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--ui)' }}>{g.label}</span>
+                        {/* Colapsado: editar en general (escala todo el grupo) */}
+                        {(single || !open) && cmInput(measures[g.keys[0]], mainFld.min, mainFld.max,
+                          v => single ? updateMeasure(g.keys[0], v) : updateGroupGeneral(g, v))}
+                      </div>
+                      {!single && open && (
+                        <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {g.keys.map(k => {
+                            const fld = MEASURE_FIELDS.find(f => f.key === k)!
+                            return (
+                              <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--ui)' }}>{fld.label}</span>
+                                {cmInput(measures[k], fld.min, fld.max, v => updateMeasure(k, v))}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
-              <button
-                onClick={() => setLinkCW(v => !v)}
-                title="Mover pecho y cintura juntos"
-                style={{
-                  width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11,
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
-                  background: linkCW ? 'color-mix(in oklch, var(--accent) 14%, var(--surface))' : 'var(--surface)',
-                  border: '1px solid ' + (linkCW ? 'var(--accent)' : 'var(--line)'),
-                  color: linkCW ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
-                }}
-              >
-                {linkCW ? '🔗' : '🔓'} Pecho y cintura {linkCW ? 'enlazados' : 'sueltos'}
-              </button>
               <button
                 className="btn btn-ghost"
                 onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
-                style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}
               >
                 Restablecer medidas
               </button>
             </div>
-          )}
+            )
+          })()}
           {(selKind === 'multi' || selKind === 'group') && (
             <button
               className="btn btn-ghost"
@@ -3448,6 +3476,13 @@ const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: nu
   { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 4,  max: 16 },
   { key: 'largoManga',        label: 'Largo de manga',       min: 10, max: 45 },
   { key: 'anchoManga',        label: 'Ancho de manga',       min: 13, max: 28 },
+]
+// Grupos para el panel: colapsado se edita en general (todo junto), desplegado uno por uno.
+const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] = [
+  { id: 'largo',  label: 'Largo',                keys: ['largoTotal'] },
+  { id: 'ancho',  label: 'Ancho (pecho/cintura)', keys: ['anchoPecho', 'anchoCintura'] },
+  { id: 'cuello', label: 'Cuello',               keys: ['anchoCuello', 'profundidadCuello'] },
+  { id: 'manga',  label: 'Manga',                keys: ['largoManga', 'anchoManga'] },
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
