@@ -2810,7 +2810,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     mockupObjects.current.forEach(o => {
       o.set({
         selectable: unlocked && tool === 'select',
-        evented:    tool === 'fill' || (unlocked && tool === 'select'),
+        evented:    tool === 'fill' || (unlocked && (tool === 'select' || tool === 'curve')),
       })
     })
     if (next) canvas.discardActiveObject()  // al bloquear, soltar selección de piezas del mockup
@@ -2913,6 +2913,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     const minIdx = mockupObjects.current.length  // mantener objetos por encima del mockup
     if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
     if (dir === 'down' && idx > minIdx)        canvas.sendObjectBackwards(obj)
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  // Arrastrar una capa sobre otra en el panel: mueve el objeto a esa posición Z
+  function reorderLayerTo(from: fabric.FabricObject, to: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas || from === to) return
+    if (mockupObjects.current.includes(from) || mockupObjects.current.includes(to)) return
+    let toIdx = canvas.getObjects().indexOf(to)
+    const minIdx = mockupObjects.current.length
+    toIdx = Math.max(minIdx, toIdx)  // nunca por debajo del mockup
+    canvas.moveObjectTo(from, toIdx)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -3462,6 +3475,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 onToggleVisible={toggleLayerVisible}
                 onToggleLock={toggleLayerLock}
                 onMove={moveLayer}
+                onReorder={reorderLayerTo}
                 onDelete={deleteLayer}
                 mockupLocked={mockupLocked}
                 onToggleMockupLock={toggleMockupLock}
@@ -3751,7 +3765,7 @@ function getLayerIcon(obj: fabric.FabricObject): string {
   return '·'
 }
 
-function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onDelete, mockupLocked, onToggleMockupLock, onSelectMockup }: {
+function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onReorder, onDelete, mockupLocked, onToggleMockupLock, onSelectMockup }: {
   layers: fabric.FabricObject[]
   version: number
   mockupObjects: fabric.FabricObject[]
@@ -3760,6 +3774,7 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
   onToggleVisible: (obj: fabric.FabricObject) => void
   onToggleLock: (obj: fabric.FabricObject) => void
   onMove: (obj: fabric.FabricObject, dir: 'up' | 'down') => void
+  onReorder: (from: fabric.FabricObject, to: fabric.FabricObject) => void
   onDelete: (obj: fabric.FabricObject) => void
   mockupLocked: boolean
   onToggleMockupLock: () => void
@@ -3767,6 +3782,7 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
 }) {
   void version  // forces re-render when visibility/lock toggles mutate objects in place
   const [mockupOpen, setMockupOpen] = useState(false)
+  const [dragOver, setDragOver] = useState<number | null>(null)
 
   // User objects in stacking order, front-most first (top of the list = top of the canvas)
   const userObjs = layers.filter(o => !mockupObjects.includes(o))
@@ -3811,13 +3827,23 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
         return (
           <div
             key={i}
+            draggable
+            onDragStart={e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move' }}
+            onDragOver={e => { e.preventDefault(); if (dragOver !== i) setDragOver(i) }}
+            onDragLeave={() => setDragOver(d => d === i ? null : d)}
+            onDrop={e => {
+              e.preventDefault(); setDragOver(null)
+              const from = Number(e.dataTransfer.getData('text/plain'))
+              if (!Number.isNaN(from) && ordered[from] && ordered[from] !== obj) onReorder(ordered[from], obj)
+            }}
             onClick={() => onSelect(obj)}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '5px 8px 5px 10px',
               background: isSelected ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
               borderLeft: '2px solid ' + (isSelected ? 'var(--accent)' : 'transparent'),
-              cursor: 'pointer', fontFamily: 'var(--ui)', fontSize: 11,
+              borderTop: dragOver === i ? '2px solid var(--accent)' : '2px solid transparent',
+              cursor: 'grab', fontFamily: 'var(--ui)', fontSize: 11,
               color: hidden ? 'var(--muted)' : (isSelected ? 'var(--fg)' : 'var(--fg-2)'),
               borderBottom: '1px solid var(--line-soft)',
               opacity: hidden ? 0.55 : 1,
