@@ -2,12 +2,14 @@ import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
+import TechPackSheet from '../components/TechPackSheet'
 import './EditorScreen.css'
 
-interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void }
+interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
 
 interface Props {
   project: Project
+  designer: string
   onSave: (thumbnail: string, canvasJson: string) => void
   saved: boolean
   onSaveComplete: () => void
@@ -591,7 +593,7 @@ const EYEDROPPER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
 
-export default function EditorScreen({ project, onSave, saved, onSaveComplete, onActionsReady }: Props) {
+export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -648,6 +650,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
   const measureEditRef = useRef(false)
+  const [techPackImg,    setTechPackImg]    = useState<string | null>(null)  // snapshot para el tech pack
   const isTee = project.mockupId === 'tshirt'
   useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
   // Salir del modo tiradores si cambiás de herramienta o de pestaña
@@ -701,7 +704,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage })
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2727,6 +2730,27 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     a.click()
   }
 
+  // Genera un snapshot de la prenda (recortado al mockup) y abre el Tech Pack
+  function openTechPack() {
+    const canvas = fc.current
+    if (!canvas) return
+    canvas.discardActiveObject()
+    const wasMeasure = measureEditRef.current
+    measureEditRef.current = false  // que no salgan los tiradores en la foto
+    canvas.requestRenderAll()
+    let opts: any = { format: 'png', multiplier: 2 }
+    const mocks = mockupObjects.current
+    if (mocks.length) {
+      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity
+      mocks.forEach(o => { const bb = o.getBoundingRect(); l = Math.min(l, bb.left); t = Math.min(t, bb.top); r = Math.max(r, bb.left + bb.width); b = Math.max(b, bb.top + bb.height) })
+      const pad = 20
+      opts = { ...opts, left: Math.max(0, l - pad), top: Math.max(0, t - pad), width: (r - l) + pad * 2, height: (b - t) + pad * 2 }
+    }
+    const img = canvas.toDataURL(opts)
+    measureEditRef.current = wasMeasure
+    setTechPackImg(img)
+  }
+
   function resetView() {
     const canvas = fc.current
     if (!canvas) return
@@ -3567,6 +3591,17 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         style={{ display: 'none' }}
         onChange={handleFontUpload}
       />
+
+      {/* Tech Pack */}
+      {techPackImg && (
+        <TechPackSheet
+          project={project}
+          designer={designer}
+          garmentImg={techPackImg}
+          measures={isTee ? measures : null}
+          onClose={() => setTechPackImg(null)}
+        />
+      )}
     </div>
   )
 }

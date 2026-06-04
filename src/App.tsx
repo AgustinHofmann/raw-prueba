@@ -35,7 +35,7 @@ export default function App() {
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
   const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark')
-  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void } | null>(null)
+  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)
   useEffect(() => {
@@ -212,6 +212,7 @@ export default function App() {
           onExport={() => editorActionsRef.current?.export()}
           onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
           onPlaceImage={(f: File) => editorActionsRef.current?.placeImage(f)}
+          onTechPack={() => editorActionsRef.current?.techpack()}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
         />
@@ -241,6 +242,7 @@ export default function App() {
           <EditorScreen
             key={activeProject.id}
             project={activeProject}
+            designer={user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'}
             onSave={handleSave}
             saved={saved}
             onSaveComplete={handleSaveComplete}

@@ -19,6 +19,7 @@ interface Props {
   onExport: () => void
   onImportImage: (f: File) => void
   onPlaceImage: (f: File) => void
+  onTechPack: () => void
   onRename: (name: string) => void
   onProfileOpen: () => void
 }
@@ -26,7 +27,7 @@ interface Props {
 export default function ChromeBar({
   route, openTabs, activeProject, saved, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onImportImage, onPlaceImage, onRename, onProfileOpen,
+  onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -252,6 +253,7 @@ export default function ChromeBar({
                     <div style={{ height: 1, background: 'var(--line-soft)', margin: '4px 0' }} />
                     <MenuItem icon="💾" label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
                     <MenuItem icon="⬇" label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
+                    <MenuItem icon="📄" label="Tech Pack"          hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
                   </div>
                 </>
               )}
