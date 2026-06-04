@@ -3419,9 +3419,9 @@ const DEFAULT_MEASURES: Measures = {
   largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
   anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
 }
-// Remera paramétrica armada por PIEZAS separadas (cuerpo, mangas, cuello): cada medida
-// mueve solo su pieza, así no se deforma el resto.
-const PARAMETRIC_TEE = true
+// Volvemos al SVG real del usuario. El rig de medidas se hará moviendo los puntos
+// de ESE SVG (no dibujando una remera nueva por código).
+const PARAMETRIC_TEE = false
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
   { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
   { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
