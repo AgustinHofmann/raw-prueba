@@ -3415,7 +3415,7 @@ type Measures = {
 }
 const DEFAULT_MEASURES: Measures = {
   largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
-  anchoCuello: 18, profundidadCuello: 8, largoManga: 22, anchoManga: 18,
+  anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
 }
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
   { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
@@ -3428,26 +3428,58 @@ const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: nu
   { key: 'anchoManga',        label: 'Ancho de manga',       min: 8,  max: 40 },
 ]
 
-// Devuelve las figuras de la remera en coordenadas cm (origen en el centro del cuello).
+// Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
+// La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
+// y empuja la manga hacia afuera, como una remera real.
 function buildTeeShapes(m: Measures): { d: string; role: 'body' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
   const L = m.largoTotal, ph = m.anchoPecho / 2, wh = m.anchoCintura / 2, sh = m.anchoHombros / 2
   const nh = m.anchoCuello / 2, nd = m.profundidadCuello, sl = m.largoManga, sw = m.anchoManga
-  const drop = L * 0.05            // caída del hombro
-  const armY = drop + L * 0.30     // altura de la sisa (donde se mide el pecho)
-  const dx = 0.90, dy = 0.44       // dirección de la manga (abajo-afuera)
-  const f = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`
-  const ctR = [sh + sl * dx, drop + sl * dy]            // cuff top derecho
-  const cbR = [ctR[0] - sw * dy, ctR[1] + sw * dx]      // cuff bottom derecho
+
+  const shDrop = L * 0.06          // caída del hombro
+  const yArm   = L * 0.30          // altura de la sisa (donde se mide el pecho)
+
+  type P = [number, number]
+  const N: P  = [nh, 0]            // punto de cuello (hombro interno)
+  const SH: P = [sh, shDrop]       // punto de hombro (donde arranca la manga)
+  const A: P  = [ph, yArm]         // axila (sisa, costado superior)
+  const HEM: P = [wh, L]           // ruedo
+
+  // Manga: dirección abajo-afuera (22°), perpendicular para el ancho de la boca
+  const a = 22 * Math.PI / 180, dx = Math.cos(a), dy = Math.sin(a)
+  const tx = -Math.sin(a), ty = Math.cos(a)
+  const midx = (SH[0] + A[0]) / 2, midy = (SH[1] + A[1]) / 2
+  const cmx = midx + sl * dx, cmy = midy + sl * dy
+  const cuffTop: P = [cmx - (sw / 2) * tx, cmy - (sw / 2) * ty]   // esquina superior de la boca
+  const cuffBot: P = [cmx + (sw / 2) * tx, cmy + (sw / 2) * ty]   // esquina inferior de la boca
+
+  const f  = (p: P) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`
+  const mir = (p: P): P => [-p[0], p[1]]
+
   const body =
-    `M ${f(nh, 0)} L ${f(sh, drop)} L ${f(ctR[0], ctR[1])} L ${f(cbR[0], cbR[1])} ` +
-    `L ${f(ph, armY)} L ${f(wh, L)} L ${f(-wh, L)} L ${f(-ph, armY)} ` +
-    `L ${f(-cbR[0], cbR[1])} L ${f(-ctR[0], ctR[1])} L ${f(-sh, drop)} L ${f(-nh, 0)} ` +
-    `Q 0 ${nd.toFixed(1)} ${f(nh, 0)} Z`
-  const collar = `M ${f(-nh + 0.8, 0.6)} Q 0 ${(nd + 1.8).toFixed(1)} ${f(nh - 0.8, 0.6)}`
-  const hem    = `M ${f(-wh + 0.6, L - 2.2)} L ${f(wh - 0.6, L - 2.2)}`
+    `M ${f(N)} ` +
+    `Q ${f([(N[0] + SH[0]) / 2, shDrop * 0.2])} ${f(SH)} ` +          // costura de hombro (leve)
+    `L ${f(cuffTop)} ` +                                              // capa de manga
+    `L ${f(cuffBot)} ` +                                             // boca de manga
+    `Q ${f([(cuffBot[0] + A[0]) / 2 + 0.5, (cuffBot[1] + A[1]) / 2])} ${f(A)} ` + // bajo-manga hasta axila
+    `Q ${f([ph + (wh - ph) * 0.5 + 0.6, (yArm + L) / 2])} ${f(HEM)} ` + // costado con leve curva
+    `Q 0 ${(L + 1.4).toFixed(1)} ${f(mir(HEM))} ` +                  // ruedo (leve caída)
+    `Q ${f([-(ph + (wh - ph) * 0.5 + 0.6), (yArm + L) / 2])} ${f(mir(A))} ` +
+    `Q ${f([-((cuffBot[0] + A[0]) / 2 + 0.5), (cuffBot[1] + A[1]) / 2])} ${f(mir(cuffBot))} ` +
+    `L ${f(mir(cuffTop))} ` +
+    `Q ${f([-(N[0] + SH[0]) / 2, shDrop * 0.2])} ${f(mir(N))} ` +
+    `Q 0 ${(nd * 2).toFixed(1)} ${f(N)} Z`                            // escote frontal
+
+  // Detalles (solo trazo)
+  const collar = `M ${f([-nh + 0.6, 0.4])} Q 0 ${(nd * 2 + 2.4).toFixed(1)} ${f([nh - 0.6, 0.4])}`
+  const armR = `M ${f(SH)} Q ${f([(SH[0] + A[0]) / 2 + 1.6, (SH[1] + A[1]) / 2])} ${f(A)}`   // sisa derecha
+  const armL = `M ${f(mir(SH))} Q ${f([-((SH[0] + A[0]) / 2 + 1.6), (SH[1] + A[1]) / 2])} ${f(mir(A))}`
+  const hem  = `M ${f([-wh + 0.8, L - 2.6])} Q 0 ${(L - 1.1).toFixed(1)} ${f([wh - 0.8, L - 2.6])}`
+
   return [
-    { d: body,   role: 'body',   fill: '#b9b9b9', stroke: '#2a2a28', strokeWidth: 2 },
+    { d: body,   role: 'body',   fill: '#b2b2b2', stroke: '#2a2a28', strokeWidth: 2 },
     { d: collar, role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.5 },
+    { d: armR,   role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1 },
+    { d: armL,   role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1 },
     { d: hem,    role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.2 },
   ]
 }
