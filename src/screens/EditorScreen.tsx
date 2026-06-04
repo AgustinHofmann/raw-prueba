@@ -1043,7 +1043,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       if (isMockup) {
         const unlocked = !mockupLockedRef.current
         obj.set({
-          evented:    tool === 'fill' || (unlocked && tool === 'select'),
+          evented:    tool === 'fill' || (unlocked && (tool === 'select' || tool === 'curve')),
           selectable: unlocked && tool === 'select',
         })
         return
@@ -1652,6 +1652,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       let smoothAnchors: Set<number> | null = null
       let selectedAnchorIdx: number | null = null
 
+      // Al editar una pieza del mockup, el path se reconstruye: hay que mantener su
+      // identidad de mockup (para que siga bloqueable y no quede huérfano al regenerar).
+      const inheritMockup = (oldO: fabric.FabricObject, newO: fabric.FabricObject) => {
+        if ((oldO as any)._rawMockup) {
+          ;(newO as any)._rawMockup = true
+          const idx = mockupObjects.current.indexOf(oldO)
+          if (idx >= 0) mockupObjects.current[idx] = newO
+        }
+      }
+
       const setSelectedAnchor = (idx: number | null) => {
         if (selectedAnchorIdx !== null && aHandles[selectedAnchorIdx]) {
           aHandles[selectedAnchorIdx].circle.set({ fill: '#fff' })
@@ -1706,6 +1716,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (smoothAnchors !== null) (newPath as any).__smoothAnchors = Array.from(smoothAnchors)
         ;(newPath as any).hoverCursor = CURVE_CURSOR
         undoHistory.current.push({ type: 'modify', prev: editObj, next: newPath })
+        inheritMockup(editObj, newPath)
         canvas.remove(editObj); canvas.add(newPath)
         editObj = newPath
         clearAnchorHandles(aHandles, canvas); aHandles = []
@@ -1817,6 +1828,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         }
 
         ;(newObj as any).hoverCursor = CURVE_CURSOR
+        inheritMockup(editObj, newObj)
         canvas.remove(editObj); canvas.add(newObj)
         // History updated only on mouseUp via 'modify' entry, not during drag frames
         editObj = newObj
@@ -1900,8 +1912,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               })
               ;(newPath as any).__smoothAnchors = Array.from(smoothAnchors)
               ;(newPath as any).hoverCursor = CURVE_CURSOR
-              canvas.remove(editObj); canvas.add(newPath)
               undoHistory.current.push({ type: 'modify', prev: editObj, next: newPath })
+              inheritMockup(editObj, newPath)
+              canvas.remove(editObj); canvas.add(newPath)
               editObj = newPath
               aHandles = buildAnchorHandles(newPath, canvas)
               redoHistory.current = []
@@ -1911,9 +1924,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           }
         }
 
-        // ¿Click en trazado dibujado?
+        // ¿Click en trazado dibujado? (o pieza del mockup si está desbloqueado)
+        const allowMock = !mockupLockedRef.current
         const target = e.target
-        if (target && !mockupObjects.current.includes(target) && isDrawnPathOrLine(target)) {
+        if (target && (allowMock || !mockupObjects.current.includes(target)) && isDrawnPathOrLine(target)) {
           showAnchors(target)
         } else {
           // Fallback: proximity search for small shapes that Fabric's hit detection misses
