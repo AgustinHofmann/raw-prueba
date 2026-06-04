@@ -2530,6 +2530,28 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         return
       }
 
+      // Ctrl+D — duplicar el/los objeto(s) seleccionado(s)
+      if (ctrl && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault()
+        const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+        if (!targets.length) return
+        canvas.discardActiveObject()
+        Promise.all(targets.map(o => o.clone())).then((clones: fabric.FabricObject[]) => {
+          clones.forEach(c => {
+            c.set({ left: (c.left ?? 0) + 16, top: (c.top ?? 0) + 16, selectable: true, evented: true })
+            if (clipEnabledRef.current && clipPath.current && !(c instanceof fabric.IText)) c.clipPath = clipPath.current
+            c.setCoords()
+            canvas.add(c)
+            undoHistory.current.push({ type: 'add', obj: c })
+          })
+          redoHistory.current = []
+          if (clones.length === 1) canvas.setActiveObject(clones[0])
+          else canvas.setActiveObject(new fabric.ActiveSelection(clones, { canvas }))
+          canvas.requestRenderAll()
+        })
+        return
+      }
+
       // Orden Z: Ctrl+] adelante / Ctrl+[ atrás (con Shift = al frente / al fondo)
       if (ctrl && (e.key === ']' || e.key === '[')) {
         e.preventDefault()
