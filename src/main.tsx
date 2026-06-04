@@ -8,3 +8,11 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+// Registra el service worker para que la app sea instalable (PWA) y se pueda abrir
+// en su propia ventana de escritorio (con la barra de Windows visible al maximizar).
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  })
+}
