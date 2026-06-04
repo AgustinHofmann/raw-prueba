@@ -1659,6 +1659,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           ;(newO as any)._rawMockup = true
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
+          canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
         }
       }
 
@@ -1716,8 +1717,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (smoothAnchors !== null) (newPath as any).__smoothAnchors = Array.from(smoothAnchors)
         ;(newPath as any).hoverCursor = CURVE_CURSOR
         undoHistory.current.push({ type: 'modify', prev: editObj, next: newPath })
-        inheritMockup(editObj, newPath)
         canvas.remove(editObj); canvas.add(newPath)
+        inheritMockup(editObj, newPath)
         editObj = newPath
         clearAnchorHandles(aHandles, canvas); aHandles = []
         selectedAnchorIdx = null
@@ -1828,8 +1829,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         }
 
         ;(newObj as any).hoverCursor = CURVE_CURSOR
-        inheritMockup(editObj, newObj)
         canvas.remove(editObj); canvas.add(newObj)
+        inheritMockup(editObj, newObj)
         // History updated only on mouseUp via 'modify' entry, not during drag frames
         editObj = newObj
       }
@@ -1913,8 +1914,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               ;(newPath as any).__smoothAnchors = Array.from(smoothAnchors)
               ;(newPath as any).hoverCursor = CURVE_CURSOR
               undoHistory.current.push({ type: 'modify', prev: editObj, next: newPath })
-              inheritMockup(editObj, newPath)
               canvas.remove(editObj); canvas.add(newPath)
+              inheritMockup(editObj, newPath)
               editObj = newPath
               aHandles = buildAnchorHandles(newPath, canvas)
               redoHistory.current = []
@@ -2515,6 +2516,14 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         return
       }
 
+      // Orden Z: Ctrl+] adelante / Ctrl+[ atrás (con Shift = al frente / al fondo)
+      if (ctrl && (e.key === ']' || e.key === '[')) {
+        e.preventDefault()
+        if (e.key === ']') reorderSelected(e.shiftKey ? 'front' : 'forward')
+        else reorderSelected(e.shiftKey ? 'back' : 'backward')
+        return
+      }
+
       // Ctrl+C — copy
       if (ctrl && e.key === 'c') {
         const active = canvas.getActiveObject()
@@ -2908,6 +2917,25 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     refreshLayersNow()
   }
 
+  // Orden Z del objeto seleccionado (siempre por encima del mockup)
+  function reorderSelected(dir: 'front' | 'forward' | 'backward' | 'back') {
+    const canvas = fc.current
+    if (!canvas) return
+    const obj = canvas.getActiveObject()
+    if (!obj || mockupObjects.current.includes(obj)) return
+    const minIdx = mockupObjects.current.length
+    const idx = canvas.getObjects().indexOf(obj)
+    if (dir === 'front') canvas.bringObjectToFront(obj)
+    else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
+    else if (dir === 'backward') { if (idx > minIdx) canvas.sendObjectBackwards(obj) }
+    else { // back: al fondo pero por encima del mockup
+      canvas.sendObjectToBack(obj)
+      for (let i = mockupObjects.current.length - 1; i >= 0; i--) canvas.sendObjectToBack(mockupObjects.current[i])
+    }
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
   function deleteLayer(obj: fabric.FabricObject) {
     const canvas = fc.current
     if (!canvas) return
@@ -3152,6 +3180,26 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
             >
               {selKind === 'multi' ? '⊞ Agrupar (Ctrl+G)' : '⊟ Desagrupar (Ctrl+Shift+G)'}
             </button>
+          )}
+          {hasSel && (
+            <div>
+              <div className="label" style={{ marginBottom: 6 }}>Orden</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4 }}>
+                {([
+                  ['⤒', 'Traer al frente', 'front'],
+                  ['↑', 'Traer adelante', 'forward'],
+                  ['↓', 'Enviar atrás', 'backward'],
+                  ['⤓', 'Enviar al fondo', 'back'],
+                ] as const).map(([ic, title, dir]) => (
+                  <button key={dir} title={title} onClick={() => reorderSelected(dir)}
+                    style={{ padding: '6px 0', borderRadius: 6, cursor: 'pointer', fontSize: 14,
+                      background: 'var(--surface)', border: '1px solid var(--line)', color: 'var(--fg-2)' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
+                  >{ic}</button>
+                ))}
+              </div>
+            </div>
           )}
           {selectedObj?.type === 'image' && (
             <button
