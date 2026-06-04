@@ -634,6 +634,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
+  const [linkCW,         setLinkCW]         = useState(true)   // pecho y cintura enlazados
   const isTee = project.mockupId === 'tshirt'
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
@@ -2673,6 +2674,12 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
   function updateMeasure(key: keyof Measures, val: number) {
     const next = { ...measuresRef.current, [key]: val }
+    // Pecho y cintura enlazados: se mueven a la par (mismo delta)
+    if (linkCW && (key === 'anchoPecho' || key === 'anchoCintura')) {
+      const other: keyof Measures = key === 'anchoPecho' ? 'anchoCintura' : 'anchoPecho'
+      const delta = val - measuresRef.current[key]
+      next[other] = Math.round(Math.min(90, Math.max(20, measuresRef.current[other] + delta)) * 10) / 10
+    }
     measuresRef.current = next
     setMeasures(next)
     placeTee(next, true)
@@ -3002,9 +3009,22 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 ))}
               </div>
               <button
+                onClick={() => setLinkCW(v => !v)}
+                title="Mover pecho y cintura juntos"
+                style={{
+                  width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11,
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+                  background: linkCW ? 'color-mix(in oklch, var(--accent) 14%, var(--surface))' : 'var(--surface)',
+                  border: '1px solid ' + (linkCW ? 'var(--accent)' : 'var(--line)'),
+                  color: linkCW ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
+                }}
+              >
+                {linkCW ? '🔗' : '🔓'} Pecho y cintura {linkCW ? 'enlazados' : 'sueltos'}
+              </button>
+              <button
                 className="btn btn-ghost"
                 onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
-                style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}
               >
                 Restablecer medidas
               </button>
@@ -3410,89 +3430,91 @@ function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
   return c
 }
 
-// ── Remera paramétrica (generada por medidas en cm) ──────────────────────────
+// ── Remera paramétrica: deforma el SVG REAL del usuario moviendo sus puntos ───
 type Measures = {
-  largoTotal: number; anchoPecho: number; anchoCintura: number; anchoHombros: number
+  largoTotal: number; anchoPecho: number; anchoCintura: number
   anchoCuello: number; profundidadCuello: number; largoManga: number; anchoManga: number
 }
 const DEFAULT_MEASURES: Measures = {
-  largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
+  largoTotal: 70, anchoPecho: 54, anchoCintura: 50,
   anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
 }
-// Volvemos al SVG real del usuario. El rig de medidas se hará moviendo los puntos
-// de ESE SVG (no dibujando una remera nueva por código).
-const PARAMETRIC_TEE = false
+const PARAMETRIC_TEE = true
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
   { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
   { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
   { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 20, max: 90 },
-  { key: 'anchoHombros',      label: 'Ancho de hombros',     min: 20, max: 80 },
   { key: 'anchoCuello',       label: 'Ancho de cuello',      min: 8,  max: 40 },
   { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 1,  max: 25 },
   { key: 'largoManga',        label: 'Largo de manga',       min: 5,  max: 80 },
   { key: 'anchoManga',        label: 'Ancho de manga',       min: 8,  max: 40 },
 ]
 
+// Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
+const TEE_BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
+const TEE_DETAILS = [
+  "M208.82,15.39s38.5,12.6,80.07,2.15",
+  "M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06",
+  "M101.36,26.21s24.92,50.85-8.87,146.95",
+  "M392.43,31.46s-25.26,45.67,8.53,141.78",
+  "M462.27,174.84L485.7,56.86",
+  "M207.82,10.09s39.45,12.6,82.06,2.15",
+  "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25",
+  "M30.48,176.77L8.82,49.98",
+  "M86.04,343.69L407.63,343.69",
+]
+
+// Transforma un path SVG aplicando W a cada coordenada (convierte todo a absoluto).
+function transformPath(d: string, W: (x: number, y: number) => [number, number]): string {
+  const toks = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e-?\d+)?/g)
+  if (!toks) return d
+  let i = 0, cur: [number, number] = [0, 0], start: [number, number] = [0, 0], cmd = '', pc: [number, number] | null = null
+  const out: string[] = []
+  const num = () => parseFloat(toks[i++])
+  const isCmd = (t: string) => /[a-zA-Z]/.test(t)
+  const e = (p: [number, number]) => { const q = W(p[0], p[1]); return `${q[0].toFixed(2)} ${q[1].toFixed(2)}` }
+  while (i < toks.length) {
+    if (isCmd(toks[i])) cmd = toks[i++]
+    const rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase()
+    if (C === 'M') {
+      let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; start = [x, y]; out.push('M ' + e(cur)); pc = null
+      while (i < toks.length && !isCmd(toks[i])) { let x2 = num(), y2 = num(); if (rel) { x2 += cur[0]; y2 += cur[1] } cur = [x2, y2]; out.push('L ' + e(cur)) }
+    } else if (C === 'L') { let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; out.push('L ' + e(cur)); pc = null }
+    else if (C === 'H') { let x = num(); if (rel) x += cur[0]; cur = [x, cur[1]]; out.push('L ' + e(cur)); pc = null }
+    else if (C === 'V') { let y = num(); if (rel) y += cur[1]; cur = [cur[0], y]; out.push('L ' + e(cur)); pc = null }
+    else if (C === 'C') { while (i < toks.length && !isCmd(toks[i])) { let c1: [number, number] = [num(), num()], c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c1 = [c1[0] + cur[0], c1[1] + cur[1]]; c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
+    else if (C === 'S') { while (i < toks.length && !isCmd(toks[i])) { let c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } const c1: [number, number] = pc ? [2 * cur[0] - pc[0], 2 * cur[1] - pc[1]] : [cur[0], cur[1]]; out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
+    else if (C === 'Q') { while (i < toks.length && !isCmd(toks[i])) { let c: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c = [c[0] + cur[0], c[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('Q ' + e(c) + ' ' + e(en)); pc = c; cur = en } }
+    else if (C === 'Z') { out.push('Z'); cur = [start[0], start[1]]; pc = null }
+    else { i++ }
+  }
+  return out.join(' ')
+}
+
+// W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
+function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
+  const cx = 247.3, armY = 173, hemY = 357, smid = 118.46, URx = 400.95, ULx = 92.49
+  const fLen = m.largoTotal / 70, fP = m.anchoPecho / 54, fC = m.anchoCintura / 50, fN = m.anchoCuello / 18
+  const fML = m.largoManga / 20, fMA = m.anchoManga / 18, dProf = (m.profundidadCuello - 8) * 5.0
+  return (x, y) => {
+    const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
+    if (rSlv || lSlv) { const URo = rSlv ? URx : ULx; const nUR = cx + (URo - cx) * fP; return [nUR + (x - URo) * fML, smid + (y - smid) * fMA] }
+    if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
+    const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
+    return [cx + (x - cx) * wf, y <= armY ? y : armY + (y - armY) * fLen]
+  }
+}
+
 // Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
 // La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
 // y empuja la manga hacia afuera, como una remera real.
 function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
-  const L = m.largoTotal, ph = m.anchoPecho / 2, wh = m.anchoCintura / 2, sh = m.anchoHombros / 2
-  const nh = m.anchoCuello / 2, nd = m.profundidadCuello, sl = m.largoManga, sw = m.anchoManga
-
-  const shDrop = L * 0.06          // caída del hombro
-  const yArm   = L * 0.30          // altura de la sisa (donde se mide el pecho)
-
-  type P = [number, number]
-  const N: P  = [nh, 0]            // punto de cuello (hombro interno)
-  const SH: P = [sh, shDrop]       // punto de hombro (donde arranca la manga)
-  const A: P  = [ph, yArm]         // axila (sisa, costado superior)
-  const HEM: P = [wh, L]           // ruedo
-
-  const f  = (p: P) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`
-  const mir = (p: P): P => [-p[0], p[1]]
-  const STROKE = '#2a2a28', FILL = '#b2b2b2'
-
-  // ── CUERPO (torso): cuello -> hombro -> sisa -> costado -> ruedo, con escote ──
-  const torso =
-    `M ${f(N)} L ${f(SH)} ` +
-    `Q ${f([(sh + ph) / 2 - 0.6, (shDrop + yArm) / 2])} ${f(A)} ` +          // sisa derecha (leve)
-    `L ${f(HEM)} L ${f(mir(HEM))} L ${f(mir(A))} ` +                          // ruedo
-    `Q ${f([-((sh + ph) / 2 - 0.6), (shDrop + yArm) / 2])} ${f(mir(SH))} ` +  // sisa izquierda
-    `L ${f(mir(N))} Q 0 ${(nd * 2).toFixed(1)} ${f(N)} Z`                     // escote frontal
-
-  // ── MANGAS (piezas separadas, detrás del cuerpo) ──
-  const vx = A[0] - SH[0], vy = A[1] - SH[1]
-  const la = Math.hypot(vx, vy) || 1
-  const tx = vx / la, ty = vy / la                 // a lo largo de la sisa
-  let nx = ty, ny = -tx                             // normal
-  if (nx < 0) { nx = -nx; ny = -ny }               // hacia afuera (+x)
-  const dl = Math.hypot(nx, ny + 0.55) || 1
-  const dx = nx / dl, dy = (ny + 0.55) / dl        // dirección con leve caída
-  const mx = (SH[0] + A[0]) / 2, my = (SH[1] + A[1]) / 2
-  const cmx = mx + sl * dx, cmy = my + sl * dy
-  const cuffTop: P = [cmx - (sw / 2) * tx, cmy - (sw / 2) * ty]
-  const cuffBot: P = [cmx + (sw / 2) * tx, cmy + (sw / 2) * ty]
-  const sleeveR = `M ${f(SH)} L ${f(cuffTop)} L ${f(cuffBot)} L ${f(A)} Z`
-  const sleeveL = `M ${f(mir(SH))} L ${f(mir(cuffTop))} L ${f(mir(cuffBot))} L ${f(mir(A))} Z`
-
-  // ── Detalles (trazo) ──
-  const collar = `M ${f([-nh + 0.7, 0.5])} Q 0 ${(nd * 2 + 2.2).toFixed(1)} ${f([nh - 0.7, 0.5])}`
-  const hem    = `M ${f([-wh + 0.8, L - 2.6])} Q 0 ${(L - 1.1).toFixed(1)} ${f([wh - 0.8, L - 2.6])}`
-  const chrTop: P = [cuffTop[0] - dx * 2, cuffTop[1] - dy * 2]
-  const chrBot: P = [cuffBot[0] - dx * 2, cuffBot[1] - dy * 2]
-  const shemR = `M ${f(chrTop)} L ${f(chrBot)}`
-  const shemL = `M ${f(mir(chrTop))} L ${f(mir(chrBot))}`
-
-  return [
-    { d: sleeveL, role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
-    { d: sleeveR, role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
-    { d: torso,   role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
-    { d: collar,  role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1.5 },
-    { d: hem,     role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1.2 },
-    { d: shemR,   role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1 },
-    { d: shemL,   role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1 },
+  const W = teeWarp(m)
+  const shapes: { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
+    { d: transformPath(TEE_BODY, W), role: 'piece', fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
   ]
+  for (const d of TEE_DETAILS) shapes.push({ d: transformPath(d, W), role: 'detail', fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
+  return shapes
 }
 
 // Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
