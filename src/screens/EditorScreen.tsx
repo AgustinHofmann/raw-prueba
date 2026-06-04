@@ -850,7 +850,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       canvas.renderAll()
     }
 
-    if (project.mockupId === 'tshirt') {
+    if (PARAMETRIC_TEE && project.mockupId === 'tshirt') {
       // Remera paramétrica generada por medidas
       placeTee(measuresRef.current)
       restoreAndWire()
@@ -2975,7 +2975,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
 
           {/* Properties tab */}
           {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
-          {isTee && !hasSel && (
+          {PARAMETRIC_TEE && isTee && !hasSel && (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -3417,6 +3417,9 @@ const DEFAULT_MEASURES: Measures = {
   largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
   anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
 }
+// La remera generada por código se descartó: usamos el SVG real del usuario.
+// El rig de medidas se va a construir deformando ese SVG (no reemplazándolo).
+const PARAMETRIC_TEE = false
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
   { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
   { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
