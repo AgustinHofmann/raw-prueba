@@ -2649,11 +2649,13 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
 
-    // Clip = la silueta del cuerpo
-    const bodyShape = shapes.find(s => s.role === 'body')!
-    const clipP = new fabric.Path(bodyShape.d, { fill: '#000' })
-    clipP.set({ left: (clipP.left ?? 0) * sc + ox, top: (clipP.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc })
-    const cg = new fabric.Group([clipP]); cg.absolutePositioned = true
+    // Clip = unión de todas las piezas (cuerpo + mangas)
+    const clipObjs = shapes.filter(s => s.role === 'piece').map(s => {
+      const p = new fabric.Path(s.d, { fill: '#000' })
+      p.set({ left: (p.left ?? 0) * sc + ox, top: (p.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc })
+      return p
+    })
+    const cg = new fabric.Group(clipObjs); cg.absolutePositioned = true
     clipPath.current = cg
     pxPerCmRef.current = sc
 
@@ -3417,9 +3419,9 @@ const DEFAULT_MEASURES: Measures = {
   largoTotal: 70, anchoPecho: 54, anchoCintura: 50, anchoHombros: 44,
   anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
 }
-// La remera generada por código se descartó: usamos el SVG real del usuario.
-// El rig de medidas se va a construir deformando ese SVG (no reemplazándolo).
-const PARAMETRIC_TEE = false
+// Remera paramétrica armada por PIEZAS separadas (cuerpo, mangas, cuello): cada medida
+// mueve solo su pieza, así no se deforma el resto.
+const PARAMETRIC_TEE = true
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
   { key: 'largoTotal',        label: 'Largo total',          min: 30, max: 120 },
   { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 20, max: 90 },
@@ -3434,7 +3436,7 @@ const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: nu
 // Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
 // La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
 // y empuja la manga hacia afuera, como una remera real.
-function buildTeeShapes(m: Measures): { d: string; role: 'body' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
+function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
   const L = m.largoTotal, ph = m.anchoPecho / 2, wh = m.anchoCintura / 2, sh = m.anchoHombros / 2
   const nh = m.anchoCuello / 2, nd = m.profundidadCuello, sl = m.largoManga, sw = m.anchoManga
 
@@ -3447,43 +3449,49 @@ function buildTeeShapes(m: Measures): { d: string; role: 'body' | 'detail'; fill
   const A: P  = [ph, yArm]         // axila (sisa, costado superior)
   const HEM: P = [wh, L]           // ruedo
 
-  // Manga: dirección abajo-afuera (22°), perpendicular para el ancho de la boca
-  const a = 22 * Math.PI / 180, dx = Math.cos(a), dy = Math.sin(a)
-  const tx = -Math.sin(a), ty = Math.cos(a)
-  const midx = (SH[0] + A[0]) / 2, midy = (SH[1] + A[1]) / 2
-  const cmx = midx + sl * dx, cmy = midy + sl * dy
-  const cuffTop: P = [cmx - (sw / 2) * tx, cmy - (sw / 2) * ty]   // esquina superior de la boca
-  const cuffBot: P = [cmx + (sw / 2) * tx, cmy + (sw / 2) * ty]   // esquina inferior de la boca
-
   const f  = (p: P) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`
   const mir = (p: P): P => [-p[0], p[1]]
+  const STROKE = '#2a2a28', FILL = '#b2b2b2'
 
-  const body =
-    `M ${f(N)} ` +
-    `Q ${f([(N[0] + SH[0]) / 2, shDrop * 0.2])} ${f(SH)} ` +          // costura de hombro (leve)
-    `L ${f(cuffTop)} ` +                                              // capa de manga
-    `L ${f(cuffBot)} ` +                                             // boca de manga
-    `Q ${f([(cuffBot[0] + A[0]) / 2 + 0.5, (cuffBot[1] + A[1]) / 2])} ${f(A)} ` + // bajo-manga hasta axila
-    `Q ${f([ph + (wh - ph) * 0.5 + 0.6, (yArm + L) / 2])} ${f(HEM)} ` + // costado con leve curva
-    `Q 0 ${(L + 1.4).toFixed(1)} ${f(mir(HEM))} ` +                  // ruedo (leve caída)
-    `Q ${f([-(ph + (wh - ph) * 0.5 + 0.6), (yArm + L) / 2])} ${f(mir(A))} ` +
-    `Q ${f([-((cuffBot[0] + A[0]) / 2 + 0.5), (cuffBot[1] + A[1]) / 2])} ${f(mir(cuffBot))} ` +
-    `L ${f(mir(cuffTop))} ` +
-    `Q ${f([-(N[0] + SH[0]) / 2, shDrop * 0.2])} ${f(mir(N))} ` +
-    `Q 0 ${(nd * 2).toFixed(1)} ${f(N)} Z`                            // escote frontal
+  // ── CUERPO (torso): cuello -> hombro -> sisa -> costado -> ruedo, con escote ──
+  const torso =
+    `M ${f(N)} L ${f(SH)} ` +
+    `Q ${f([(sh + ph) / 2 - 0.6, (shDrop + yArm) / 2])} ${f(A)} ` +          // sisa derecha (leve)
+    `L ${f(HEM)} L ${f(mir(HEM))} L ${f(mir(A))} ` +                          // ruedo
+    `Q ${f([-((sh + ph) / 2 - 0.6), (shDrop + yArm) / 2])} ${f(mir(SH))} ` +  // sisa izquierda
+    `L ${f(mir(N))} Q 0 ${(nd * 2).toFixed(1)} ${f(N)} Z`                     // escote frontal
 
-  // Detalles (solo trazo)
-  const collar = `M ${f([-nh + 0.6, 0.4])} Q 0 ${(nd * 2 + 2.4).toFixed(1)} ${f([nh - 0.6, 0.4])}`
-  const armR = `M ${f(SH)} Q ${f([(SH[0] + A[0]) / 2 + 1.6, (SH[1] + A[1]) / 2])} ${f(A)}`   // sisa derecha
-  const armL = `M ${f(mir(SH))} Q ${f([-((SH[0] + A[0]) / 2 + 1.6), (SH[1] + A[1]) / 2])} ${f(mir(A))}`
-  const hem  = `M ${f([-wh + 0.8, L - 2.6])} Q 0 ${(L - 1.1).toFixed(1)} ${f([wh - 0.8, L - 2.6])}`
+  // ── MANGAS (piezas separadas, detrás del cuerpo) ──
+  const vx = A[0] - SH[0], vy = A[1] - SH[1]
+  const la = Math.hypot(vx, vy) || 1
+  const tx = vx / la, ty = vy / la                 // a lo largo de la sisa
+  let nx = ty, ny = -tx                             // normal
+  if (nx < 0) { nx = -nx; ny = -ny }               // hacia afuera (+x)
+  const dl = Math.hypot(nx, ny + 0.55) || 1
+  const dx = nx / dl, dy = (ny + 0.55) / dl        // dirección con leve caída
+  const mx = (SH[0] + A[0]) / 2, my = (SH[1] + A[1]) / 2
+  const cmx = mx + sl * dx, cmy = my + sl * dy
+  const cuffTop: P = [cmx - (sw / 2) * tx, cmy - (sw / 2) * ty]
+  const cuffBot: P = [cmx + (sw / 2) * tx, cmy + (sw / 2) * ty]
+  const sleeveR = `M ${f(SH)} L ${f(cuffTop)} L ${f(cuffBot)} L ${f(A)} Z`
+  const sleeveL = `M ${f(mir(SH))} L ${f(mir(cuffTop))} L ${f(mir(cuffBot))} L ${f(mir(A))} Z`
+
+  // ── Detalles (trazo) ──
+  const collar = `M ${f([-nh + 0.7, 0.5])} Q 0 ${(nd * 2 + 2.2).toFixed(1)} ${f([nh - 0.7, 0.5])}`
+  const hem    = `M ${f([-wh + 0.8, L - 2.6])} Q 0 ${(L - 1.1).toFixed(1)} ${f([wh - 0.8, L - 2.6])}`
+  const chrTop: P = [cuffTop[0] - dx * 2, cuffTop[1] - dy * 2]
+  const chrBot: P = [cuffBot[0] - dx * 2, cuffBot[1] - dy * 2]
+  const shemR = `M ${f(chrTop)} L ${f(chrBot)}`
+  const shemL = `M ${f(mir(chrTop))} L ${f(mir(chrBot))}`
 
   return [
-    { d: body,   role: 'body',   fill: '#b2b2b2', stroke: '#2a2a28', strokeWidth: 2 },
-    { d: collar, role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.5 },
-    { d: armR,   role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1 },
-    { d: armL,   role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1 },
-    { d: hem,    role: 'detail', fill: null,      stroke: '#2a2a28', strokeWidth: 1.2 },
+    { d: sleeveL, role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
+    { d: sleeveR, role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
+    { d: torso,   role: 'piece',  fill: FILL, stroke: STROKE, strokeWidth: 2 },
+    { d: collar,  role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1.5 },
+    { d: hem,     role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1.2 },
+    { d: shemR,   role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1 },
+    { d: shemL,   role: 'detail', fill: null, stroke: STROKE, strokeWidth: 1 },
   ]
 }
 
