@@ -2248,6 +2248,51 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     }
   }
 
+  // ── Quitar fondo de una imagen ───────────────────────────────────────────────
+  async function removeBackground() {
+    const canvas = fc.current
+    if (!canvas) return
+    const img = canvas.getActiveObject()
+    if (!img || img.type !== 'image') return
+    const fimg = img as fabric.FabricImage
+    const el = fimg.getElement() as HTMLImageElement | HTMLCanvasElement
+    const w = (el as HTMLImageElement).naturalWidth || el.width
+    const h = (el as HTMLImageElement).naturalHeight || el.height
+    if (!w || !h) return
+    setVectorizing(true)
+    try {
+      const tmp = document.createElement('canvas')
+      tmp.width = w; tmp.height = h
+      const tctx = tmp.getContext('2d', { willReadFrequently: true })!
+      tctx.drawImage(el, 0, 0, w, h)
+      let imageData: ImageData
+      try { imageData = tctx.getImageData(0, 0, w, h) }
+      catch { console.error('No se puede procesar (imagen con restricciones CORS)'); return }
+      removeBgFromImageData(imageData, 42)
+      tctx.putImageData(imageData, 0, 0)
+      const dataURL = tmp.toDataURL('image/png')
+      const newImg = await fabric.FabricImage.fromURL(dataURL)
+      newImg.set({
+        left: fimg.left, top: fimg.top, scaleX: fimg.scaleX, scaleY: fimg.scaleY,
+        angle: fimg.angle, originX: fimg.originX, originY: fimg.originY,
+        opacity: fimg.opacity, selectable: true, evented: true,
+      })
+      if (clipEnabledRef.current && clipPath.current) newImg.clipPath = clipPath.current
+      newImg.setCoords()
+      canvas.remove(fimg)
+      canvas.add(newImg)
+      canvas.setActiveObject(newImg)
+      setSelectedObj(newImg)
+      undoHistory.current.push({ type: 'erase', removed: [fimg], added: [newImg] })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+    } catch (err) {
+      console.error('Error al quitar el fondo:', err)
+    } finally {
+      setVectorizing(false)
+    }
+  }
+
   // ── Texturas ─────────────────────────────────────────────────────────────────
   function applyTexture(kind: TextureKind) {
     const canvas = fc.current
@@ -2382,6 +2427,13 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       const ctrl = e.ctrlKey || e.metaKey
+
+      // Ctrl+S — guardar (preventDefault: si no, el navegador abre "Guardar página HTML")
+      if (ctrl && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        handleSave()
+        return
+      }
 
       // I — gotero
       if (!ctrl && (e.key === 'i' || e.key === 'I')) { setTool('eyedropper'); return }
@@ -2781,7 +2833,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
             }}>
               <div style={{ width: 32, height: 32, border: '3px solid #555', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-              <span style={{ color: '#fff', fontSize: 13 }}>Vectorizando imagen...</span>
+              <span style={{ color: '#fff', fontSize: 13 }}>Procesando imagen...</span>
             </div>
           )}
           {viewChanged && (
@@ -2857,6 +2909,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               style={{ justifyContent: 'center', fontSize: 12 }}
             >
               {selKind === 'multi' ? '⊞ Agrupar (Ctrl+G)' : '⊟ Desagrupar (Ctrl+Shift+G)'}
+            </button>
+          )}
+          {selectedObj?.type === 'image' && (
+            <button
+              className="btn btn-ghost"
+              onClick={removeBackground}
+              title="Quitar el fondo de la imagen (fondos lisos)"
+              style={{ justifyContent: 'center', fontSize: 12 }}
+            >
+              ✂️ Quitar fondo
             </button>
           )}
           {isText && (
@@ -3238,6 +3300,38 @@ function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
     spot(s * 0.25, s * 0.3); spot(s * 0.7, s * 0.6); spot(s * 0.5, s * 0.85); spot(s * 0.85, s * 0.2)
   }
   return c
+}
+
+// Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
+// parecidos al color de fondo (muestreado en las esquinas). Solo borra regiones de fondo
+// conectadas al borde, así no se come colores iguales que estén dentro del sujeto.
+function removeBgFromImageData(data: ImageData, tolerance = 42): void {
+  const w = data.width, h = data.height, px = data.data
+  const cornerIdx = [0, w - 1, (h - 1) * w, (h - 1) * w + (w - 1)]
+  let br = 0, bg = 0, bb = 0
+  for (const c of cornerIdx) { br += px[c * 4]; bg += px[c * 4 + 1]; bb += px[c * 4 + 2] }
+  br /= 4; bg /= 4; bb /= 4
+  const tol2 = tolerance * tolerance * 3
+  const visited = new Uint8Array(w * h)
+  const stack: number[] = []
+  for (let xx = 0; xx < w; xx++) { stack.push(xx, (h - 1) * w + xx) }
+  for (let yy = 0; yy < h; yy++) { stack.push(yy * w, yy * w + w - 1) }
+  const matches = (i: number) => {
+    const dr = px[i * 4] - br, dg = px[i * 4 + 1] - bg, db = px[i * 4 + 2] - bb
+    return dr * dr + dg * dg + db * db <= tol2
+  }
+  while (stack.length) {
+    const i = stack.pop()!
+    if (visited[i]) continue
+    visited[i] = 1
+    if (!matches(i)) continue
+    px[i * 4 + 3] = 0
+    const x = i % w, y = (i / w) | 0
+    if (x > 0) stack.push(i - 1)
+    if (x < w - 1) stack.push(i + 1)
+    if (y > 0) stack.push(i - w)
+    if (y < h - 1) stack.push(i + w)
+  }
 }
 
 function getLayerLabel(obj: fabric.FabricObject): string {
