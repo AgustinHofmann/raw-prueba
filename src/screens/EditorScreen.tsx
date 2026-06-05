@@ -823,6 +823,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     canvas.on('selection:cleared', () => { setSelectedObj(null); setSelKind('none') })
 
     // Illustrator-style path highlight: 1px blue stroke along the selected path(s)
+    let hoverObj: fabric.FabricObject | null = null
     const onAfterRender = () => {
       const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
       if (!ctx) return
@@ -847,47 +848,74 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         ctx.restore()
       }
 
+      // Dibuja el contorno (trazado) de un objeto en azul, sobre el canvas.
+      const strokeOutline = (obj: fabric.FabricObject) => {
+        const pathCmds = (obj as any).path as any[][] | undefined
+        const T  = obj.calcTransformMatrix() as number[]
+        if (pathCmds) {
+          const po = (obj as fabric.Path).pathOffset ?? { x: 0, y: 0 }
+          // Fabric renders: transform(calcTransformMatrix) → translate(-pathOffset) → draw path
+          // So screen = vpt * T * (point - pathOffset); horneamos pathOffset en T.
+          const t4 = T[0]*(-po.x) + T[2]*(-po.y) + T[4]
+          const t5 = T[1]*(-po.x) + T[3]*(-po.y) + T[5]
+          const ft = [
+            vpt[0]*T[0] + vpt[2]*T[1], vpt[1]*T[0] + vpt[3]*T[1],
+            vpt[0]*T[2] + vpt[2]*T[3], vpt[1]*T[2] + vpt[3]*T[3],
+            vpt[0]*t4   + vpt[2]*t5   + vpt[4],
+            vpt[1]*t4   + vpt[3]*t5   + vpt[5],
+          ]
+          const tp = (x: number, y: number) =>
+            [ft[0]*x + ft[2]*y + ft[4], ft[1]*x + ft[3]*y + ft[5]] as const
+          ctx.beginPath()
+          for (const cmd of pathCmds) {
+            switch (cmd[0]) {
+              case 'M': case 'm': { const [px,py] = tp(cmd[1],cmd[2]); ctx.moveTo(px,py); break }
+              case 'L': case 'l': { const [px,py] = tp(cmd[1],cmd[2]); ctx.lineTo(px,py); break }
+              case 'C': case 'c': {
+                const [x1,y1] = tp(cmd[1],cmd[2]), [x2,y2] = tp(cmd[3],cmd[4]), [x3,y3] = tp(cmd[5],cmd[6])
+                ctx.bezierCurveTo(x1,y1,x2,y2,x3,y3); break
+              }
+              case 'Z': case 'z': ctx.closePath(); break
+            }
+          }
+          ctx.stroke()
+        } else {
+          // Objetos sin path (rect, texto, etc.): contorno por sus 4 esquinas en coords de escena.
+          const c = (obj as any).aCoords as { tl:any; tr:any; br:any; bl:any } | undefined
+          if (!c) return
+          const tp = (p: {x:number;y:number}) =>
+            [vpt[0]*p.x + vpt[2]*p.y + vpt[4], vpt[1]*p.x + vpt[3]*p.y + vpt[5]] as const
+          const [tlx,tly]=tp(c.tl), [trx,try_]=tp(c.tr), [brx,bry]=tp(c.br), [blx,bly]=tp(c.bl)
+          ctx.beginPath(); ctx.moveTo(tlx,tly); ctx.lineTo(trx,try_); ctx.lineTo(brx,bry); ctx.lineTo(blx,bly); ctx.closePath(); ctx.stroke()
+        }
+      }
+
       const active = canvas.getActiveObjects()
-      if (!active.length) return
+      // Objeto bajo el mouse (hover): se resalta su trazado aunque no esté seleccionado.
+      const hov = hoverObj
+      const showHover = !!hov && hov.evented !== false && !active.includes(hov)
+        && !mockupObjects.current.includes(hov) && canvas.getObjects().includes(hov)
+      if (!active.length && !showHover) return
       ctx.save()
       ctx.setTransform(rs, 0, 0, rs, 0, 0)
       ctx.strokeStyle = SEL_BLUE
       ctx.lineWidth   = 1
-      for (const obj of active) {
-        const pathCmds = (obj as any).path as any[][] | undefined
-        if (!pathCmds) continue
-        const T  = obj.calcTransformMatrix() as number[]
-        const po = (obj as fabric.Path).pathOffset ?? { x: 0, y: 0 }
-        // Fabric renders: transform(calcTransformMatrix) → translate(-pathOffset) → draw path
-        // So screen = vpt * T * (point - pathOffset)
-        // Bake pathOffset into T: T'[4,5] shift by T * (-po)
-        const t4 = T[0]*(-po.x) + T[2]*(-po.y) + T[4]
-        const t5 = T[1]*(-po.x) + T[3]*(-po.y) + T[5]
-        const ft = [
-          vpt[0]*T[0] + vpt[2]*T[1], vpt[1]*T[0] + vpt[3]*T[1],
-          vpt[0]*T[2] + vpt[2]*T[3], vpt[1]*T[2] + vpt[3]*T[3],
-          vpt[0]*t4   + vpt[2]*t5   + vpt[4],
-          vpt[1]*t4   + vpt[3]*t5   + vpt[5],
-        ]
-        const tp = (x: number, y: number) =>
-          [ft[0]*x + ft[2]*y + ft[4], ft[1]*x + ft[3]*y + ft[5]] as const
-        ctx.beginPath()
-        for (const cmd of pathCmds) {
-          switch (cmd[0]) {
-            case 'M': case 'm': { const [px,py] = tp(cmd[1],cmd[2]); ctx.moveTo(px,py); break }
-            case 'L': case 'l': { const [px,py] = tp(cmd[1],cmd[2]); ctx.lineTo(px,py); break }
-            case 'C': case 'c': {
-              const [x1,y1] = tp(cmd[1],cmd[2]), [x2,y2] = tp(cmd[3],cmd[4]), [x3,y3] = tp(cmd[5],cmd[6])
-              ctx.bezierCurveTo(x1,y1,x2,y2,x3,y3); break
-            }
-            case 'Z': case 'z': ctx.closePath(); break
-          }
-        }
-        ctx.stroke()
-      }
+      for (const obj of active) strokeOutline(obj)
+      if (showHover) strokeOutline(hov!)
       ctx.restore()
     }
     canvas.on('after:render', onAfterRender)
+
+    // Smart-highlight estilo Illustrator: al pasar el mouse por encima de un objeto se marca su
+    // trazado. perPixelTargetFind hace que mouse:over solo dispare sobre la figura real.
+    const onMouseOver = (e: any) => {
+      const t = e.target as fabric.FabricObject | undefined
+      if (!t || mockupObjects.current.includes(t)) { if (hoverObj) { hoverObj = null; canvas.requestRenderAll() } return }
+      if (hoverObj !== t) { hoverObj = t; canvas.requestRenderAll() }
+    }
+    const onMouseOut = () => { if (hoverObj) { hoverObj = null; canvas.requestRenderAll() } }
+    canvas.on('mouse:over', onMouseOver)
+    canvas.on('mouse:out', onMouseOut)
 
     // Stroke width stays visually constant during scaling via strokeUniform:true on
     // every object — no manual strokeWidth mutation needed (that caused the bounding-box
@@ -969,7 +997,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       })
     }
 
-    return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.dispose() }
+    return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
   }, [project.mockupId])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
