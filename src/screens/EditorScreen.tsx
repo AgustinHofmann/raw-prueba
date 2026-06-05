@@ -567,6 +567,8 @@ Object.assign(fabric.FabricObject.ownDefaults, {
   transparentCorners: false,   // false = Fabric also draws white fill as fallback
   cornerColor:        '#ffffff',
   cornerStrokeColor:  SEL_BLUE,
+  perPixelTargetFind: true,    // solo selecciona/agarra sobre la figura real, no sobre la caja invisible
+  targetFindTolerance: 4,      // pequeño margen para que el trazo fino siga siendo fácil de agarrar
 })
 fabric.FabricObject.prototype.padding = 0
 try {
