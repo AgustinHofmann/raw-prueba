@@ -595,6 +595,70 @@ const EYEDROPPER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.o
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
 
+// Campo numérico con flechitas propias (no las nativas del navegador) y soporte para valor
+// "Mixto": cuando hay selección múltiple con valores distintos muestra el indicador y las
+// flechas quedan deshabilitadas, pero igual se puede escribir un número para igualarlos a todos.
+function NumberField({
+  value, onChange, min, max, step = 1, mixed = false, suffix, width = 56, fullWidth = false,
+}: {
+  value: number
+  onChange: (n: number) => void
+  min?: number; max?: number; step?: number
+  mixed?: boolean
+  suffix?: string
+  width?: number
+  fullWidth?: boolean
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const clamp = (n: number) => {
+    if (min != null) n = Math.max(min, n)
+    if (max != null) n = Math.min(max, n)
+    return n
+  }
+  const shown = draft != null ? draft : (mixed ? '' : String(value))
+  const commit = (raw: string) => { const n = parseFloat(raw); if (!isNaN(n)) onChange(clamp(n)); setDraft(null) }
+  const stepBy = (d: number) => { if (mixed) return; onChange(clamp((value ?? 0) + d)) }
+  const btn: React.CSSProperties = {
+    width: 16, height: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 0, border: 'none', background: 'transparent', cursor: mixed ? 'default' : 'pointer',
+    color: mixed ? 'var(--muted-2)' : 'var(--muted)', lineHeight: 0,
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: fullWidth ? '100%' : undefined }}>
+      <div style={{ position: 'relative', width: fullWidth ? '100%' : width }}>
+        <input
+          type="text" inputMode="decimal"
+          value={shown}
+          placeholder={mixed ? 'Mixto' : ''}
+          onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(clamp(n)) }}
+          onBlur={e => commit(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur() }
+            else if (e.key === 'ArrowUp')   { e.preventDefault(); stepBy(step) }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); stepBy(-step) }
+          }}
+          style={{
+            width: '100%', padding: '5px 20px 5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+            background: 'var(--surface)', border: '1px solid var(--line)',
+            color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
+          }}
+        />
+        <div style={{ position: 'absolute', right: 2, top: 1, bottom: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <button type="button" tabIndex={-1} disabled={mixed} aria-label="Aumentar"
+            onMouseDown={e => e.preventDefault()} onClick={() => stepBy(step)} style={btn}>
+            <svg width="9" height="6" viewBox="0 0 9 6"><path d="M1 4.5 L4.5 1 L8 4.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          <button type="button" tabIndex={-1} disabled={mixed} aria-label="Disminuir"
+            onMouseDown={e => e.preventDefault()} onClick={() => stepBy(-step)} style={btn}>
+            <svg width="9" height="6" viewBox="0 0 9 6"><path d="M1 1.5 L4.5 5 L8 1.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+        </div>
+      </div>
+      {suffix && <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{suffix}</span>}
+    </div>
+  )
+}
+
 export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
@@ -630,6 +694,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [propFill,      setPropFill]      = useState<string | null>(null)
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
+  const [propSWidthMixed, setPropSWidthMixed] = useState(false)  // selección múltiple con grosores distintos
   const [propX,         setPropX]         = useState(0)
   const [propY,         setPropY]         = useState(0)
   const [propW,         setPropW]         = useState(0)
@@ -2196,6 +2261,9 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         setPropFill(typeof obj.fill   === 'string' ? obj.fill   : null)
         setPropStroke(typeof obj.stroke === 'string' ? obj.stroke : '#000000')
         setPropSWidth(obj.strokeWidth ?? 1)
+        // Grosor "Mixto" si hay varios objetos seleccionados con distinto strokeWidth
+        const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
+        setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
         setPropX(Math.round(obj.left ?? 0))
         setPropY(Math.round(obj.top  ?? 0))
         setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
@@ -2480,11 +2548,12 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   function applyStrokeWidth(val: number) {
     const clamped = Math.max(0.5, val)
     setPropSWidth(clamped)
-    const obj = fc.current?.getActiveObject()
-    if (obj && !mockupObjects.current.includes(obj)) {
-      obj.set({ strokeWidth: clamped })
-      fc.current?.requestRenderAll()
-    }
+    setPropSWidthMixed(false)   // al escribir un número se igualan todos
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    objs.forEach(o => o.set({ strokeWidth: clamped }))
+    canvas.requestRenderAll()
   }
 
   function applyOpacity(val: number) {
@@ -3396,19 +3465,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
               {/* Font size */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
                 <span className="label">Tamaño</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <input
-                    type="number" min={6} max={400} step={1}
-                    value={propFontSize}
-                    onChange={e => applyFontSize(Number(e.target.value))}
-                    style={{
-                      width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
-                      background: 'var(--surface)', border: '1px solid var(--line)',
-                      color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
-                    }}
-                  />
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>px</span>
-                </div>
+                <NumberField value={propFontSize} onChange={applyFontSize} min={6} max={400} step={1} suffix="px" />
               </div>
             </div>
           )}
@@ -3422,11 +3479,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                 {([['X', propX, applyX], ['Y', propY, applyY]] as const).map(([label, val, fn]) => (
                   <div key={label}>
                     <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
-                    <input type="number" step={1} value={val}
-                      onChange={e => fn(Number(e.target.value))}
-                      style={{ width: '100%', padding: '5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
-                        background: 'var(--surface)', border: '1px solid var(--line)',
-                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                    <NumberField value={val} onChange={fn} step={1} fullWidth />
                   </div>
                 ))}
               </div>
@@ -3435,38 +3488,20 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                 {([['W', propW, applyW], ['H', propH, applyH]] as const).map(([label, val, fn]) => (
                   <div key={label}>
                     <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
-                    <input type="number" step={1} min={1} value={val}
-                      onChange={e => fn(Number(e.target.value))}
-                      style={{ width: '100%', padding: '5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
-                        background: 'var(--surface)', border: '1px solid var(--line)',
-                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
+                    <NumberField value={val} onChange={fn} step={1} min={1} fullWidth />
                   </div>
                 ))}
               </div>
               {/* Rotación */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <span className="label">Rotación</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <input type="number" step={1} min={-360} max={360} value={propAngle}
-                    onChange={e => applyAngle(Number(e.target.value))}
-                    style={{ width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
-                      background: 'var(--surface)', border: '1px solid var(--line)',
-                      color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>°</span>
-                </div>
+                <NumberField value={propAngle} onChange={applyAngle} step={1} min={-360} max={360} suffix="°" />
               </div>
               {/* Opacidad */}
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                   <span className="label">Opacidad</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input type="number" step={1} min={0} max={100} value={propOpacity}
-                      onChange={e => applyOpacity(Number(e.target.value))}
-                      style={{ width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
-                        background: 'var(--surface)', border: '1px solid var(--line)',
-                        color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>%</span>
-                  </div>
+                  <NumberField value={propOpacity} onChange={applyOpacity} step={1} min={0} max={100} suffix="%" />
                 </div>
                 <input type="range" min={0} max={100} step={1} value={propOpacity}
                   onChange={e => applyOpacity(Number(e.target.value))}
@@ -3519,20 +3554,8 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span className="label">Grosor</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <input
-                  type="number" min={0.5} max={200} step={0.5}
-                  value={propSWidth}
-                  onChange={e => applyStrokeWidth(Number(e.target.value))}
-                  onBlur={e  => applyStrokeWidth(Number(e.target.value))}
-                  style={{
-                    width: 56, padding: '5px 8px', borderRadius: 6, textAlign: 'right',
-                    background: 'var(--surface)', border: '1px solid var(--line)',
-                    color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
-                  }}
-                />
-                <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>px</span>
-              </div>
+              <NumberField value={propSWidth} mixed={propSWidthMixed} onChange={applyStrokeWidth}
+                min={0.5} max={200} step={0.5} suffix="px" />
             </div>
           </div>
 

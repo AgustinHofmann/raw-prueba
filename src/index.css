@@ -122,6 +122,11 @@ input, textarea, select {
 }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); background: var(--bg); }
 
+/* Oculta las flechitas nativas (feas) de los input numéricos; usamos controles propios */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
 .panel {
   background: color-mix(in oklch, var(--surface) 92%, transparent);
   border: 1px solid var(--line);
