@@ -3680,19 +3680,21 @@ type Measures = {
   largoTotal: number; anchoPecho: number; anchoCintura: number
   anchoCuello: number; profundidadCuello: number; largoManga: number; anchoManga: number
 }
+// Calibradas a una escala unica de 5.086 px/cm (largoTotal 70 = altura total del dibujo),
+// asi todas las medidas son consistentes entre si (la manga no puede quedar mas larga que el cuerpo).
 const DEFAULT_MEASURES: Measures = {
-  largoTotal: 70, anchoPecho: 54, anchoCintura: 50,
-  anchoCuello: 18, profundidadCuello: 8, largoManga: 20, anchoManga: 18,
+  largoTotal: 70, anchoPecho: 60, anchoCintura: 63,
+  anchoCuello: 18, profundidadCuello: 8, largoManga: 18, anchoManga: 25,
 }
 const PARAMETRIC_TEE = true
 const MEASURE_FIELDS: { key: keyof Measures; label: string; min: number; max: number }[] = [
-  { key: 'largoTotal',        label: 'Largo total',          min: 55, max: 90 },
-  { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 42, max: 72 },
-  { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 40, max: 72 },
+  { key: 'largoTotal',        label: 'Largo total',          min: 55, max: 95 },
+  { key: 'anchoPecho',        label: 'Ancho de pecho',       min: 46, max: 80 },
+  { key: 'anchoCintura',      label: 'Ancho de cintura',     min: 46, max: 82 },
   { key: 'anchoCuello',       label: 'Ancho de cuello',      min: 13, max: 26 },
   { key: 'profundidadCuello', label: 'Profundidad de cuello',min: 4,  max: 16 },
-  { key: 'largoManga',        label: 'Largo de manga',       min: 10, max: 45 },
-  { key: 'anchoManga',        label: 'Ancho de manga',       min: 13, max: 28 },
+  { key: 'largoManga',        label: 'Largo de manga',       min: 12, max: 50 },
+  { key: 'anchoManga',        label: 'Ancho de manga',       min: 16, max: 38 },
 ]
 // Grupos para el panel: colapsado se edita en general (todo junto), desplegado uno por uno.
 const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] = [
@@ -3704,12 +3706,12 @@ const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] 
 
 // Tiradores de medida: punto base en el SVG + cómo convertir su posición a cm.
 const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y'; toMeasure: (sx: number, sy: number, m: Measures) => number }[] = [
-  { key: 'anchoPecho',   base: [400.95, 173],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 153.65 * 54 },
-  { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 50 },
-  { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => (sy - 173) / 184 * 70 },
+  { key: 'anchoPecho',   base: [400.95, 173],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 153.65 * 60 },
+  { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 63 },
+  { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => 33.8 + (sy - 173) / 5.086 },
   { key: 'anchoCuello',  base: [292.24, 4.64],   axis: 'x', toMeasure: (sx) => (sx - 247.3) / 44.94 * 18 },
-  { key: 'largoManga',   base: [493.43, 58.94],  axis: 'x', toMeasure: (sx, _sy, m) => { const nUR = 247.3 + 153.65 * (m.anchoPecho / 54); return (sx - nUR) / 92.48 * 20 } },
-  { key: 'anchoManga',   base: [470.28, 177.99], axis: 'y', toMeasure: (_sx, sy) => (sy - 50) / 127.99 * 18 },
+  { key: 'largoManga',   base: [493.43, 58.94],  axis: 'x', toMeasure: (sx, _sy, m) => { const nUR = 247.3 + 153.65 * (m.anchoPecho / 60); return (sx - nUR) / 92.48 * 18 } },
+  { key: 'anchoManga',   base: [470.28, 177.99], axis: 'y', toMeasure: (_sx, sy) => (sy - 50) / 127.99 * 25 },
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
@@ -3756,22 +3758,28 @@ function transformPath(d: string, W: (x: number, y: number) => [number, number])
 // W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
 function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
   const cx = 247.3, armY = 173, hemY = 357, slvTop = 50, URx = 400.95, ULx = 92.49
-  const fLen = m.largoTotal / 70, fP = m.anchoPecho / 54, fC = m.anchoCintura / 50, fN = m.anchoCuello / 18
-  const fML = m.largoManga / 20, fMA = m.anchoManga / 18, dProf = (m.profundidadCuello - 8) * 5.0
+  // fLen modela el LARGO TOTAL real (HPS al ruedo): 33.8cm fijos del torso superior + la parte
+  // inferior (36.2cm por defecto) que es la que se estira. fLen = 1 con largoTotal = 70.
+  const fLen = (m.largoTotal - 33.8) / 36.2, fP = m.anchoPecho / 60, fC = m.anchoCintura / 63, fN = m.anchoCuello / 18
+  const fML = m.largoManga / 18, fMA = m.anchoManga / 25, dProf = (m.profundidadCuello - 8) * 5.0
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
     // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba).
-    // Al alargarse, la manga cae: la caida crece con la distancia al hombro y con cuanto se
-    // estiro (fML-1), anclada en la sisa. Ademas se pesa por la altura (vW: 0 en la costura del
-    // hombro, 1 abajo) para que el HOMBRO se mantenga igual y solo caiga el puño / parte baja.
+    // Al alargarse, la manga ROTA alrededor de la punta del hombro: el HOMBRO se mantiene igual y
+    // la manga cae en angulo (el puño no se acampana). El angulo crece con cuanto se estiro
+    // (fML-1), con tope para que no se pliegue sobre si misma.
     if (rSlv || lSlv) {
-      const URo = rSlv ? URx : ULx
+      const URo = rSlv ? URx : ULx, sign = rSlv ? 1 : -1
       const nUR = cx + (URo - cx) * fP
-      const outX  = nUR + (x - URo) * fML
-      const baseY = slvTop + (y - slvTop) * fMA
-      const vW    = Math.max(0, Math.min(1, (y - slvTop) / (177 - slvTop)))
-      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.62 * vW
-      return [outX, baseY + droop]
+      let ox = nUR + (x - URo) * fML
+      let oy = slvTop + (y - slvTop) * fMA
+      const srcPx = rSlv ? 493.43 : (2 * cx - 493.43)        // punta del hombro (espejada para la izq)
+      const pX = nUR + (srcPx - URo) * fML, pY = slvTop + (58.94 - slvTop) * fMA
+      const th = Math.min(0.46, Math.max(0, fML - 1) * 0.22) * sign
+      const dx = ox - pX, dy = oy - pY
+      ox = pX + dx * Math.cos(th) - dy * Math.sin(th)
+      oy = pY + dx * Math.sin(th) + dy * Math.cos(th)
+      return [ox, oy]
     }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
     const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
