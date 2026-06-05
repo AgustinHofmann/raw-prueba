@@ -3761,14 +3761,16 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
     // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba).
-    // Al alargarse, la manga se inclina hacia abajo: la caida crece con la distancia al hombro
-    // y con cuanto se estiro (fML-1), anclada en la sisa para que la parte del cuerpo no se mueva.
+    // Al alargarse, la manga cae: la caida crece con la distancia al hombro y con cuanto se
+    // estiro (fML-1), anclada en la sisa. Ademas se pesa por la altura (vW: 0 en la costura del
+    // hombro, 1 abajo) para que el HOMBRO se mantenga igual y solo caiga el puño / parte baja.
     if (rSlv || lSlv) {
       const URo = rSlv ? URx : ULx
       const nUR = cx + (URo - cx) * fP
       const outX  = nUR + (x - URo) * fML
       const baseY = slvTop + (y - slvTop) * fMA
-      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.55
+      const vW    = Math.max(0, Math.min(1, (y - slvTop) / (177 - slvTop)))
+      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.62 * vW
       return [outX, baseY + droop]
     }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
