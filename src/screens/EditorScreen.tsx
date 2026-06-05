@@ -686,6 +686,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
+  // Paleta de color editable por textura + cuál textura tiene el editor abierto
+  const [texColors, setTexColors] = useState<Record<TextureKind, string[]>>(() =>
+    Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
+  const [activeTexKind, setActiveTexKind] = useState<TextureKind | null>(null)
   const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
@@ -2256,7 +2260,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
-        if (!obj) { setHasSel(false); setIsText(false); return }
+        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); return }
         setHasSel(true)
         setPropFill(typeof obj.fill   === 'string' ? obj.fill   : null)
         setPropStroke(typeof obj.stroke === 'string' ? obj.stroke : '#000000')
@@ -2264,6 +2268,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         // Grosor "Mixto" si hay varios objetos seleccionados con distinto strokeWidth
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
+        // Si el objeto ya tiene una textura, abrir su editor de colores con su paleta
+        const tex = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+        if (tex) { setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors })) }
+        else setActiveTexKind(null)
         setPropX(Math.round(obj.left ?? 0))
         setPropY(Math.round(obj.top  ?? 0))
         setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
@@ -2480,18 +2488,49 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   }
 
   // ── Texturas ─────────────────────────────────────────────────────────────────
+  // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
+  // recolorearla después sin perder la textura.
+  function setObjTexture(obj: fabric.FabricObject, kind: TextureKind, colors: string[]) {
+    const tile = makeTextureCanvas(kind, colors)
+    const pattern = new fabric.Pattern({ source: tile, repeat: 'repeat' })
+    obj.set({ fill: pattern as any, dirty: true })
+    ;(obj as any)._texture = { kind, colors: [...colors] }
+  }
+
   function applyTexture(kind: TextureKind) {
     const canvas = fc.current
     if (!canvas) return
     const obj = canvas.getActiveObject()
     if (!obj || obj.type === 'activeselection') return
-    const tile = makeTextureCanvas(kind)
-    const pattern = new fabric.Pattern({ source: tile, repeat: 'repeat' })
     const prevFill = obj.fill as fabric.TFiller | string | null
-    obj.set({ fill: pattern as any, dirty: true })
+    setObjTexture(obj, kind, texColors[kind])
     undoHistory.current.push({ type: 'fill', obj, prevFill })
     redoHistory.current = []
+    setActiveTexKind(kind)
     canvas.requestRenderAll()
+  }
+
+  // Cambia un color de la paleta de una textura y lo aplica en vivo al objeto seleccionado.
+  function updateTexColor(kind: TextureKind, i: number, val: string) {
+    const next = texColors[kind].map((c, idx) => idx === i ? val : c)
+    setTexColors(prev => ({ ...prev, [kind]: next }))
+    const canvas = fc.current
+    const obj = canvas?.getActiveObject()
+    if (obj && obj.type !== 'activeselection') {
+      setObjTexture(obj, kind, next)
+      canvas?.requestRenderAll()
+    }
+  }
+
+  function resetTexColors(kind: TextureKind) {
+    const def = defaultTexPalette(kind)
+    setTexColors(prev => ({ ...prev, [kind]: def }))
+    const canvas = fc.current
+    const obj = canvas?.getActiveObject()
+    if (obj && obj.type !== 'activeselection') {
+      setObjTexture(obj, kind, def)
+      canvas?.requestRenderAll()
+    }
   }
 
   // ── Property panel handlers ─────────────────────────────────────────────────
@@ -2500,6 +2539,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const obj = fc.current?.getActiveObject()
     if (obj && !mockupObjects.current.includes(obj)) {
       obj.set({ fill: val ?? undefined })
+      delete (obj as any)._texture   // color sólido reemplaza la textura
       fc.current?.requestRenderAll()
     }
   }
@@ -2817,7 +2857,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     if (!canvas) return
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
-      .map(o => { const j = o.toJSON(); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture']); delete j.clipPath; return j })
     const canvasJson = JSON.stringify(userObjs)
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
     onSave(thumbnail, canvasJson)
@@ -3620,19 +3660,48 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                   >
                     <div style={{
                       width: '100%', aspectRatio: '1', borderRadius: 8,
-                      backgroundImage: `url(${makeTextureCanvas(t.id).toDataURL()})`,
+                      backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
                       backgroundSize: '56px 56px',
-                      border: '1px solid var(--line)',
+                      border: '1px solid ' + (activeTexKind === t.id ? 'var(--accent)' : 'var(--line)'),
+                      outline: activeTexKind === t.id ? '1px solid var(--accent)' : 'none',
                     }} />
                     <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>{t.label}</span>
                   </button>
                 ))}
               </div>
+
+              {/* Editor de colores de la textura aplicada */}
+              {activeTexKind && (selKind === 'single' || selKind === 'group') && (
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                  <div className="label" style={{ marginBottom: 10 }}>
+                    Colores · {TEXTURES.find(t => t.id === activeTexKind)?.label}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label style={{ position: 'relative', cursor: 'pointer' }}>
+                          <input type="color" value={texColors[activeTexKind][i]}
+                            onChange={e => updateTexColor(activeTexKind, i, e.target.value)}
+                            style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                          <div style={{ width: 28, height: 28, borderRadius: 6, background: texColors[activeTexKind][i], border: '2px solid var(--line)' }} />
+                        </label>
+                        <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
+                        <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => resetTexColors(activeTexKind)}
+                    className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                    Restablecer colores
+                  </button>
+                </div>
+              )}
+
               {(selKind === 'single' || selKind === 'group') && (
                 <button
-                  onClick={() => applyFill('#ffffff')}
+                  onClick={() => { applyFill('#ffffff'); setActiveTexKind(null) }}
                   className="btn btn-ghost"
-                  style={{ width: '100%', justifyContent: 'center', marginTop: 16, fontSize: 12 }}
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 12, fontSize: 12 }}
                 >
                   Quitar textura (color sólido)
                 </button>
@@ -3677,30 +3746,48 @@ const TEXTURES: { id: TextureKind; label: string }[] = [
   { id: 'animal',    label: 'Animal print' },
 ]
 
+// Slots de color editables por textura (color principal = primero, secundario = segundo, etc.)
+const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
+  rayas:     [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
+  cuadrille: [{ label: 'Fondo', def: '#ffffff' }, { label: 'Cuadros', def: '#c41e3a' }],
+  lunares:   [{ label: 'Fondo', def: '#e8c5d0' }, { label: 'Lunares', def: '#7a2a45' }],
+  denim:     [{ label: 'Base', def: '#3b5b8c' }],
+  camuflado: [{ label: 'Color 1', def: '#4b5320' }, { label: 'Color 2', def: '#6b6b3a' }, { label: 'Color 3', def: '#3a3f24' }, { label: 'Color 4', def: '#8a8559' }],
+  animal:    [{ label: 'Fondo', def: '#d9a441' }, { label: 'Manchas', def: '#3a2410' }],
+}
+const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
+// Convierte #rrggbb + alpha → rgba() (para el efecto translúcido del cuadrillé)
+function hexA(hex: string, a: number): string {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
 // Dibuja un tile repetible de la textura sobre un canvas y lo devuelve
-function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
+function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElement {
+  const col = colors ?? defaultTexPalette(kind)
   const s = 56
   const c = document.createElement('canvas'); c.width = s; c.height = s
   const x = c.getContext('2d')!
   const rnd = (seed: number) => { const v = Math.sin(seed * 99.13) * 43758.5453; return v - Math.floor(v) }
 
   if (kind === 'rayas') {
-    x.fillStyle = '#f4f1e8'; x.fillRect(0, 0, s, s)
-    x.fillStyle = '#2b3a67'
+    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
+    x.fillStyle = col[1]
     for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
   } else if (kind === 'cuadrille') {
-    x.fillStyle = '#ffffff'; x.fillRect(0, 0, s, s)
-    x.fillStyle = 'rgba(196,30,58,0.55)'
+    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
+    x.fillStyle = hexA(col[1], 0.55)
     x.fillRect(0, 0, s / 2, s); x.fillRect(0, 0, s, s / 2)
-    x.fillStyle = 'rgba(196,30,58,0.55)'
+    x.fillStyle = hexA(col[1], 0.55)
     x.fillRect(0, 0, s / 2, s / 2); x.fillRect(s / 2, s / 2, s / 2, s / 2)
   } else if (kind === 'lunares') {
-    x.fillStyle = '#e8c5d0'; x.fillRect(0, 0, s, s)
-    x.fillStyle = '#7a2a45'
+    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
+    x.fillStyle = col[1]
     const dot = (cx: number, cy: number) => { x.beginPath(); x.arc(cx, cy, 5, 0, Math.PI * 2); x.fill() }
     dot(s * 0.25, s * 0.25); dot(s * 0.75, s * 0.75); dot(s * 0.75, s * 0.25); dot(s * 0.25, s * 0.75); dot(s * 0.5, s * 0.5)
   } else if (kind === 'denim') {
-    x.fillStyle = '#3b5b8c'; x.fillRect(0, 0, s, s)
+    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     for (let i = 0; i < 1400; i++) {
       const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
       x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
@@ -3709,7 +3796,7 @@ function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
     x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
     for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
   } else if (kind === 'camuflado') {
-    const cols = ['#4b5320', '#6b6b3a', '#3a3f24', '#8a8559']
+    const cols = [col[0], col[1], col[2], col[3]]
     x.fillStyle = cols[0]; x.fillRect(0, 0, s, s)
     for (let i = 0; i < 22; i++) {
       x.fillStyle = cols[Math.floor(rnd(i) * cols.length)]
@@ -3717,9 +3804,9 @@ function makeTextureCanvas(kind: TextureKind): HTMLCanvasElement {
       x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill()
     }
   } else { // animal (leopardo)
-    x.fillStyle = '#d9a441'; x.fillRect(0, 0, s, s)
+    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     const spot = (cx: number, cy: number) => {
-      x.strokeStyle = '#3a2410'; x.lineWidth = 2.5
+      x.strokeStyle = col[1]; x.lineWidth = 2.5
       for (let a = 0; a < 3; a++) {
         x.beginPath()
         x.arc(cx + (a - 1) * 5, cy + (a - 1) * 3, 4 + a, a, a + 2.4); x.stroke()
