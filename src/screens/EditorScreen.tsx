@@ -3760,8 +3760,17 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
   const fML = m.largoManga / 20, fMA = m.anchoManga / 18, dProf = (m.profundidadCuello - 8) * 5.0
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
-    // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba)
-    if (rSlv || lSlv) { const URo = rSlv ? URx : ULx; const nUR = cx + (URo - cx) * fP; return [nUR + (x - URo) * fML, slvTop + (y - slvTop) * fMA] }
+    // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba).
+    // Al alargarse, la manga se inclina hacia abajo: la caida crece con la distancia al hombro
+    // y con cuanto se estiro (fML-1), anclada en la sisa para que la parte del cuerpo no se mueva.
+    if (rSlv || lSlv) {
+      const URo = rSlv ? URx : ULx
+      const nUR = cx + (URo - cx) * fP
+      const outX  = nUR + (x - URo) * fML
+      const baseY = slvTop + (y - slvTop) * fMA
+      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.38
+      return [outX, baseY + droop]
+    }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
     const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
     return [cx + (x - cx) * wf, y <= armY ? y : armY + (y - armY) * fLen]
