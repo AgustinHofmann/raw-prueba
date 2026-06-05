@@ -690,6 +690,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [texColors, setTexColors] = useState<Record<TextureKind, string[]>>(() =>
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
   const [activeTexKind, setActiveTexKind] = useState<TextureKind | null>(null)
+  const [texAdvanced, setTexAdvanced] = useState(false)  // editor por-slot (avanzado) colapsado
   const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
@@ -2510,28 +2511,23 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     canvas.requestRenderAll()
   }
 
-  // Cambia un color de la paleta de una textura y lo aplica en vivo al objeto seleccionado.
+  // Aplica una paleta completa a una textura: guarda estado + actualiza el objeto seleccionado.
+  function applyTexPalette(kind: TextureKind, pal: string[]) {
+    setTexColors(prev => ({ ...prev, [kind]: pal }))
+    const canvas = fc.current
+    const obj = canvas?.getActiveObject()
+    if (obj && obj.type !== 'activeselection') {
+      setObjTexture(obj, kind, pal)
+      canvas?.requestRenderAll()
+    }
+  }
+  // Color principal: ajusta el resto automáticamente
+  function setTexPrimary(kind: TextureKind, val: string) { applyTexPalette(kind, deriveTexPalette(kind, val)) }
+  // Edición fina de un slot (opciones avanzadas)
   function updateTexColor(kind: TextureKind, i: number, val: string) {
-    const next = texColors[kind].map((c, idx) => idx === i ? val : c)
-    setTexColors(prev => ({ ...prev, [kind]: next }))
-    const canvas = fc.current
-    const obj = canvas?.getActiveObject()
-    if (obj && obj.type !== 'activeselection') {
-      setObjTexture(obj, kind, next)
-      canvas?.requestRenderAll()
-    }
+    applyTexPalette(kind, texColors[kind].map((c, idx) => idx === i ? val : c))
   }
-
-  function resetTexColors(kind: TextureKind) {
-    const def = defaultTexPalette(kind)
-    setTexColors(prev => ({ ...prev, [kind]: def }))
-    const canvas = fc.current
-    const obj = canvas?.getActiveObject()
-    if (obj && obj.type !== 'activeselection') {
-      setObjTexture(obj, kind, def)
-      canvas?.requestRenderAll()
-    }
-  }
+  function resetTexColors(kind: TextureKind) { applyTexPalette(kind, defaultTexPalette(kind)) }
 
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
@@ -3674,22 +3670,49 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
               {activeTexKind && (selKind === 'single' || selKind === 'group') && (
                 <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
                   <div className="label" style={{ marginBottom: 10 }}>
-                    Colores · {TEXTURES.find(t => t.id === activeTexKind)?.label}
+                    Color · {TEXTURES.find(t => t.id === activeTexKind)?.label}
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <label style={{ position: 'relative', cursor: 'pointer' }}>
-                          <input type="color" value={texColors[activeTexKind][i]}
-                            onChange={e => updateTexColor(activeTexKind, i, e.target.value)}
-                            style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                          <div style={{ width: 28, height: 28, borderRadius: 6, background: texColors[activeTexKind][i], border: '2px solid var(--line)' }} />
-                        </label>
-                        <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
-                        <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
-                      </div>
-                    ))}
+
+                  {/* Color principal (los demás se ajustan solos) */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <label style={{ position: 'relative', cursor: 'pointer' }}>
+                      <input type="color" value={texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}
+                        onChange={e => setTexPrimary(activeTexKind, e.target.value)}
+                        style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                      <div style={{ width: 32, height: 32, borderRadius: 8, background: texColors[activeTexKind][TEX_PRIMARY[activeTexKind]], border: '2px solid var(--line)' }} />
+                    </label>
+                    <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}</span>
                   </div>
+
+                  {/* Opciones avanzadas: editar cada color por separado */}
+                  {TEXTURE_COLORS[activeTexKind].length > 1 && (
+                    <>
+                      <button onClick={() => setTexAdvanced(v => !v)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none',
+                          color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: '6px 0', fontFamily: 'var(--ui)' }}>
+                        <span style={{ display: 'inline-block', transform: texAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
+                        Opciones avanzadas
+                      </button>
+                      {texAdvanced && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
+                          {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <label style={{ position: 'relative', cursor: 'pointer' }}>
+                                <input type="color" value={texColors[activeTexKind][i]}
+                                  onChange={e => updateTexColor(activeTexKind, i, e.target.value)}
+                                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                                <div style={{ width: 26, height: 26, borderRadius: 6, background: texColors[activeTexKind][i], border: '2px solid var(--line)' }} />
+                              </label>
+                              <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
+                              <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+
                   <button onClick={() => resetTexColors(activeTexKind)}
                     className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
                     Restablecer colores
@@ -3761,6 +3784,56 @@ function hexA(hex: string, a: number): string {
   const h = hex.replace('#', '')
   const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
   return `rgba(${r},${g},${b},${a})`
+}
+
+// ── Color principal: ajusta el resto de la paleta automáticamente (manipulación HSL) ──
+function hexToHsl(hex: string): [number, number, number] {
+  const h0 = hex.replace('#', '')
+  const r = parseInt(h0.slice(0, 2), 16) / 255, g = parseInt(h0.slice(2, 4), 16) / 255, b = parseInt(h0.slice(4, 6), 16) / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2
+  let h = 0, s = 0
+  if (max !== min) {
+    const d = max - min
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0)
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h /= 6
+  }
+  return [h, s, l]
+}
+function hslToHex(h: number, s: number, l: number): string {
+  let r: number, g: number, b: number
+  if (s === 0) { r = g = b = l } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1
+      if (t < 1 / 6) return p + (q - p) * 6 * t
+      if (t < 1 / 2) return q
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+      return p
+    }
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q
+    r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3)
+  }
+  const to = (v: number) => Math.round(v * 255).toString(16).padStart(2, '0')
+  return `#${to(r)}${to(g)}${to(b)}`
+}
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
+const withL = (hex: string, l: number, sMul = 1) => { const [h, s] = hexToHsl(hex); return hslToHex(h, clamp01(s * sMul), clamp01(l)) }
+const adjL   = (hex: string, d: number)          => { const [h, s, l] = hexToHsl(hex); return hslToHex(h, s, clamp01(l + d)) }
+
+// Índice del slot que actúa como "color principal" en cada textura
+const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, cuadrille: 1, lunares: 1, denim: 0, camuflado: 0, animal: 0 }
+// Dada la elección de color principal, deriva toda la paleta de la textura
+function deriveTexPalette(kind: TextureKind, p: string): string[] {
+  switch (kind) {
+    case 'rayas':     return [withL(p, 0.92, 0.5), p]
+    case 'cuadrille': return [withL(p, 0.97, 0.35), p]
+    case 'lunares':   return [withL(p, 0.85, 0.6), p]
+    case 'denim':     return [p]
+    case 'camuflado': return [p, adjL(p, 0.10), adjL(p, -0.13), adjL(p, -0.26)]
+    case 'animal':    return [p, adjL(p, -0.45)]
+  }
 }
 
 // Dibuja un tile repetible de la textura sobre un canvas y lo devuelve
