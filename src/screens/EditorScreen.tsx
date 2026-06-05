@@ -3768,7 +3768,7 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
       const nUR = cx + (URo - cx) * fP
       const outX  = nUR + (x - URo) * fML
       const baseY = slvTop + (y - slvTop) * fMA
-      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.38
+      const droop = Math.abs(outX - nUR) * Math.max(0, fML - 1) * 0.55
       return [outX, baseY + droop]
     }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
