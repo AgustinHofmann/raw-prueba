@@ -629,7 +629,7 @@ function NumberField({
         <input
           type="text" inputMode="decimal"
           value={shown}
-          placeholder={mixed ? 'Mixto' : ''}
+          placeholder={mixed ? '—' : ''}
           onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(clamp(n)) }}
           onBlur={e => commit(e.target.value)}
           onKeyDown={e => {
