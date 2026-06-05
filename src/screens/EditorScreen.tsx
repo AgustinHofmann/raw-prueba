@@ -1068,6 +1068,9 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || (tool === 'text' && isIText),
         selectable: tool === 'select',
         hoverCursor: drawnHoverCursor,
+        // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
+        // huecos entre letras tambien son seleccionables. El resto usa hit-test por pixel.
+        perPixelTargetFind: !isIText,
       })
     })
 
@@ -2227,6 +2230,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           stroke: undefined,
           strokeWidth: 0,
           selectable: true, evented: true,
+          perPixelTargetFind: false,   // seleccionable por toda la caja del renglon (incluye espacios)
         })
         canvas.add(text)
         undoHistory.current.push({ type: 'add', obj: text })
