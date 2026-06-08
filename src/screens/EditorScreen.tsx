@@ -2888,6 +2888,110 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     canvas.requestRenderAll()
   }
 
+  // ── Pathfinder (unir / restar / intersecar / excluir) ───────────────────────
+  // npm bloquea polygon-clipping en este entorno, así que se hace por rasterizado:
+  // se compone la silueta de las formas con operaciones de canvas y se re-vectoriza
+  // con imagetracerjs. Funciona con cualquier forma (curvas, texto), bordes apenas blandos.
+  type PathfinderOp = 'unite' | 'subtract' | 'intersect' | 'exclude'
+  function fillLum(c: string): number {
+    let r = 0, g = 0, b = 0
+    const m = c.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i)
+    if (m) { r = +m[1]; g = +m[2]; b = +m[3] }
+    else if (c[0] === '#') { const h = c.slice(1); const n = h.length === 3 ? h.split('').map(x => x + x).join('') : h; r = parseInt(n.slice(0, 2), 16); g = parseInt(n.slice(2, 4), 16); b = parseInt(n.slice(4, 6), 16) }
+    else return 1
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  }
+  async function pathfinder(op: PathfinderOp) {
+    const canvas = fc.current
+    if (!canvas) return
+    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    if (targets.length < 2) return
+    setVectorizing(true)
+    try {
+      // 1. Caja envolvente en coordenadas de escena + supersampling
+      const rects = targets.map(o => o.getBoundingRect())
+      const pad = 4
+      const bx = Math.min(...rects.map(r => r.left)) - pad
+      const by = Math.min(...rects.map(r => r.top)) - pad
+      const bw = Math.max(...rects.map(r => r.left + r.width)) - bx + pad
+      const bh = Math.max(...rects.map(r => r.top + r.height)) - by + pad
+      let scale = Math.min(4, 2200 / Math.max(bw, bh))
+      scale = Math.max(1, scale)
+      const W = Math.max(1, Math.round(bw * scale)), H = Math.max(1, Math.round(bh * scale))
+      const vpt: number[] = [scale, 0, 0, scale, -bx * scale, -by * scale]
+
+      // 2. Silueta negra de cada forma en su propio canvas (orden Z de la escena)
+      const ordered = [...targets].sort((a, z) => canvas.getObjects().indexOf(a) - canvas.getObjects().indexOf(z))
+      const sils = await Promise.all(ordered.map(async o => {
+        const elc = document.createElement('canvas'); elc.width = W; elc.height = H
+        const sc = new fabric.StaticCanvas(elc, { width: W, height: H, enableRetinaScaling: false, renderOnAddRemove: false })
+        sc.viewportTransform = vpt as any
+        const clone = await o.clone()
+        clone.clipPath = undefined
+        clone.set({ fill: '#000', stroke: '#000', strokeWidth: clone.strokeWidth || 0, opacity: 1, shadow: null as any })
+        sc.add(clone); sc.renderAll()
+        const out = document.createElement('canvas'); out.width = W; out.height = H
+        out.getContext('2d')!.drawImage(elc, 0, 0)
+        sc.dispose()
+        return out
+      }))
+
+      // 3. Componer la operación booleana con globalCompositeOperation
+      const res = document.createElement('canvas'); res.width = W; res.height = H
+      const rc = res.getContext('2d')!
+      if (op === 'unite') { sils.forEach(s => rc.drawImage(s, 0, 0)) }
+      else if (op === 'intersect') { rc.drawImage(sils[0], 0, 0); rc.globalCompositeOperation = 'destination-in'; for (let i = 1; i < sils.length; i++) rc.drawImage(sils[i], 0, 0) }
+      else if (op === 'subtract') { rc.drawImage(sils[0], 0, 0); rc.globalCompositeOperation = 'destination-out'; for (let i = 1; i < sils.length; i++) rc.drawImage(sils[i], 0, 0) }
+      else { sils.forEach((s, i) => { rc.globalCompositeOperation = i === 0 ? 'source-over' : 'xor'; rc.drawImage(s, 0, 0) }) }
+
+      // 4. Pasar a negro-sobre-blanco y vectorizar
+      const tr = document.createElement('canvas'); tr.width = W; tr.height = H
+      const tc = tr.getContext('2d')!
+      tc.fillStyle = '#fff'; tc.fillRect(0, 0, W, H)
+      tc.drawImage(res, 0, 0)
+      const imageData = tc.getImageData(0, 0, W, H)
+      const { default: ImageTracer } = await import('imagetracerjs')
+      const svgStr: string = ImageTracer.imagedataToSVG(imageData, {
+        numberofcolors: 2, colorsampling: 0, ltres: 0.5, qtres: 0.5,
+        pathomit: 4, rightangleenhance: true, blurradius: 0, scale: 1,
+      })
+
+      // 5. Quedarse con los contornos oscuros y mapearlos de px → escena
+      const tags = svgStr.match(/<path\b[^>]*>/g) ?? []
+      const darkDs: string[] = []
+      for (const tag of tags) {
+        const dm = tag.match(/\bd="([^"]+)"/); if (!dm) continue
+        const fm = tag.match(/\bfill="([^"]+)"/)
+        if (fillLum(fm?.[1] ?? '#000') < 0.5) darkDs.push(dm[1])
+      }
+      if (!darkDs.length) { setVectorizing(false); return }
+      const sceneD = darkDs.map(d => transformPath(d, (x, y) => [bx + x / scale, by + y / scale])).join(' ')
+
+      // 6. Crear el resultado con el relleno/trazo de la forma de más atrás y reemplazar
+      const base = ordered[0]
+      const result = new fabric.Path(sceneD, {
+        fill: (typeof base.fill === 'string' ? base.fill : null) ?? colorRef.current,
+        stroke: typeof base.stroke === 'string' ? base.stroke : null,
+        strokeWidth: base.strokeWidth ?? 0,
+        strokeUniform: true, fillRule: 'evenodd',
+        selectable: true, evented: true,
+      })
+      if (clipEnabledRef.current && clipPath.current) result.clipPath = clipPath.current
+      canvas.discardActiveObject()
+      targets.forEach(o => canvas.remove(o))
+      canvas.add(result)
+      canvas.setActiveObject(result)
+      undoHistory.current.push({ type: 'erase', removed: targets, added: [result] })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      setTool('select')
+    } catch (err) {
+      console.error('Pathfinder falló:', err)
+    } finally {
+      setVectorizing(false)
+    }
+  }
+
   function applyFontFamily(val: string) {
     setPropFontFamily(val)
     fontFamilyRef.current = val
@@ -3872,6 +3976,22 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
             </div>
           )}
 
+          {/* Pathfinder (2+ objetos) */}
+          {selKind === 'multi' && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Pathfinder</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4 }}>
+                <AlignBtn title="Unir"      onClick={() => pathfinder('unite')}><PathfinderGlyph op="unite" /></AlignBtn>
+                <AlignBtn title="Restar frente" onClick={() => pathfinder('subtract')}><PathfinderGlyph op="subtract" /></AlignBtn>
+                <AlignBtn title="Intersecar" onClick={() => pathfinder('intersect')}><PathfinderGlyph op="intersect" /></AlignBtn>
+                <AlignBtn title="Excluir"   onClick={() => pathfinder('exclude')}><PathfinderGlyph op="exclude" /></AlignBtn>
+              </div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
+                Combina las formas en un trazado nuevo
+              </div>
+            </div>
+          )}
+
           {/* Relleno */}
           <div>
             <div className="label" style={{ marginBottom: 8 }}>Relleno</div>
@@ -4635,6 +4755,17 @@ function AlignGlyph({ dir }: { dir: 'left' | 'hcenter' | 'right' | 'top' | 'vmid
   else if (dir === 'bottom')  body = <>{guide(1.5, 13, 13.5, 13)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 6, 2.6, 6)}</>
   else if (dir === 'disth')   body = <>{bar(2, 2.5, 2, 10)}{bar(6.5, 2.5, 2, 10)}{bar(11, 2.5, 2, 10)}</>
   else                        body = <>{bar(2.5, 2, 10, 2)}{bar(2.5, 6.5, 10, 2)}{bar(2.5, 11, 10, 2)}</>
+  return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
+}
+function PathfinderGlyph({ op }: { op: 'unite' | 'subtract' | 'intersect' | 'exclude' }) {
+  const c = 'currentColor', bg = 'var(--surface)'
+  const r = (x: number, y: number, fill: string, stroke: string) =>
+    <rect x={x} y={y} width={8} height={8} rx={1.3} fill={fill} stroke={stroke} strokeWidth={1.2} />
+  let body: React.ReactNode = null
+  if (op === 'unite')          body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, c, 'none')}</>
+  else if (op === 'intersect') body = <>{r(1.5, 1.5, 'none', c)}{r(5.5, 5.5, 'none', c)}<rect x={5.5} y={5.5} width={4} height={4} fill={c} /></>
+  else if (op === 'subtract')  body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, bg, c)}</>
+  else                         body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, c, 'none')}<rect x={5.5} y={5.5} width={4} height={4} fill={bg} /></>
   return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
 }
 const IconSelect = () => (
