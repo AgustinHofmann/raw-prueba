@@ -3310,13 +3310,8 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           {rightTab === 'props' && <div style={{ overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
           {PARAMETRIC_TEE && isTee && !hasSel && (() => {
             const cmInput = (val: number, min: number, max: number, onCh: (v: number) => void) => (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                <input type="number" min={min} max={max} step={0.5} value={val}
-                  onChange={e => onCh(Math.min(max, Math.max(min, Number(e.target.value) || min)))}
-                  onClick={e => e.stopPropagation()}
-                  style={{ width: 60, padding: '4px 6px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
-                    background: 'var(--surface)', border: '1px solid var(--line)', color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12 }} />
-                <span className="mono" style={{ fontSize: 9, color: 'var(--muted)' }}>cm</span>
+              <div onClick={e => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+                <NumberField value={val} onChange={onCh} min={min} max={max} step={0.5} suffix="cm" width={60} />
               </div>
             )
             return (
