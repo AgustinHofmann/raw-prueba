@@ -740,9 +740,13 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const onDown = (e: any) => {
       const f = teeFitRef.current; if (!f) return
       const p = e.scenePoint; const W = teeWarp(measuresRef.current)
+      // Agarra el handle MÁS CERCANO dentro del radio (no el primero), así dos handles
+      // próximos (p. ej. pecho y manga en la axila) no se "roban" el click.
+      let best = Infinity
       for (const h of TEE_HANDLES) {
         const [wx, wy] = W(h.base[0], h.base[1])
-        if (Math.hypot(p.x - (wx * f.sc + f.ox), p.y - (wy * f.sc + f.oy)) < hitR()) { drag = h; break }
+        const d = Math.hypot(p.x - (wx * f.sc + f.ox), p.y - (wy * f.sc + f.oy))
+        if (d < hitR() && d < best) { best = d; drag = h }
       }
     }
     const apply = () => {
@@ -3916,7 +3920,9 @@ const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] 
 
 // Tiradores de medida: punto base en el SVG + cómo convertir su posición a cm.
 const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y'; toMeasure: (sx: number, sy: number, m: Measures) => number }[] = [
-  { key: 'anchoPecho',   base: [400.95, 173],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 153.65 * 60 },
+  // El handle de pecho va sobre el TORSO (x<395), no en la axila, para no solaparse con
+  // los de la manga ni montarse sobre ella al alargarla. Mide el ancho con la escala fP del cuerpo.
+  { key: 'anchoPecho',   base: [380, 150],       axis: 'x', toMeasure: (sx) => (sx - 247.3) / 132.7 * 60 },
   { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 63 },
   { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => 33.8 + (sy - 173) / 5.086 },
   { key: 'anchoCuello',  base: [292.24, 4.64],   axis: 'x', toMeasure: (sx) => (sx - 247.3) / 44.94 * 18 },
