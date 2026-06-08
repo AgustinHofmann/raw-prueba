@@ -2738,6 +2738,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
 
       if (!ctrl) return
 
+      // Ignorar el auto-repeat del teclado: mantener apretado Ctrl+Z (o Ctrl+Shift+Z)
+      // dispararía varios keydown y deshacía/rehacía 2-4 pasos de una. Un paso por pulsación.
+      if (e.repeat) return
+
       // Ctrl+Shift+Z — redo
       if (e.shiftKey && (e.key === 'Z' || e.key === 'z')) {
         e.preventDefault()
