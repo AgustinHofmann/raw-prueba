@@ -2767,6 +2767,72 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     fc.current?.requestRenderAll()
   }
 
+  // ── Alinear (como el panel Alinear de Illustrator) ──────────────────────────
+  // Si hay 2+ objetos seleccionados, se alinean entre sí (caja de la selección).
+  // Si hay uno solo, se alinea respecto a la remera (o al lienzo si no hay remera).
+  type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom'
+  function mockupBounds(): { left: number; top: number; width: number; height: number } | null {
+    const m = mockupObjects.current
+    if (!m.length) return null
+    const r = m.map(o => o.getBoundingRect())
+    const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
+    const maxX = Math.max(...r.map(b => b.left + b.width)), maxY = Math.max(...r.map(b => b.top + b.height))
+    return { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
+  }
+  function alignObjects(mode: AlignMode) {
+    const canvas = fc.current
+    if (!canvas) return
+    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    if (!targets.length) return
+    let ref: { left: number; top: number; width: number; height: number }
+    if (targets.length >= 2) {
+      const r = targets.map(o => o.getBoundingRect())
+      const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
+      const maxX = Math.max(...r.map(b => b.left + b.width)), maxY = Math.max(...r.map(b => b.top + b.height))
+      ref = { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
+    } else {
+      ref = mockupBounds() ?? { left: 0, top: 0, width: canvas.getWidth(), height: canvas.getHeight() }
+    }
+    targets.forEach(o => {
+      const b = o.getBoundingRect()
+      let dx = 0, dy = 0
+      if (mode === 'left')         dx = ref.left - b.left
+      else if (mode === 'hcenter') dx = (ref.left + ref.width / 2) - (b.left + b.width / 2)
+      else if (mode === 'right')   dx = (ref.left + ref.width) - (b.left + b.width)
+      else if (mode === 'top')     dy = ref.top - b.top
+      else if (mode === 'vmiddle') dy = (ref.top + ref.height / 2) - (b.top + b.height / 2)
+      else if (mode === 'bottom')  dy = (ref.top + ref.height) - (b.top + b.height)
+      o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy })
+      o.setCoords()
+    })
+    canvas.requestRenderAll()
+    const act = canvas.getActiveObject()
+    if (act) { setPropX(Math.round(act.left ?? 0)); setPropY(Math.round(act.top ?? 0)) }
+  }
+  // Distribuir: reparte el espacio entre 3+ objetos de forma pareja (por centros).
+  function distributeObjects(axis: 'h' | 'v') {
+    const canvas = fc.current
+    if (!canvas) return
+    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    if (targets.length < 3) return
+    const withRect = targets.map(o => ({ o, b: o.getBoundingRect() }))
+    withRect.sort((a, z) => axis === 'h'
+      ? (a.b.left + a.b.width / 2) - (z.b.left + z.b.width / 2)
+      : (a.b.top + a.b.height / 2) - (z.b.top + z.b.height / 2))
+    const first = withRect[0], last = withRect[withRect.length - 1]
+    const c0 = axis === 'h' ? first.b.left + first.b.width / 2 : first.b.top + first.b.height / 2
+    const c1 = axis === 'h' ? last.b.left + last.b.width / 2 : last.b.top + last.b.height / 2
+    const step = (c1 - c0) / (withRect.length - 1)
+    withRect.forEach(({ o, b }, i) => {
+      if (i === 0 || i === withRect.length - 1) return
+      const target = c0 + step * i
+      if (axis === 'h') { const cur = b.left + b.width / 2; o.set({ left: (o.left ?? 0) + (target - cur) }) }
+      else              { const cur = b.top + b.height / 2; o.set({ top:  (o.top  ?? 0) + (target - cur) }) }
+      o.setCoords()
+    })
+    canvas.requestRenderAll()
+  }
+
   function applyFontFamily(val: string) {
     setPropFontFamily(val)
     fontFamilyRef.current = val
@@ -3729,6 +3795,28 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
             </div>
           )}
 
+          {/* Alinear */}
+          {hasSel && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Alinear</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
+                <AlignBtn title="Alinear a la izquierda"  onClick={() => alignObjects('left')}><AlignGlyph dir="left" /></AlignBtn>
+                <AlignBtn title="Centrar horizontal"      onClick={() => alignObjects('hcenter')}><AlignGlyph dir="hcenter" /></AlignBtn>
+                <AlignBtn title="Alinear a la derecha"    onClick={() => alignObjects('right')}><AlignGlyph dir="right" /></AlignBtn>
+                <AlignBtn title="Alinear arriba"          onClick={() => alignObjects('top')}><AlignGlyph dir="top" /></AlignBtn>
+                <AlignBtn title="Centrar vertical"        onClick={() => alignObjects('vmiddle')}><AlignGlyph dir="vmiddle" /></AlignBtn>
+                <AlignBtn title="Alinear abajo"           onClick={() => alignObjects('bottom')}><AlignGlyph dir="bottom" /></AlignBtn>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4, marginTop: 4 }}>
+                <AlignBtn title="Distribuir horizontal (3+ objetos)" onClick={() => distributeObjects('h')}><AlignGlyph dir="disth" /></AlignBtn>
+                <AlignBtn title="Distribuir vertical (3+ objetos)"   onClick={() => distributeObjects('v')}><AlignGlyph dir="distv" /></AlignBtn>
+              </div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
+                {selKind === 'multi' ? 'Entre los objetos seleccionados' : 'Respecto a la remera'}
+              </div>
+            </div>
+          )}
+
           {/* Relleno */}
           <div>
             <div className="label" style={{ marginBottom: 8 }}>Relleno</div>
@@ -4464,6 +4552,36 @@ const IconEyedropper = () => (
 const ToolDivider = () => (
   <div style={{ height: 1, width: 24, background: 'var(--line-soft)', margin: '3px 0', flexShrink: 0 }} />
 )
+
+function AlignBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} title={title} style={{
+      height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 6,
+      color: 'var(--fg-2)', cursor: 'pointer',
+    }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
+    >{children}</button>
+  )
+}
+function AlignGlyph({ dir }: { dir: 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom' | 'disth' | 'distv' }) {
+  const c = 'currentColor'
+  const guide = (x1: number, y1: number, x2: number, y2: number) =>
+    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth={1.2} />
+  const bar = (x: number, y: number, w: number, h: number) =>
+    <rect x={x} y={y} width={w} height={h} fill={c} rx={0.5} />
+  let body: React.ReactNode = null
+  if (dir === 'left')         body = <>{guide(2, 1.5, 2, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(3, 8.9, 6, 2.6)}</>
+  else if (dir === 'hcenter') body = <>{guide(7.5, 1.5, 7.5, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(4.5, 8.9, 6, 2.6)}</>
+  else if (dir === 'right')   body = <>{guide(13, 1.5, 13, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(6, 8.9, 6, 2.6)}</>
+  else if (dir === 'top')     body = <>{guide(1.5, 2, 13.5, 2)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 3, 2.6, 6)}</>
+  else if (dir === 'vmiddle') body = <>{guide(1.5, 7.5, 13.5, 7.5)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 4.5, 2.6, 6)}</>
+  else if (dir === 'bottom')  body = <>{guide(1.5, 13, 13.5, 13)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 6, 2.6, 6)}</>
+  else if (dir === 'disth')   body = <>{bar(2, 2.5, 2, 10)}{bar(6.5, 2.5, 2, 10)}{bar(11, 2.5, 2, 10)}</>
+  else                        body = <>{bar(2.5, 2, 10, 2)}{bar(2.5, 6.5, 10, 2)}{bar(2.5, 11, 10, 2)}</>
+  return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
+}
 const IconSelect = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
     <path d="M3 1.5 L13 8 L8 8.5 L11 13 L9 14 L6 9.5 L3 12 Z" stroke="currentColor" strokeWidth="0.8" strokeLinejoin="round" />
