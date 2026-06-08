@@ -17,6 +17,7 @@ interface Props {
 }
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
+  | 'rect' | 'ellipse' | 'line' | 'hand' | 'zoom'
 
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
@@ -1094,11 +1095,31 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
 
     let midPan = false
     let midLast = { x: 0, y: 0 }
+    let spaceDown = false   // pan temporal con la barra espaciadora (como en Illustrator)
+
+    const isTyping = () => {
+      const ae = document.activeElement as HTMLElement | null
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return true
+      const c = fc.current
+      const a = c?.getActiveObject()
+      return a instanceof fabric.IText && (a as fabric.IText).isEditing
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || isTyping()) return
+      e.preventDefault()
+      if (!spaceDown) { spaceDown = true; if (!midPan) area.style.cursor = 'grab' }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      spaceDown = false
+      if (!midPan) area.style.cursor = ''
+    }
 
     const onMDown = (e: MouseEvent) => {
-      if (e.button !== 1) return
+      // Botón medio, o botón izquierdo con la barra espaciadora apretada → pan
+      if (e.button !== 1 && !(e.button === 0 && spaceDown)) return
       e.preventDefault()
-      e.stopPropagation()  // evita que la herramienta activa procese el clic medio
+      e.stopPropagation()  // evita que la herramienta activa procese el clic
       midPan  = true
       midLast = { x: e.clientX, y: e.clientY }
       area.style.cursor = 'grabbing'
@@ -1122,20 +1143,25 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     }
 
     const onMUp = (e: MouseEvent) => {
-      if (e.button !== 1) return
+      if (!midPan) return
+      if (e.button !== 1 && e.button !== 0) return
       midPan = false
-      area.style.cursor = ''
+      area.style.cursor = spaceDown ? 'grab' : ''
     }
 
     area  .addEventListener('wheel',     onWheel, { passive: false })
     area  .addEventListener('mousedown', onMDown,  { capture: true })
     window.addEventListener('mousemove', onMMove)
     window.addEventListener('mouseup',   onMUp)
+    window.addEventListener('keydown',   onKeyDown)
+    window.addEventListener('keyup',     onKeyUp)
     return () => {
       area  .removeEventListener('wheel',     onWheel)
       area  .removeEventListener('mousedown', onMDown, { capture: true })
       window.removeEventListener('mousemove', onMMove)
       window.removeEventListener('mouseup',   onMUp)
+      window.removeEventListener('keydown',   onKeyDown)
+      window.removeEventListener('keyup',     onKeyUp)
     }
   }, [])
 
@@ -2262,6 +2288,139 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       })
     }
 
+    // ── Formas: rectángulo / elipse / línea (arrastrar para dibujar) ───────────
+    if (tool === 'rect' || tool === 'ellipse' || tool === 'line') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'crosshair'
+      let start: fabric.Point | null = null
+      let shape: fabric.FabricObject | null = null
+      let moved = false
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        start = e.scenePoint
+        moved = false
+        const stroke = colorRef.current
+        const sw     = brushSizeRef.current
+        const fill   = fillRef.current ?? colorRef.current
+        const common = { strokeWidth: sw, strokeUniform: true, selectable: false, evented: false } as const
+        if (tool === 'line') {
+          shape = new fabric.Line([start.x, start.y, start.x, start.y],
+            { ...common, stroke, strokeLineCap: 'round' })
+        } else if (tool === 'rect') {
+          shape = new fabric.Rect({ ...common, left: start.x, top: start.y, width: 1, height: 1, fill, stroke })
+        } else {
+          shape = new fabric.Ellipse({ ...common, left: start.x, top: start.y, rx: 0.5, ry: 0.5, fill, stroke })
+        }
+        canvas.add(shape)
+      }
+
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        if (!start || !shape) return
+        const p = e.scenePoint
+        const shift = !!(e.e as MouseEvent)?.shiftKey
+        let dx = p.x - start.x, dy = p.y - start.y
+        if (Math.hypot(dx, dy) > 3) moved = true
+        if (tool === 'line') {
+          let ex = p.x, ey = p.y
+          if (shift) {  // restringir a 0/45/90°
+            const len = Math.hypot(dx, dy)
+            const snapped = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4)
+            ex = start.x + Math.cos(snapped) * len
+            ey = start.y + Math.sin(snapped) * len
+          }
+          ;(shape as fabric.Line).set({ x2: ex, y2: ey })
+        } else {
+          if (shift) {  // cuadrado / círculo perfecto
+            const m = Math.max(Math.abs(dx), Math.abs(dy))
+            dx = (dx < 0 ? -1 : 1) * m; dy = (dy < 0 ? -1 : 1) * m
+          }
+          const left = Math.min(start.x, start.x + dx), top = Math.min(start.y, start.y + dy)
+          const w = Math.abs(dx), h = Math.abs(dy)
+          if (tool === 'rect') (shape as fabric.Rect).set({ left, top, width: w, height: h })
+          else (shape as fabric.Ellipse).set({ left, top, rx: w / 2, ry: h / 2 })
+        }
+        shape.setCoords()
+        canvas.requestRenderAll()
+      }
+
+      const onUp = () => {
+        if (!shape) { start = null; return }
+        if (!moved) { canvas.remove(shape); shape = null; start = null; return }  // click sin arrastrar
+        shape.set({ selectable: true, evented: true })
+        if (clipEnabledRef.current && clipPath.current) shape.clipPath = clipPath.current
+        shape.setCoords()
+        undoHistory.current.push({ type: 'add', obj: shape })
+        redoHistory.current = []
+        canvas.setActiveObject(shape)
+        canvas.requestRenderAll()
+        shape = null; start = null
+        setTool('select')   // tras dibujar, pasa a seleccionar (como hace la herramienta texto)
+      }
+
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up',   onUp)
+        if (shape && !moved) canvas.remove(shape)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Mano (pan arrastrando) ────────────────────────────────────────────────
+    if (tool === 'hand') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'grab'
+      let panning = false
+      let last = { x: 0, y: 0 }
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        panning = true
+        const ev = e.e as MouseEvent
+        last = { x: ev.clientX, y: ev.clientY }
+        canvas.setCursor('grabbing')
+      }
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        if (!panning) return
+        const ev = e.e as MouseEvent
+        const dx = ev.clientX - last.x, dy = ev.clientY - last.y
+        last = { x: ev.clientX, y: ev.clientY }
+        canvas.relativePan(new fabric.Point(dx, dy))
+        setPanned(true)
+      }
+      const onUp = () => { panning = false; canvas.setCursor('grab') }
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up',   onUp)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Zoom (click acerca, Alt+click aleja) ──────────────────────────────────
+    if (tool === 'zoom') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'zoom-in'
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        const ev  = e.e as MouseEvent
+        const cur = canvas.getZoom()
+        const next = Math.min(8, Math.max(0.25, ev.altKey ? cur / 1.4 : cur * 1.4))
+        const pt   = canvas.getPointer(e.e as fabric.TPointerEvent, true)
+        canvas.zoomToPoint(new fabric.Point(pt.x, pt.y), next)
+        canvas.requestRenderAll()
+        setZoom(next)
+      }
+      canvas.on('mouse:down', onDown)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
@@ -2665,8 +2824,21 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         }
       }
 
-      // I — gotero
-      if (!ctrl && (e.key === 'i' || e.key === 'I')) { setTool('eyedropper'); return }
+      // Atajos de herramienta (un solo carácter, sin Ctrl) — al estilo Illustrator
+      if (!ctrl && !e.altKey) {
+        switch (e.key) {
+          case 'v': case 'V': setTool('select');     return
+          case 'p': case 'P': setTool('pen');        return
+          case 'n': case 'N': setTool('pencil');     return
+          case 't': case 'T': setTool('text');       return
+          case 'm': case 'M': setTool('rect');       return
+          case 'l': case 'L': setTool('ellipse');    return
+          case '\\':          setTool('line');       return
+          case 'h': case 'H': setTool('hand');       return
+          case 'z': case 'Z': setTool('zoom');       return
+          case 'i': case 'I': setTool('eyedropper'); return
+        }
+      }
 
       // Ctrl+G — agrupar / Ctrl+Shift+G — desagrupar
       if (ctrl && (e.key === 'g' || e.key === 'G')) {
@@ -3173,16 +3345,24 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           padding: '8px 4px', gap: 2, background: 'var(--bg)',
         }}>
-          <ToolBtn icon="↖" label="Seleccionar (V)"  active={tool === 'select'} onClick={() => setTool('select')} />
-          <ToolBtn icon="✎" label="Lápiz"            active={tool === 'pencil'} onClick={() => setTool('pencil')} />
-          <ToolBtn icon="🖊" label="Pluma"            active={tool === 'pen'}   onClick={() => setTool('pen')} />
-          <ToolBtn icon="∿" label="Pluma curvatura"  active={tool === 'curve'}  onClick={() => setTool('curve')} />
-          <ToolBtn icon="T" label="Texto"             active={tool === 'text'}   onClick={() => setTool('text')} />
-          <ToolBtn icon={<IconEraser />} label="Goma"    active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon={<IconBucket />} label="Relleno"        active={tool === 'fill'}        onClick={() => setTool('fill')} />
-          <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"  active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
-          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-soft)', paddingTop: 8, width: '100%' }}>
-            <div className="mono" style={{ fontSize: 8, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.8 }}>Z<br/>⇧Z</div>
+          <ToolBtn icon={<IconSelect />} label="Seleccionar (V)"  active={tool === 'select'} onClick={() => setTool('select')} />
+          <ToolDivider />
+          <ToolBtn icon={<IconPen />} label="Pluma (P)"           active={tool === 'pen'}   onClick={() => setTool('pen')} />
+          <ToolBtn icon={<IconCurve />} label="Pluma curvatura"   active={tool === 'curve'}  onClick={() => setTool('curve')} />
+          <ToolBtn icon={<IconPencil />} label="Lápiz (N)"        active={tool === 'pencil'} onClick={() => setTool('pencil')} />
+          <ToolBtn icon={<IconText />} label="Texto (T)"          active={tool === 'text'}   onClick={() => setTool('text')} />
+          <ToolDivider />
+          <ToolBtn icon={<IconRect />} label="Rectángulo (M)"     active={tool === 'rect'}    onClick={() => setTool('rect')} />
+          <ToolBtn icon={<IconEllipse />} label="Elipse (L)"      active={tool === 'ellipse'} onClick={() => setTool('ellipse')} />
+          <ToolBtn icon={<IconLine />} label="Línea (\)"          active={tool === 'line'}    onClick={() => setTool('line')} />
+          <ToolDivider />
+          <ToolBtn icon={<IconBucket />} label="Relleno"          active={tool === 'fill'}        onClick={() => setTool('fill')} />
+          <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"   active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
+          <ToolBtn icon={<IconEraser />} label="Goma"             active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <div style={{ marginTop: 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <ToolDivider />
+            <ToolBtn icon={<IconHand />} label="Mano · pan (H · Espacio)" active={tool === 'hand'} onClick={() => setTool('hand')} />
+            <ToolBtn icon={<IconZoom />} label="Zoom (Z · Alt aleja)"     active={tool === 'zoom'} onClick={() => setTool('zoom')} />
           </div>
         </aside>
 
@@ -4278,6 +4458,71 @@ const IconEyedropper = () => (
     <path d="M11.5 1.5 L14.5 4.5 L7 12 L5 14 L2 11 L4 9 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     <path d="M11.5 1.5 L14.5 4.5 L12.5 6.5 L9.5 3.5 Z" />
     <rect x="3" y="11" width="3" height="3" rx="0.8" opacity="0.6" />
+  </svg>
+)
+
+const ToolDivider = () => (
+  <div style={{ height: 1, width: 24, background: 'var(--line-soft)', margin: '3px 0', flexShrink: 0 }} />
+)
+const IconSelect = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M3 1.5 L13 8 L8 8.5 L11 13 L9 14 L6 9.5 L3 12 Z" stroke="currentColor" strokeWidth="0.8" strokeLinejoin="round" />
+  </svg>
+)
+const IconPen = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round">
+    <path d="M3 14 L5 9 L11 3 L13 5 L7 11 Z" fill="currentColor" fillOpacity="0.15" />
+    <path d="M11 3 L13 5" />
+    <path d="M5 9 L7 11" />
+  </svg>
+)
+const IconCurve = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M2 12 Q8 -1 14 12" />
+    <circle cx="2" cy="12" r="1.6" fill="currentColor" stroke="none" />
+    <circle cx="14" cy="12" r="1.6" fill="currentColor" stroke="none" />
+  </svg>
+)
+const IconPencil = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round">
+    <path d="M2 14 L3.5 10 L10.5 3 L13 5.5 L6 12.5 Z" />
+    <path d="M9.5 4 L12 6.5" />
+  </svg>
+)
+const IconText = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M3 2 H13 V4.5 H11.4 V3.4 H8.9 V12.6 H10.3 V14 H5.7 V12.6 H7.1 V3.4 H4.6 V4.5 H3 Z" />
+  </svg>
+)
+const IconRect = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="2.5" y="4" width="11" height="8" rx="1" />
+  </svg>
+)
+const IconEllipse = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <ellipse cx="8" cy="8" rx="6" ry="5" />
+  </svg>
+)
+const IconLine = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <line x1="3" y1="13" x2="13" y2="3" />
+  </svg>
+)
+const IconHand = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8 11V5.5a1.5 1.5 0 0 1 3 0V10" />
+    <path d="M11 9.5V4.5a1.5 1.5 0 0 1 3 0V10" />
+    <path d="M14 10V6a1.5 1.5 0 0 1 3 0v6" />
+    <path d="M8 11V8.8a1.5 1.5 0 0 0-3 0v3.2c0 3.6 2.3 6 6 6s6-2.4 6-6V11.5" />
+  </svg>
+)
+const IconZoom = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+    <circle cx="7" cy="7" r="4.3" />
+    <line x1="10.2" y1="10.2" x2="14" y2="14" strokeWidth="1.7" />
+    <line x1="7" y1="5.2" x2="7" y2="8.8" />
+    <line x1="5.2" y1="7" x2="8.8" y2="7" />
   </svg>
 )
 
