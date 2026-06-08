@@ -34,7 +34,7 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
-  const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark')
+  const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'illustrator')
   const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)

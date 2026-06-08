@@ -682,6 +682,8 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
   const pxPerCmRef = useRef(0)
   const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)  // escala fija: el tamaño refleja los cm
+  // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
+  const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
   const [tool, setTool] = useState<Tool>('select')
   const [zoom,   setZoom]   = useState(1)
@@ -923,6 +925,18 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         ctx.restore()
       }
 
+      // Guías inteligentes: líneas magenta de alineación mientras se arrastra (estilo Illustrator)
+      const g = smartGuides.current
+      if (g.v || g.h) {
+        const toScr = (x: number, y: number) =>
+          [vpt[0] * x + vpt[2] * y + vpt[4], vpt[1] * x + vpt[3] * y + vpt[5]] as const
+        ctx.save(); ctx.setTransform(rs, 0, 0, rs, 0, 0)
+        ctx.strokeStyle = '#ff3aa5'; ctx.lineWidth = 1
+        if (g.v) { const [x1, y1] = toScr(g.v.x, g.v.y1), [x2, y2] = toScr(g.v.x, g.v.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke() }
+        if (g.h) { const [x1, y1] = toScr(g.h.x1, g.h.y), [x2, y2] = toScr(g.h.x2, g.h.y); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke() }
+        ctx.restore()
+      }
+
       // Dibuja el contorno (trazado) de un objeto en azul, sobre el canvas.
       const strokeOutline = (obj: fabric.FabricObject) => {
         const pathCmds = (obj as any).path as any[][] | undefined
@@ -991,6 +1005,47 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const onMouseOut = () => { if (hoverObj) { hoverObj = null; canvas.requestRenderAll() } }
     canvas.on('mouse:over', onMouseOver)
     canvas.on('mouse:out', onMouseOut)
+
+    // ── Snapping + guías inteligentes (alineación al arrastrar, estilo Illustrator) ──
+    const onObjMoving = (e: any) => {
+      const obj = e.target as fabric.FabricObject | undefined
+      if (!obj || mockupObjects.current.includes(obj)) return
+      const thr = 6 / (canvas.getZoom() || 1)   // tolerancia en px de pantalla
+      const b = obj.getBoundingRect()
+      // candidatos: cajas de los otros objetos + caja de la remera (bordes y centros)
+      const cands = canvas.getObjects()
+        .filter(o => o !== obj && !mockupObjects.current.includes(o) && o.visible !== false && o.evented !== false)
+        .map(o => o.getBoundingRect())
+      const mb = mockupBounds(); if (mb) cands.push(mb as any)
+      const mvX = [b.left, b.left + b.width / 2, b.left + b.width]
+      const mvY = [b.top, b.top + b.height / 2, b.top + b.height]
+      let bestX = { d: Infinity, x: 0, y1: 0, y2: 0 }
+      let bestY = { d: Infinity, y: 0, x1: 0, x2: 0 }
+      for (const c of cands) {
+        const cXs = [c.left, c.left + c.width / 2, c.left + c.width]
+        const cYs = [c.top, c.top + c.height / 2, c.top + c.height]
+        for (const mx of mvX) for (const cx of cXs) {
+          const d = cx - mx
+          if (Math.abs(d) < Math.abs(bestX.d)) bestX = { d, x: cx, y1: Math.min(b.top, c.top), y2: Math.max(b.top + b.height, c.top + c.height) }
+        }
+        for (const my of mvY) for (const cy of cYs) {
+          const d = cy - my
+          if (Math.abs(d) < Math.abs(bestY.d)) bestY = { d, y: cy, x1: Math.min(b.left, c.left), x2: Math.max(b.left + b.width, c.left + c.width) }
+        }
+      }
+      let snapped = false
+      const guides: { v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null } = { v: null, h: null }
+      if (Math.abs(bestX.d) <= thr) { obj.set({ left: (obj.left ?? 0) + bestX.d }); guides.v = { x: bestX.x, y1: bestX.y1, y2: bestX.y2 }; snapped = true }
+      if (Math.abs(bestY.d) <= thr) { obj.set({ top: (obj.top ?? 0) + bestY.d }); guides.h = { y: bestY.y, x1: bestY.x1, x2: bestY.x2 }; snapped = true }
+      if (snapped) obj.setCoords()
+      smartGuides.current = guides
+    }
+    const clearGuides = () => {
+      if (smartGuides.current.v || smartGuides.current.h) { smartGuides.current = { v: null, h: null }; canvas.requestRenderAll() }
+    }
+    canvas.on('object:moving', onObjMoving)
+    canvas.on('object:modified', clearGuides)
+    canvas.on('mouse:up', clearGuides)
 
     // Stroke width stays visually constant during scaling via strokeUniform:true on
     // every object — no manual strokeWidth mutation needed (that caused the bounding-box
