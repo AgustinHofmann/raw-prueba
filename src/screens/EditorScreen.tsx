@@ -1010,7 +1010,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const onObjMoving = (e: any) => {
       const obj = e.target as fabric.FabricObject | undefined
       if (!obj || mockupObjects.current.includes(obj)) return
-      const thr = 6 / (canvas.getZoom() || 1)   // tolerancia en px de pantalla
+      const thr = 7 / (canvas.getZoom() || 1)   // tolerancia en px de pantalla
+      // Durante el arrastre Fabric mueve left/top pero NO recalcula aCoords hasta soltar,
+      // así que getBoundingRect() daría la caja vieja. Forzamos setCoords para leer la actual.
+      obj.setCoords()
       const b = obj.getBoundingRect()
       // candidatos: cajas de los otros objetos + caja de la remera (bordes y centros)
       const cands = canvas.getObjects()
