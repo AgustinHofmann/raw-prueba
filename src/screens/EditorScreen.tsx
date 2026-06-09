@@ -1060,6 +1060,12 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     canvas.selectionLineWidth   = 1
     ;(canvas as any).selectionDashArray = []
     ;(canvas as any).uniformScaling     = false
+    // Modificadores al escalar:
+    //  - Shift = escalar SIMÉTRICO desde el centro (los dos lados crecen a la vez en ese eje).
+    //    Si agarrás el tirador del medio de un lado, crece "para los dos lados" de ese eje.
+    //  - Alt   = mantener proporción (lo que por defecto hacía Shift).
+    ;(canvas as any).centeredKey = 'shiftKey'
+    ;(canvas as any).uniScaleKey = 'altKey'
     canvas.skipOffscreen = false
 
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
