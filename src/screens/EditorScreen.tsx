@@ -28,6 +28,7 @@ type HistoryEntry =
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
   | { type: 'group';   children: fabric.FabricObject[]; group: fabric.Group }
   | { type: 'ungroup'; children: fabric.FabricObject[]; group: fabric.Group }
+  | { type: 'transform'; items: { obj: fabric.FabricObject; left: number; top: number }[] }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -2848,6 +2849,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     if (!canvas) return
     const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
     if (!targets.length) return
+    // Refrescar la caja real: si el objeto (p. ej. un texto editado) tiene aCoords viejos,
+    // getBoundingRect daría una caja desactualizada y la alineación lo mandaría fuera.
+    targets.forEach(o => o.setCoords())
+    const prev = targets.map(o => ({ obj: o, left: o.left ?? 0, top: o.top ?? 0 }))
     let ref: { left: number; top: number; width: number; height: number }
     if (targets.length >= 2) {
       const r = targets.map(o => o.getBoundingRect())
@@ -2869,6 +2874,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy })
       o.setCoords()
     })
+    // Registrar el movimiento como un paso deshacible (si algo se movió)
+    if (prev.some(p => p.left !== (p.obj.left ?? 0) || p.top !== (p.obj.top ?? 0))) {
+      undoHistory.current.push({ type: 'transform', items: prev })
+      redoHistory.current = []
+    }
     canvas.requestRenderAll()
     const act = canvas.getActiveObject()
     if (act) { setPropX(Math.round(act.left ?? 0)); setPropY(Math.round(act.top ?? 0)) }
@@ -2879,6 +2889,8 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     if (!canvas) return
     const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
     if (targets.length < 3) return
+    targets.forEach(o => o.setCoords())
+    const prev = targets.map(o => ({ obj: o, left: o.left ?? 0, top: o.top ?? 0 }))
     const withRect = targets.map(o => ({ o, b: o.getBoundingRect() }))
     withRect.sort((a, z) => axis === 'h'
       ? (a.b.left + a.b.width / 2) - (z.b.left + z.b.width / 2)
@@ -2894,6 +2906,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       else              { const cur = b.top + b.height / 2; o.set({ top:  (o.top  ?? 0) + (target - cur) }) }
       o.setCoords()
     })
+    if (prev.some(p => p.left !== (p.obj.left ?? 0) || p.top !== (p.obj.top ?? 0))) {
+      undoHistory.current.push({ type: 'transform', items: prev })
+      redoHistory.current = []
+    }
     canvas.requestRenderAll()
   }
 
@@ -3177,6 +3193,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         } else if (entry.type === 'ungroup') {
           dissolveGroup(entry.group)                // rehacer la disolución
           undoHistory.current.push(entry)
+        } else if (entry.type === 'transform') {
+          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
+          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          undoHistory.current.push({ type: 'transform', items: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -3216,6 +3236,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         } else if (entry.type === 'ungroup') {
           entry.group = makeGroup(entry.children)   // deshacer: rehacer el grupo
           redoHistory.current.push(entry)
+        } else if (entry.type === 'transform') {
+          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
+          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          redoHistory.current.push({ type: 'transform', items: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
