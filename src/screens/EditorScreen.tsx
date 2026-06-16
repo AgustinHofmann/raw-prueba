@@ -221,6 +221,32 @@ const PEN_DEL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 const PEN_ADD_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3Ccircle cx='18' cy='4' r='4.5' fill='%231D77E0'/%3E%3Crect x='15.5' y='3' width='5' height='2' rx='1' fill='white'/%3E%3Crect x='17' y='1.5' width='2' height='5' rx='1' fill='white'/%3E%3C/svg%3E") 2 18, crosshair`
 const CURVE_CURSOR   = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3Cpath d='M14 2 Q16 0.5 17.5 2 Q19 3.5 21 2' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") 2 18, crosshair`
 
+// ── Nombres legibles de las piezas del mockup ────────────────────────────────
+// El id del elemento en el SVG (body, sleeve-left, hood…) se traduce a una etiqueta
+// que ve el diseñador. Si no hay id conocido, cae en "Pieza N".
+const PIECE_LABELS: Record<string, string> = {
+  body: 'Cuerpo', cuerpo: 'Cuerpo', torso: 'Cuerpo', front: 'Frente', back: 'Espalda',
+  'sleeve-left': 'Manga L', 'sleeve-right': 'Manga R', 'sleeve_l': 'Manga L', 'sleeve_r': 'Manga R',
+  sleeve: 'Manga', mangal: 'Manga L', mangar: 'Manga R',
+  hood: 'Capucha', 'hood-inner': 'Capucha int.', capucha: 'Capucha',
+  pocket: 'Bolsillo', bolsillo: 'Bolsillo', collar: 'Cuello', cuello: 'Cuello',
+  cuff: 'Puño', 'cuff-left': 'Puño L', 'cuff-right': 'Puño R', hem: 'Ruedo', waistband: 'Cintura',
+  waist: 'Cintura', 'leg-left': 'Pierna L', 'leg-right': 'Pierna R', leg: 'Pierna',
+}
+function pieceLabelFromId(id: string | undefined | null, fallback: string): string {
+  if (!id) return fallback
+  const key = id.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '')
+  if (PIECE_LABELS[key]) return PIECE_LABELS[key]
+  // ids con sufijo numérico o variantes: "sleeve-left-2", "hood2" → match por prefijo
+  const sorted = Object.keys(PIECE_LABELS).sort((a, b) => b.length - a.length)
+  for (const k of sorted) if (key.startsWith(k)) return PIECE_LABELS[k]
+  return fallback
+}
+function pieceNameOf(obj: fabric.FabricObject, fallback = 'Pieza'): string {
+  return ((obj as any)._pieceName as string) || fallback
+}
+const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', hoodie: 'Hoodie', pants: 'Pantalón' }
+
 // ── Anchor editing helpers ────────────────────────────────────────────────────
 const ANCHOR_R   = 5
 const ANCHOR_HIT = 11
@@ -848,6 +874,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
+  const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
@@ -1235,7 +1262,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         if (cancelled) return
         const objs = objects.filter(Boolean) as fabric.FabricObject[]
         mockupObjects.current = objs
-        objs.forEach(obj => { ;(obj as any)._rawMockup = true; obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' }) })
+        objs.forEach((obj, i) => {
+          ;(obj as any)._rawMockup = true
+          ;(obj as any)._pieceName = pieceLabelFromId((obj as any).id, `Pieza ${i + 1}`)
+          obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
+        })
         objs.forEach(obj => canvas.add(obj))
 
         const allL = objs.map(o => o.left ?? 0)
@@ -1248,10 +1279,13 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         const sc  = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
         const ox  = (CW - bw * sc) / 2 - bx * sc
         const oy  = (CH - bh * sc) / 2 - by * sc
-        objs.forEach(obj => obj.set({
-          left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy,
-          scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc,
-        }))
+        objs.forEach(obj => {
+          obj.set({
+            left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy,
+            scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc,
+          })
+          obj.setCoords()  // recalcula oCoords → el hit-test (click) ubica cada pieza
+        })
 
         const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
         if (cancelled) return
@@ -2668,6 +2702,28 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       const onMoved    = (e: any) => syncProps(e.target ?? null)
       const onRotated  = (e: any) => syncProps(e.target ?? null)
 
+      // Selección directa de piezas del mockup: el hit-test nativo de Fabric falla
+      // con estas piezas SVG escaladas (devuelve "vacío" y deselecciona). Hacemos el
+      // hit-test nosotros — pieza superior (orden Z) que contiene el punto — y la
+      // seleccionamos a mano. Solo cuando la prenda está desbloqueada.
+      const onDownMockup = (e: fabric.TPointerEventInfo) => {
+        if (mockupLockedRef.current) return
+        const target = e.target as fabric.FabricObject | undefined
+        if (target && !mockupObjects.current.includes(target)) return  // objeto normal → Fabric lo maneja
+        const pt = e.scenePoint
+        const pieces = mockupObjects.current
+        for (let i = pieces.length - 1; i >= 0; i--) {
+          const p = pieces[i]
+          if (p.visible === false) continue
+          if (p.containsPoint(pt)) {
+            p.set({ selectable: true, evented: true })
+            if (canvas.getActiveObject() !== p) { canvas.setActiveObject(p); canvas.requestRenderAll() }
+            return
+          }
+        }
+      }
+
+      canvas.on('mouse:down', onDownMockup)
       canvas.on('selection:created', onCreated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
       canvas.on('selection:cleared', onCleared)
@@ -2676,6 +2732,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       canvas.on('object:rotating',  onRotated)
 
       offs.push(() => {
+        canvas.off('mouse:down', onDownMockup)
         canvas.off('selection:created', onCreated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
         canvas.off('selection:cleared', onCleared)
@@ -3710,8 +3767,14 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const canvas = fc.current
     if (!canvas) return
     const active = canvas.getActiveObject()
-    if (!active || active.type !== 'group' || mockupObjects.current.includes(active)) return
-    const group = active as fabric.Group
+    if (!active || active.type !== 'group') return
+    ungroupTarget(active as fabric.Group)
+  }
+
+  // Desagrupa un grupo concreto (sirve para botón, atajo y menú contextual).
+  function ungroupTarget(group: fabric.Group) {
+    const canvas = fc.current
+    if (!canvas) return
     const children = dissolveGroup(group)
     const sel = new fabric.ActiveSelection(children, { canvas })
     canvas.setActiveObject(sel)
@@ -3719,7 +3782,72 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     redoHistory.current = []
     canvas.requestRenderAll()
     refreshLayersNow()
+    onToast?.((group as any)._garmentGroup ? 'Prenda desagrupada' : 'Desagrupado')
   }
+
+  // ¿La prenda está agrupada en una "madre"?
+  function garmentGroupObj(): fabric.Group | null {
+    const canvas = fc.current
+    return (canvas?.getObjects().find(o => (o as any)._garmentGroup) as fabric.Group) ?? null
+  }
+
+  // Agrupa TODAS las piezas de la prenda en un único grupo "madre".
+  function groupGarment() {
+    const canvas = fc.current
+    if (!canvas || garmentGroupObj()) return
+    const pieces = mockupObjects.current.filter(o => canvas.getObjects().includes(o))
+    if (pieces.length < 2) return
+    setMockupLocked(false); mockupLockedRef.current = false
+    canvas.discardActiveObject()
+    pieces.forEach(o => o.set({ selectable: true, evented: true }))
+    const group = makeGroup(pieces)
+    ;(group as any)._garmentGroup = true
+    canvas.setActiveObject(group)
+    undoHistory.current.push({ type: 'group', children: pieces, group })
+    redoHistory.current = []
+    canvas.requestRenderAll()
+    refreshLayersNow()
+    onToast?.('Prenda agrupada — click derecho para elegir una pieza')
+  }
+
+  // Selecciona una pieza puntual de la prenda (desde el menú contextual). Si la
+  // prenda está agrupada, primero la desagrupa para poder editar la pieza sola.
+  function selectPieceFromMenu(piece: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas) return
+    const g = garmentGroupObj()
+    if (g && g.getObjects().includes(piece)) dissolveGroup(g)
+    setMockupLocked(false); mockupLockedRef.current = false
+    setTool('select')
+    piece.set({ selectable: true, evented: true })
+    canvas.setActiveObject(piece)
+    setSelectedObj(piece)
+    canvas.requestRenderAll()
+    refreshLayersNow()
+    onToast?.(`${pieceNameOf(piece, 'Pieza')} seleccionada`)
+  }
+
+  // ── Menú contextual (click derecho) ──────────────────────────────────────────
+  function openContextMenu(e: React.MouseEvent) {
+    e.preventDefault()
+    const canvas = fc.current
+    if (!canvas) return
+    let target = canvas.getActiveObject() as fabric.FabricObject | null
+    if (!target) {
+      const pt = canvas.getScenePoint(e.nativeEvent)
+      const pieces = mockupObjects.current
+      for (let i = pieces.length - 1; i >= 0; i--) {
+        if (pieces[i].visible !== false && pieces[i].containsPoint(pt)) { target = pieces[i]; break }
+      }
+      if (!target) target = (canvas.findTarget(e.nativeEvent) as fabric.FabricObject) ?? null
+    }
+    setCtxMenu({
+      x: e.clientX, y: e.clientY, target,
+      isGroup: !!target && target.type === 'group',
+      isMulti: !!target && target.type === 'activeselection',
+    })
+  }
+  const closeCtx = () => setCtxMenu(null)
 
   // ── Acciones del panel de capas ─────────────────────────────────────────────
   function refreshLayersNow() {
@@ -3838,6 +3966,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         {/* Canvas */}
         <main style={{ flex: 1, position: 'relative', overflow: 'hidden', background: 'var(--bg-2)' }}
           ref={canvasAreaRef as RefObject<HTMLElement>}
+          onContextMenu={openContextMenu}
           onDragEnter={e => { e.preventDefault(); if (Array.from(e.dataTransfer.types).includes('Files')) setDragActive(true) }}
           onDragOver={e => { e.preventDefault() }}
           onDragLeave={e => { if (e.currentTarget === e.target) setDragActive(false) }}
@@ -4032,15 +4161,29 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
             </div>
             )
           })()}
-          {(selKind === 'multi' || selKind === 'group') && (
-            <button
-              className="btn btn-ghost"
-              onClick={() => selKind === 'multi' ? groupSelection() : ungroupSelection()}
-              style={{ justifyContent: 'center', fontSize: 12 }}
-            >
-              {selKind === 'multi' ? '⊞ Agrupar (Ctrl+G)' : '⊟ Desagrupar (Ctrl+Shift+G)'}
-            </button>
-          )}
+          {/* Agrupar / Desagrupar — botones con especificación clara */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {selKind === 'multi' && (
+              <button className="btn btn-ghost" onClick={groupSelection} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ⊞ Agrupar selección <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+G</span>
+              </button>
+            )}
+            {selKind === 'group' && (
+              <button className="btn btn-ghost" onClick={ungroupSelection} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ⊟ Desagrupar <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+Shift+G</span>
+              </button>
+            )}
+            {mockupObjects.current.length > 1 && !garmentGroupObj() && (
+              <button className="btn btn-ghost" onClick={groupGarment} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ⊞ Agrupar prenda
+              </button>
+            )}
+            {garmentGroupObj() && (
+              <button className="btn btn-ghost" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g) }} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ⊟ Desagrupar prenda
+              </button>
+            )}
+          </div>
           {hasSel && (
             <div>
               <div className="label" style={{ marginBottom: 6 }}>Orden</div>
@@ -4331,6 +4474,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                 layers={layers}
                 version={layersVersion}
                 mockupObjects={mockupObjects.current}
+                garmentName={GARMENT_NAMES[project.mockupId] ?? 'Prenda'}
                 selectedObj={selectedObj}
                 onSelect={obj => {
                   const canvas = fc.current
@@ -4495,8 +4639,74 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           onClose={() => setTechPackImg(null)}
         />
       )}
+
+      {/* Menú contextual (click derecho) */}
+      {ctxMenu && (() => {
+        const pieces = mockupObjects.current
+        const named = pieces.filter(p => !/^Pieza/.test(pieceNameOf(p, 'Pieza')))
+        const pieceList = named.length ? named : pieces
+        const grouped = !!garmentGroupObj()
+        const t = ctxMenu.target
+        return (
+          <>
+            <div onClick={closeCtx} onContextMenu={e => { e.preventDefault(); closeCtx() }}
+              style={{ position: 'fixed', inset: 0, zIndex: 300 }} />
+            <div style={{
+              position: 'fixed', left: Math.min(ctxMenu.x, window.innerWidth - 210), top: ctxMenu.y, zIndex: 301,
+              minWidth: 196, maxHeight: '80vh', overflowY: 'auto',
+              background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+              padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 12.5,
+            }}>
+              {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
+              {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
+              {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
+              {grouped && !ctxMenu.isGroup && <CtxItem label="Desagrupar prenda" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g); closeCtx() }} />}
+
+              {pieceList.length > 0 && (
+                <>
+                  <CtxDivider />
+                  <div style={{ padding: '4px 10px 5px', color: 'var(--muted)', fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase' }}>Seleccionar pieza</div>
+                  {pieceList.map((p, i) => (
+                    <CtxItem key={i} icon={getLayerIcon(p)} label={pieceNameOf(p, `Pieza ${i + 1}`)}
+                      onClick={() => { selectPieceFromMenu(p); closeCtx() }} />
+                  ))}
+                </>
+              )}
+
+              {t && !ctxMenu.isMulti && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup) && (
+                <>
+                  <CtxDivider />
+                  <CtxItem label="Eliminar" danger onClick={() => { const c = fc.current; if (c && t) { c.remove(t); undoHistory.current.push({ type: 'remove', obj: t }); redoHistory.current = []; c.discardActiveObject(); c.requestRenderAll(); refreshLayersNow() } closeCtx() }} />
+                </>
+              )}
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
+}
+
+// Ítem y separador del menú contextual
+function CtxItem({ label, hint, icon, danger, onClick }: { label: string; hint?: string; icon?: string; danger?: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+        padding: '7px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
+        background: 'transparent', color: danger ? 'var(--danger, #f87171)' : 'var(--fg-2)',
+        fontFamily: 'var(--ui)', fontSize: 12.5,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in oklch, var(--accent) 14%, var(--surface))'; e.currentTarget.style.color = danger ? 'var(--danger, #f87171)' : 'var(--fg)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = danger ? 'var(--danger, #f87171)' : 'var(--fg-2)' }}>
+      {icon && <span style={{ width: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>{icon}</span>}
+      <span style={{ flex: 1 }}>{label}</span>
+      {hint && <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{hint}</span>}
+    </button>
+  )
+}
+function CtxDivider() {
+  return <div style={{ height: 1, background: 'var(--line-soft)', margin: '4px 6px' }} />
 }
 
 // ── Layers panel ─────────────────────────────────────────────────────────────
@@ -4793,6 +5003,8 @@ function removeBgFromImageData(data: ImageData, tolerance = 42): void {
 }
 
 function getLayerLabel(obj: fabric.FabricObject): string {
+  if ((obj as any)._pieceName) return (obj as any)._pieceName as string
+  if ((obj as any)._garmentGroup) return 'Prenda'
   const t = (obj as any).type as string
   if (t === 'i-text' || t === 'text') return (obj as any).text?.slice(0, 20) || 'Texto'
   if (t === 'path')   return 'Trazado'
@@ -4814,10 +5026,11 @@ function getLayerIcon(obj: fabric.FabricObject): string {
   return '·'
 }
 
-function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onReorder, onDelete, mockupLocked, onToggleMockupLock, onSelectMockup }: {
+function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj, onSelect, onToggleVisible, onToggleLock, onMove, onReorder, onDelete, mockupLocked, onToggleMockupLock, onSelectMockup }: {
   layers: fabric.FabricObject[]
   version: number
   mockupObjects: fabric.FabricObject[]
+  garmentName: string
   selectedObj: fabric.FabricObject | null
   onSelect: (obj: fabric.FabricObject) => void
   onToggleVisible: (obj: fabric.FabricObject) => void
@@ -4932,7 +5145,7 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
             <span role="button" onClick={() => setMockupOpen(v => !v)}
               style={{ fontSize: 9, cursor: 'pointer', transition: 'transform 0.15s', transform: mockupOpen ? 'none' : 'rotate(-90deg)', width: 10 }}>▾</span>
             <span style={{ fontSize: 11, width: 12, textAlign: 'center' }}>⬡</span>
-            <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => setMockupOpen(v => !v)}>Mockup (remera)</span>
+            <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => setMockupOpen(v => !v)}>Prenda · {garmentName}</span>
             <span style={{ fontSize: 9, color: 'var(--muted)', marginRight: 2 }}>{mockupObjects.length}</span>
             <span
               role="button"
@@ -4969,7 +5182,7 @@ function LayersPanel({ layers, version, mockupObjects, selectedObj, onSelect, on
                 onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
               >
                 <span style={{ fontSize: 10, color: 'var(--muted)', width: 12, textAlign: 'center' }}>{getLayerIcon(obj)}</span>
-                <span>Pieza {mockupObjects.length - i}</span>
+                <span>{pieceNameOf(obj, `Pieza ${mockupObjects.length - i}`)}</span>
               </div>
             )
           })}
