@@ -247,6 +247,7 @@ export default function App() {
             saved={saved}
             onSaveComplete={handleSaveComplete}
             onActionsReady={a => { editorActionsRef.current = a }}
+            onToast={showToast}
           />
         )}
       </div>

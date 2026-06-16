@@ -14,15 +14,20 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
+  onToast?: (msg: string) => void
 }
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
   | 'rect' | 'ellipse' | 'line' | 'hand' | 'zoom'
 
+// Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
+type StrokeStyle = 'normal' | 'bordado' | 'cierre'
+
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
   | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
+  | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }[] }
   | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
@@ -65,6 +70,127 @@ function catmullRomToBezier(pts: fabric.Point[]): string {
 
 function straightPathStr(pts: fabric.Point[]): string {
   return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+}
+
+// Bordado de satén: recorre la polilínea a paso fijo y en cada paso dibuja una
+// puntada corta cruzada al trazo, alternando la diagonal — emula el relleno
+// denso y texturado de un bordado real. Devuelve un único path con muchos
+// subtrazos "M..L.." para que sea un solo objeto (un paso de historial).
+function satinStitchPathStr(pts: fabric.Point[], width: number): string {
+  const spacing = Math.max(1.6, width * 0.42)   // separación entre puntadas
+  const half    = Math.max(2, width * 0.95)      // medio largo de cada puntada
+  const skew     = 0.35                            // inclinación de satén
+  const segs: string[] = []
+  let carry = 0
+  let flip  = 1
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const segLen = Math.hypot(dx, dy)
+    if (segLen < 1e-3) continue
+    const ux = dx / segLen, uy = dy / segLen      // tangente unitaria
+    const nx = -uy, ny = ux                        // normal unitaria
+    let d = carry
+    while (d < segLen) {
+      const cx = a.x + ux * d, cy = a.y + uy * d
+      // puntada cruzada, ligeramente inclinada (alterna lado para el satén)
+      const sx = (nx + ux * skew * flip), sy = (ny + uy * skew * flip)
+      const sl = Math.hypot(sx, sy) || 1
+      const ex = (sx / sl) * half, ey = (sy / sl) * half
+      segs.push(`M ${cx - ex} ${cy - ey} L ${cx + ex} ${cy + ey}`)
+      flip = -flip
+      d += spacing
+    }
+    carry = d - segLen
+  }
+  return segs.join(' ')
+}
+
+// Cierre (cremallera): banda central + dientes alternados a cada lado, como los
+// eslabones de un cierre. También devuelve un único path multi-trazo.
+function zipperPathStr(pts: fabric.Point[], width: number): string {
+  const spacing = Math.max(2.6, width * 0.7)    // separación entre dientes
+  const half    = Math.max(2, width * 0.85)      // medio ancho de la banda
+  const tooth   = Math.max(1.2, width * 0.5)     // largo del diente hacia afuera
+  const segs: string[] = []
+  // 1) dos rieles paralelos (líneas centrales del cierre)
+  const railL: string[] = [], railR: string[] = []
+  let flip = 1, carry = 0
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const segLen = Math.hypot(dx, dy)
+    if (segLen < 1e-3) continue
+    const ux = dx / segLen, uy = dy / segLen
+    const nx = -uy, ny = ux                        // normal unitaria
+    // rieles a media distancia del eje
+    const rh = half * 0.45
+    railL.push(`${i === 0 ? 'M' : 'L'} ${a.x + nx * rh} ${a.y + ny * rh}`)
+    railR.push(`${i === 0 ? 'M' : 'L'} ${a.x - nx * rh} ${a.y - ny * rh}`)
+    if (i === pts.length - 2) {
+      railL.push(`L ${b.x + nx * rh} ${b.y + ny * rh}`)
+      railR.push(`L ${b.x - nx * rh} ${b.y - ny * rh}`)
+    }
+    // 2) dientes: un trazo corto perpendicular, alternando lado
+    let d = carry
+    while (d < segLen) {
+      const cx = a.x + ux * d, cy = a.y + uy * d
+      const inner = half * 0.1
+      const outer = half * 0.1 + tooth
+      segs.push(`M ${cx + nx * inner * flip} ${cy + ny * inner * flip} L ${cx + nx * outer * flip} ${cy + ny * outer * flip}`)
+      flip = -flip
+      d += spacing
+    }
+    carry = d - segLen
+  }
+  return [railL.join(' '), railR.join(' '), ...segs].join(' ')
+}
+
+// Muestrea puntos densos a lo largo de un path de Fabric (comandos M/L/Q/C),
+// para poder reestilizar curvas (de la pluma) como puntos de una polilínea.
+function samplePathCommands(path: any[], step = 4): fabric.Point[] {
+  const out: fabric.Point[] = []
+  let cx = 0, cy = 0, sx = 0, sy = 0
+  const push = (x: number, y: number) => {
+    const last = out[out.length - 1]
+    if (!last || Math.hypot(x - last.x, y - last.y) >= step * 0.5) out.push(new fabric.Point(x, y))
+  }
+  const sampleC = (x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, x3: number, y3: number) => {
+    const approx = Math.hypot(x1 - x0, y1 - y0) + Math.hypot(x2 - x1, y2 - y1) + Math.hypot(x3 - x2, y3 - y2)
+    const n = Math.max(2, Math.ceil(approx / step))
+    for (let k = 1; k <= n; k++) {
+      const t = k / n, mt = 1 - t
+      const x = mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3
+      const y = mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3
+      push(x, y)
+    }
+  }
+  const sampleQ = (x0: number, y0: number, x1: number, y1: number, x2: number, y2: number) => {
+    const approx = Math.hypot(x1 - x0, y1 - y0) + Math.hypot(x2 - x1, y2 - y1)
+    const n = Math.max(2, Math.ceil(approx / step))
+    for (let k = 1; k <= n; k++) {
+      const t = k / n, mt = 1 - t
+      const x = mt*mt*x0 + 2*mt*t*x1 + t*t*x2
+      const y = mt*mt*y0 + 2*mt*t*y1 + t*t*y2
+      push(x, y)
+    }
+  }
+  for (const c of path) {
+    const cmd = c[0]
+    if (cmd === 'M')      { cx = sx = c[1]; cy = sy = c[2]; push(cx, cy) }
+    else if (cmd === 'L') { cx = c[1]; cy = c[2]; push(cx, cy) }
+    else if (cmd === 'Q') { sampleQ(cx, cy, c[1], c[2], c[3], c[4]); cx = c[3]; cy = c[4] }
+    else if (cmd === 'C') { sampleC(cx, cy, c[1], c[2], c[3], c[4], c[5], c[6]); cx = c[5]; cy = c[6] }
+    else if (cmd === 'Z') { push(sx, sy); cx = sx; cy = sy }
+  }
+  return out
+}
+
+// Datos del trazado especial a partir de una polilínea de puntos.
+function specialStrokeData(pts: fabric.Point[], style: StrokeStyle, width: number): { d: string; sw: number } | null {
+  if (style === 'bordado') return { d: satinStitchPathStr(pts, width), sw: Math.max(1.4, width * 0.34) }
+  if (style === 'cierre')  return { d: zipperPathStr(pts, width),      sw: Math.max(1.2, width * 0.3) }
+  return null
 }
 
 // Ramer-Douglas-Peucker: reduce puntos manteniendo la forma
@@ -661,7 +787,7 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady }: Props) {
+export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady, onToast }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -674,6 +800,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const clipboardBuf  = useRef<fabric.FabricObject | null>(null)
   const colorRef      = useRef('#ff6b00')
   const brushSizeRef  = useRef(8)
+  const strokeStyleRef = useRef<StrokeStyle>('normal')
   const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
@@ -704,6 +831,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
   const [propSWidthMixed, setPropSWidthMixed] = useState(false)  // selección múltiple con grosores distintos
+  const [strokeStyle,   setStrokeStyle]   = useState<StrokeStyle>('normal')  // trazado especial para lápiz/pluma
   const [propX,         setPropX]         = useState(0)
   const [propY,         setPropY]         = useState(0)
   const [propW,         setPropW]         = useState(0)
@@ -776,6 +904,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
+  useEffect(() => { strokeStyleRef.current = strokeStyle   }, [strokeStyle])
   useEffect(() => { fillRef.current       = propFill      }, [propFill])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
@@ -1313,17 +1442,19 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         const epsilon = Math.max(2, brushSizeRef.current * 0.4)
         const simplified = rdp(rawPts, epsilon)
 
-        // 2. Suavizar con Catmull-Rom → bezier
-        const d = catmullRomToBezier(simplified)
-        const obj = new fabric.Path(d, {
-          stroke: colorRef.current,
-          strokeWidth: brushSizeRef.current,
-          strokeLineCap: 'round',
-          strokeLineJoin: 'round',
-          fill: null,
-          selectable: false, evented: false,
-          strokeUniform: true,
-        })
+        // 2. Según el trazado elegido: normal (bezier suave) o especial (bordado/cierre)
+        const special = specialStrokeData(simplified, strokeStyleRef.current, brushSizeRef.current)
+        const obj = special
+          ? new fabric.Path(special.d, {
+              stroke: colorRef.current, strokeWidth: special.sw,
+              strokeLineCap: 'round', fill: null,
+              selectable: false, evented: false, strokeUniform: true,
+            })
+          : new fabric.Path(catmullRomToBezier(simplified), {
+              stroke: colorRef.current, strokeWidth: brushSizeRef.current,
+              strokeLineCap: 'round', strokeLineJoin: 'round', fill: null,
+              selectable: false, evented: false, strokeUniform: true,
+            })
         if (clipPath.current) obj.clipPath = clipPath.current
         canvas.add(obj)
         undoHistory.current.push({ type: 'add', obj })
@@ -1636,13 +1767,26 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           const lastPt = anchors[anchors.length - 1].pt
           if (!closed) snapPoints.current.push(new fabric.Point(lastPt.x, lastPt.y))
           const penPathStr = buildPenPath(anchors, closed)
-          const obj = new fabric.Path(penPathStr, {
-            stroke: colorRef.current, strokeWidth: brushSizeRef.current,
-            strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
-            strokeLineJoin: 'round',
-            fill: fillRef.current, selectable: false, evented: true,
-            strokeUniform: true,
-          })
+          // Trazado especial (bordado/cierre): muestreo la curva en puntos y la
+          // reemplazo por las puntadas; si es normal, dejo el path tal cual.
+          let special: { d: string; sw: number } | null = null
+          if (strokeStyleRef.current !== 'normal') {
+            const sampled = samplePathCommands((new fabric.Path(penPathStr)).path as any[], Math.max(3, brushSizeRef.current * 0.5))
+            special = specialStrokeData(sampled, strokeStyleRef.current, brushSizeRef.current)
+          }
+          const obj = special
+            ? new fabric.Path(special.d, {
+                stroke: colorRef.current, strokeWidth: special.sw,
+                strokeLineCap: 'round', fill: null,
+                selectable: false, evented: true, strokeUniform: true,
+              })
+            : new fabric.Path(penPathStr, {
+                stroke: colorRef.current, strokeWidth: brushSizeRef.current,
+                strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
+                strokeLineJoin: 'round',
+                fill: fillRef.current, selectable: false, evented: true,
+                strokeUniform: true,
+              })
           ;(obj as any).hoverCursor = PEN_CURSOR
           if (clipPath.current) obj.clipPath = clipPath.current
           canvas.add(obj)
@@ -2726,28 +2870,69 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     ;(obj as any)._texture = { kind, colors: [...colors] }
   }
 
-  function applyTexture(kind: TextureKind) {
-    const canvas = fc.current
-    if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (!obj || obj.type === 'activeselection') return
-    const prevFill = obj.fill as fabric.TFiller | string | null
-    setObjTexture(obj, kind, texColors[kind])
-    undoHistory.current.push({ type: 'fill', obj, prevFill })
-    redoHistory.current = []
-    setActiveTexKind(kind)
-    canvas.requestRenderAll()
+  // Piezas de la prenda que pueden recibir tela/color (las que tienen área de relleno).
+  function fillableGarmentPieces(): fabric.FabricObject[] {
+    return mockupObjects.current.filter(o => {
+      if (o.visible === false) return false
+      const f = (o as any).fill
+      return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
+    })
   }
 
-  // Aplica una paleta completa a una textura: guarda estado + actualiza el objeto seleccionado.
+  // ¿A qué se aplica la tela/color? A lo seleccionado si hay algo; si no, a toda la prenda.
+  function fillTargets(): { targets: fabric.FabricObject[]; label: string } {
+    const active = fc.current?.getActiveObject()
+    if (active) {
+      if (active.type === 'activeselection') {
+        return { targets: (active as fabric.ActiveSelection).getObjects(), label: 'la selección' }
+      }
+      const isPiece = mockupObjects.current.includes(active)
+      return { targets: [active], label: isPiece ? 'la pieza' : 'la figura' }
+    }
+    return { targets: fillableGarmentPieces(), label: 'toda la prenda' }
+  }
+
+  // Aplica un cambio de relleno a varios objetos como UN solo paso de historial.
+  function applyFillToTargets(targets: fabric.FabricObject[], mut: (o: fabric.FabricObject) => void, verb: string, label: string) {
+    const canvas = fc.current
+    if (!canvas) return
+    if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
+    const items = targets.map(o => ({ obj: o, prevFill: o.fill as fabric.TFiller | string | null }))
+    targets.forEach(mut)
+    undoHistory.current.push(items.length === 1
+      ? { type: 'fill', obj: items[0].obj, prevFill: items[0].prevFill }
+      : { type: 'fillBatch', items })
+    redoHistory.current = []
+    canvas.requestRenderAll()
+    onToast?.(`${verb} a ${label}`)
+  }
+
+  function applyTexture(kind: TextureKind) {
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => setObjTexture(o, kind, texColors[kind]), 'Tela aplicada', label)
+    setActiveTexKind(kind)
+  }
+
+  // Color sólido de la prenda (o de lo seleccionado): reemplaza cualquier textura.
+  function applyGarmentSolid(val: string) {
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => { o.set({ fill: val, dirty: true }); delete (o as any)._texture }, 'Color aplicado', label)
+    setActiveTexKind(null)
+    setPropFill(val)
+  }
+
+  // Aplica una paleta completa a una textura: actualiza lo seleccionado, o todas las
+  // piezas de la prenda que ya tengan esa textura si no hay nada seleccionado.
   function applyTexPalette(kind: TextureKind, pal: string[]) {
     setTexColors(prev => ({ ...prev, [kind]: pal }))
     const canvas = fc.current
-    const obj = canvas?.getActiveObject()
-    if (obj && obj.type !== 'activeselection') {
-      setObjTexture(obj, kind, pal)
-      canvas?.requestRenderAll()
-    }
+    if (!canvas) return
+    const active = canvas.getActiveObject()
+    const targets = active
+      ? (active.type === 'activeselection' ? (active as fabric.ActiveSelection).getObjects() : [active])
+      : mockupObjects.current.filter(o => (o as any)._texture?.kind === kind)
+    targets.forEach(o => setObjTexture(o, kind, pal))
+    canvas.requestRenderAll()
   }
   // Color principal: ajusta el resto automáticamente
   function setTexPrimary(kind: TextureKind, val: string) { applyTexPalette(kind, deriveTexPalette(kind, val)) }
@@ -3197,6 +3382,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
           entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
           undoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'fillBatch') {
+          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
+          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          undoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -3240,6 +3429,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
           entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
           redoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'fillBatch') {
+          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
+          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          redoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
           const curFill = entry.obj.fill
           entry.obj.set({ fill: entry.prevFill as string })
@@ -3449,6 +3642,24 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     if (next) canvas.discardActiveObject()  // al bloquear, soltar selección de piezas del mockup
     canvas.requestRenderAll()
     refreshLayersNow()
+  }
+
+  // Habilita/inhabilita seleccionar piezas de la prenda para pintarlas de a una.
+  // (Igual que el lock del mockup, pero fuerza la herramienta de selección y no
+  //  depende del estado `tool` para marcar las piezas como seleccionables.)
+  function togglePiecePaint() {
+    const canvas = fc.current
+    if (!canvas) return
+    const unlocked = mockupLocked   // si estaba bloqueado, ahora lo desbloqueamos
+    const next = !unlocked
+    setMockupLocked(next)
+    mockupLockedRef.current = next
+    setTool('select')
+    mockupObjects.current.forEach(o => o.set({ selectable: unlocked, evented: true }))
+    if (next) canvas.discardActiveObject()
+    canvas.requestRenderAll()
+    refreshLayersNow()
+    onToast?.(unlocked ? 'Tocá una pieza de la prenda para pintarla' : 'Prenda bloqueada')
   }
 
   function selectMockupShape(obj: fabric.FabricObject) {
@@ -4072,6 +4283,40 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
               <NumberField value={propSWidth} mixed={propSWidthMixed} onChange={applyStrokeWidth}
                 min={0.5} max={200} step={0.5} suffix="px" />
             </div>
+
+            {/* Estilo de trazado especial — se aplica a lo que dibujes con lápiz o pluma */}
+            <div style={{ marginTop: 12 }}>
+              <span className="label" style={{ display: 'block', marginBottom: 6 }}>Estilo</span>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {([
+                  { id: 'normal',   label: 'Normal',  icon: <StrokeStyleIcon kind="normal" /> },
+                  { id: 'bordado',  label: 'Bordado', icon: <StrokeStyleIcon kind="bordado" /> },
+                  { id: 'cierre',   label: 'Cierre',  icon: <StrokeStyleIcon kind="cierre" /> },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.id}
+                    onClick={() => setStrokeStyle(opt.id)}
+                    title={`Trazado ${opt.label.toLowerCase()}`}
+                    style={{
+                      flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                      padding: '7px 4px', borderRadius: 7, cursor: 'pointer',
+                      background: strokeStyle === opt.id ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                      border: '1px solid ' + (strokeStyle === opt.id ? 'var(--accent)' : 'var(--line)'),
+                      color: strokeStyle === opt.id ? 'var(--accent)' : 'var(--fg-2)',
+                      transition: 'all 0.15s var(--ease)',
+                    }}
+                  >
+                    {opt.icon}
+                    <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+              {strokeStyle !== 'normal' && (
+                <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7, lineHeight: 1.4 }}>
+                  Dibujá con el lápiz o la pluma y el trazo se reemplaza por {strokeStyle === 'bordado' ? 'puntadas de bordado' : 'un cierre'}.
+                </p>
+              )}
+            </div>
           </div>
 
           {hasSel && (
@@ -4115,22 +4360,42 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           {/* Textures tab */}
           {rightTab === 'textures' && (
             <div style={{ overflowY: 'auto', flex: 1, padding: '16px 14px' }}>
-              <div className="label" style={{ marginBottom: 6 }}>Texturas de tela</div>
-              <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 14px', lineHeight: 1.5 }}>
-                Seleccioná una figura (o desbloqueá el mockup y elegí una pieza) y tocá una textura para aplicarla.
-              </p>
+              <div className="label" style={{ marginBottom: 6 }}>Tela y color</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.5 }}>
+                Se aplica a <strong style={{ color: 'var(--accent)' }}>{selKind === 'none' ? 'toda la prenda' : 'lo seleccionado'}</strong>.
+              </div>
+              {mockupObjects.current.length > 0 && (
+                <button onClick={togglePiecePaint} className="btn btn-ghost"
+                  style={{ width: '100%', justifyContent: 'center', marginBottom: 14, fontSize: 11,
+                    border: '1px solid ' + (mockupLocked ? 'var(--line)' : 'var(--accent)'),
+                    color: mockupLocked ? 'var(--fg-2)' : 'var(--accent)' }}>
+                  {mockupLocked ? '🖌  Pintar una pieza puntual' : '✓  Terminar (volver a toda la prenda)'}
+                </button>
+              )}
+
+              {/* Color liso de la prenda (o de lo seleccionado) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                <label style={{ position: 'relative', cursor: 'pointer' }}>
+                  <input type="color" defaultValue="#ffffff"
+                    onChange={e => applyGarmentSolid(e.target.value)}
+                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                  <div style={{ width: 30, height: 30, borderRadius: 8,
+                    background: 'conic-gradient(from 90deg, #f43f5e, #f59e0b, #eab308, #22c55e, #06b6d4, #6366f1, #d946ef, #f43f5e)',
+                    border: '2px solid var(--line)' }} />
+                </label>
+                <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color liso</span>
+              </div>
+
+              <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {TEXTURES.map(t => (
                   <button
                     key={t.id}
                     onClick={() => applyTexture(t.id)}
-                    disabled={selKind === 'none' || selKind === 'multi'}
-                    title={selKind === 'none' || selKind === 'multi' ? 'Seleccioná una sola figura primero' : `Aplicar ${t.label}`}
+                    title={`Aplicar ${t.label}`}
                     style={{
                       display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
-                      background: 'none', border: 'none',
-                      cursor: (selKind === 'none' || selKind === 'multi') ? 'not-allowed' : 'pointer',
-                      opacity: (selKind === 'none' || selKind === 'multi') ? 0.45 : 1,
+                      background: 'none', border: 'none', cursor: 'pointer',
                     }}
                   >
                     <div style={{
@@ -4146,7 +4411,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
               </div>
 
               {/* Editor de colores de la textura aplicada */}
-              {activeTexKind && (selKind === 'single' || selKind === 'group') && (
+              {activeTexKind && (
                 <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
                   <div className="label" style={{ marginBottom: 10 }}>
                     Color · {TEXTURES.find(t => t.id === activeTexKind)?.label}
@@ -4199,13 +4464,13 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                 </div>
               )}
 
-              {(selKind === 'single' || selKind === 'group') && (
+              {activeTexKind && (
                 <button
-                  onClick={() => { applyFill('#ffffff'); setActiveTexKind(null) }}
+                  onClick={() => applyGarmentSolid('#ffffff')}
                   className="btn btn-ghost"
                   style={{ width: '100%', justifyContent: 'center', marginTop: 12, fontSize: 12 }}
                 >
-                  Quitar textura (color sólido)
+                  Quitar textura (volver a color liso)
                 </button>
               )}
             </div>
@@ -4760,6 +5025,31 @@ const IconEyedropper = () => (
 const ToolDivider = () => (
   <div style={{ height: 1, width: 24, background: 'var(--line-soft)', margin: '3px 0', flexShrink: 0 }} />
 )
+
+// Miniaturas para el selector de estilo de trazado (Normal / Bordado / Cierre)
+function StrokeStyleIcon({ kind }: { kind: StrokeStyle }) {
+  if (kind === 'normal') return (
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <path d="M2 7 Q10 1 18 7" />
+    </svg>
+  )
+  if (kind === 'bordado') return (
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round">
+      <line x1="3" y1="9" x2="5" y2="4" /><line x1="5" y1="9.5" x2="7" y2="4.5" />
+      <line x1="7" y1="9.5" x2="9" y2="4.5" /><line x1="9" y1="9.3" x2="11" y2="4.3" />
+      <line x1="11" y1="9.5" x2="13" y2="4.5" /><line x1="13" y1="9" x2="15" y2="4" />
+      <line x1="15" y1="8.5" x2="17" y2="4" />
+    </svg>
+  )
+  // cierre
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round">
+      <line x1="9" y1="2" x2="9" y2="12" /><line x1="11" y1="2" x2="11" y2="12" />
+      <line x1="9" y1="3.5" x2="6.5" y2="3.5" /><line x1="11" y1="5.5" x2="13.5" y2="5.5" />
+      <line x1="9" y1="7.5" x2="6.5" y2="7.5" /><line x1="11" y1="9.5" x2="13.5" y2="9.5" />
+    </svg>
+  )
+}
 
 function AlignBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
