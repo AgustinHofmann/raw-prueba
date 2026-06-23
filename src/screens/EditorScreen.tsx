@@ -2,10 +2,10 @@ import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
-import TechPackSheet from '../components/TechPackSheet'
+import TechPackSheet, { type TechPackMeasures } from '../components/TechPackSheet'
 import './EditorScreen.css'
 
-interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
+interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void; techpackEditor: () => void }
 
 interface Props {
   project: Project
@@ -15,6 +15,7 @@ interface Props {
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
   onToast?: (msg: string) => void
+  onOpenTechPack: (data: { garmentImg: string; measures: TechPackMeasures | null }) => void
 }
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
@@ -813,7 +814,7 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady, onToast }: Props) {
+export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady, onToast, onOpenTechPack }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -940,7 +941,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack })
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack, techpackEditor: openTechPackEditor })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3557,10 +3558,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     a.click()
   }
 
-  // Genera un snapshot de la prenda (recortado al mockup) y abre el Tech Pack
-  function openTechPack() {
+  // Genera un snapshot de la prenda recortado al mockup (sin tiradores de medida)
+  function snapshotGarment(): string | null {
     const canvas = fc.current
-    if (!canvas) return
+    if (!canvas) return null
     canvas.discardActiveObject()
     const wasMeasure = measureEditRef.current
     measureEditRef.current = false  // que no salgan los tiradores en la foto
@@ -3575,7 +3576,19 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     }
     const img = canvas.toDataURL(opts)
     measureEditRef.current = wasMeasure
-    setTechPackImg(img)
+    return img
+  }
+
+  // Tech Pack rápido (modal PDF)
+  function openTechPack() {
+    const img = snapshotGarment()
+    if (img) setTechPackImg(img)
+  }
+
+  // Tech Pack completo: abre el editor full-page en otra pestaña interna
+  function openTechPackEditor() {
+    const img = snapshotGarment()
+    if (img) onOpenTechPack({ garmentImg: img, measures: isTee ? measuresRef.current : null })
   }
 
   function resetView() {

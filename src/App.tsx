@@ -10,6 +10,8 @@ import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
 import ExportScreen from './screens/ExportScreen'
 import EditorScreen from './screens/EditorScreen'
+import TechPackScreen from './screens/TechPackScreen'
+import type { TechPackMeasures } from './components/TechPackSheet'
 import NewProjectSheet from './screens/NewProjectSheet'
 import ChromeBar from './components/ChromeBar'
 import Toast from './components/Toast'
@@ -17,7 +19,7 @@ import EasterEgg from './components/EasterEgg'
 import PageTransition from './components/PageTransition'
 import Spotlight from './components/Spotlight'
 
-type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
+type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor' | 'techpack'
 export type Theme = 'dark' | 'light' | 'illustrator'
 
 export default function App() {
@@ -35,7 +37,8 @@ export default function App() {
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
   const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'illustrator')
-  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
+  const [techpackData, setTechpackData] = useState<{ garmentImg: string; measures: TechPackMeasures | null } | null>(null)
+  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void; techpackEditor: () => void } | null>(null)
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)
   useEffect(() => {
@@ -213,6 +216,7 @@ export default function App() {
           onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
           onPlaceImage={(f: File) => editorActionsRef.current?.placeImage(f)}
           onTechPack={() => editorActionsRef.current?.techpack()}
+          onTechPackEditor={() => editorActionsRef.current?.techpackEditor()}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
         />
@@ -238,16 +242,29 @@ export default function App() {
         {route === 'export'   && exportProject && (
           <ExportScreen project={exportProject} onGo={go} onBack={() => go('home')} />
         )}
-        {route === 'editor'   && activeProject && (
-          <EditorScreen
-            key={activeProject.id}
+        {(route === 'editor' || route === 'techpack') && activeProject && (
+          // Se mantiene montado en la pestaña techpack (oculto) para no perder cambios sin guardar
+          <div style={{ position: 'absolute', inset: 0, visibility: route === 'editor' ? 'visible' : 'hidden' }}>
+            <EditorScreen
+              key={activeProject.id}
+              project={activeProject}
+              designer={user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'}
+              onSave={handleSave}
+              saved={saved}
+              onSaveComplete={handleSaveComplete}
+              onActionsReady={a => { editorActionsRef.current = a }}
+              onToast={showToast}
+              onOpenTechPack={data => { setTechpackData(data); go('techpack') }}
+            />
+          </div>
+        )}
+        {route === 'techpack' && activeProject && (
+          <TechPackScreen
             project={activeProject}
             designer={user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'}
-            onSave={handleSave}
-            saved={saved}
-            onSaveComplete={handleSaveComplete}
-            onActionsReady={a => { editorActionsRef.current = a }}
-            onToast={showToast}
+            garmentImg={techpackData?.garmentImg ?? null}
+            measures={techpackData?.measures ?? null}
+            onBack={() => go('editor')}
           />
         )}
       </div>

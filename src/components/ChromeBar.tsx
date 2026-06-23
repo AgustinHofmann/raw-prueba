@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import Logo from './Logo'
 import { Project } from '../types/project'
 
-type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
+type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor' | 'techpack'
 
 interface Props {
   route: Route
@@ -20,6 +20,7 @@ interface Props {
   onImportImage: (f: File) => void
   onPlaceImage: (f: File) => void
   onTechPack: () => void
+  onTechPackEditor: () => void
   onRename: (name: string) => void
   onProfileOpen: () => void
 }
@@ -27,7 +28,7 @@ interface Props {
 export default function ChromeBar({
   route, openTabs, activeProject, saved, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
+  onSave, onExport, onImportImage, onPlaceImage, onTechPack, onTechPackEditor, onRename, onProfileOpen,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -253,7 +254,8 @@ export default function ChromeBar({
                     <div style={{ height: 1, background: 'var(--line-soft)', margin: '4px 0' }} />
                     <MenuItem icon="💾" label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
                     <MenuItem icon="⬇" label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
-                    <MenuItem icon="📄" label="Tech Pack"          hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
+                    <MenuItem icon="📄" label="Tech Pack rápido"   hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
+                    <MenuItem icon="📐" label="Tech Pack — editor"  hint="crear ficha completa" onClick={() => { onTechPackEditor(); setFileMenuOpen(false) }} />
                   </div>
                 </>
               )}
