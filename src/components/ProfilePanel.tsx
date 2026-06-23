@@ -231,9 +231,13 @@ export default function ProfilePanel({ user, projects, theme, onThemeChange, onC
                     <div style={{
                       width: '100%', height: '100%',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 22, color: 'var(--muted-2)',
+                      padding: 10,
                     }}>
-                      {p.mockupId === 'tshirt' ? '👕' : p.mockupId === 'hoodie' ? '🧥' : '👖'}
+                      <img
+                        src={`/mockups/${p.mockupId}.svg`}
+                        alt={p.name}
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', filter: 'drop-shadow(0 3px 8px rgb(0 0 0 / 0.35))' }}
+                      />
                     </div>
                   )}
                   {/* Nombre al hover */}

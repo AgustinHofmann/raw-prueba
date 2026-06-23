@@ -831,6 +831,9 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
+  // Borrador en curso de la pluma (trazo aún no confirmado con Enter): permite que
+  // Ctrl+Z cancele ESE trazo en vez de deshacer lo anterior ya guardado.
+  const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
@@ -1832,6 +1835,15 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         canvas.requestRenderAll()
       }
 
+      // Cancela el trazo en curso (sin guardarlo) — lo usa Ctrl+Z mientras dibujás.
+      const cancelDraft = () => {
+        clearTemp(); clearEdit()
+        anchors.length = 0
+        mouseIsDown = false; draggingHandle = false; isClosing = false
+        canvas.requestRenderAll()
+      }
+      penDraftRef.current = { hasDraft: () => anchors.length > 0, cancel: cancelDraft }
+
       let penCursorCurrent = PEN_CURSOR
       const applyPenCursor = (cur: string) => {
         if (cur === penCursorCurrent) return
@@ -2024,6 +2036,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         clearTemp()
         clearEdit()
         hideSizeCursor()
+        penDraftRef.current = null
       })
     }
 
@@ -3456,6 +3469,9 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       // Ctrl+Z — undo
       if (!e.shiftKey && e.key === 'z') {
         e.preventDefault()
+        // Si hay un trazo de pluma en curso (no confirmado con Enter), Ctrl+Z cancela
+        // ESE trazo en vez de deshacer lo último ya guardado.
+        if (penDraftRef.current?.hasDraft()) { penDraftRef.current.cancel(); return }
         const entry = undoHistory.current.pop()
         if (!entry) return
         if (entry.type === 'add') {
@@ -3593,6 +3609,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     const canvas = fc.current
     if (!canvas) return
     const CW = canvas.getWidth(), CH = canvas.getHeight()
+    // Guardar la tela/color aplicado a cada pieza ANTES de rehacer la remera, para no
+    // perderlo al cambiar las medidas (se restaura por índice — las piezas no cambian de orden).
+    const prevPaint = mockupObjects.current.map(o => ({
+      fill: (o as any).fill, tex: (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
+    }))
     mockupObjects.current.forEach(o => canvas.remove(o))
 
     const shapes = buildTeeShapes(m)
@@ -3604,6 +3625,15 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       ;(p as any)._rawMockup = true
       return p
     })
+    // Restaurar tela/color por pieza
+    if (prevPaint.length === objs.length) {
+      objs.forEach((o, i) => {
+        const pp = prevPaint[i]
+        if (!pp) return
+        if (pp.tex) { setObjTexture(o, pp.tex.kind, pp.tex.colors) }
+        else if (typeof pp.fill === 'string' && pp.fill !== '') { o.set({ fill: pp.fill }) }
+      })
+    }
     // Escala FIJA calculada con las medidas por defecto (una sola vez): así al cambiar
     // una medida el tamaño en pantalla refleja los cm reales (alargar = más largo, no más fino).
     if (!teeFitRef.current) {
@@ -4516,19 +4546,6 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                   {mockupLocked ? '🖌  Pintar una pieza puntual' : '✓  Terminar (volver a toda la prenda)'}
                 </button>
               )}
-
-              {/* Color liso de la prenda (o de lo seleccionado) */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                <label style={{ position: 'relative', cursor: 'pointer' }}>
-                  <input type="color" defaultValue="#ffffff"
-                    onChange={e => applyGarmentSolid(e.target.value)}
-                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                  <div style={{ width: 30, height: 30, borderRadius: 8,
-                    background: 'conic-gradient(from 90deg, #f43f5e, #f59e0b, #eab308, #22c55e, #06b6d4, #6366f1, #d946ef, #f43f5e)',
-                    border: '2px solid var(--line)' }} />
-                </label>
-                <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color liso</span>
-              </div>
 
               <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
