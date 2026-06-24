@@ -33,17 +33,52 @@ export default function HomeScreen({
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete]         = useState<Project | null>(null)
   const [pendingDeleteFolder, setPendingDeleteFolder] = useState<Folder | null>(null)
+  // Multi-selección
+  const [selectMode, setSelectMode]       = useState(false)
+  const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set())
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false)
+  const [showBulkMove, setShowBulkMove]   = useState(false)
   const importRef      = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
-  // Ctrl+N → nuevo proyecto
+  // Ctrl+N → nuevo proyecto · Escape → salir del modo selección
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); onNewProject() }
+      if (e.key === 'Escape' && selectMode) { e.preventDefault(); exitSelectMode() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onNewProject])
+  }, [onNewProject, selectMode])
+
+  function enterSelectMode(id?: string) {
+    setSelectMode(true)
+    if (id) setSelectedIds(new Set([id]))
+  }
+  function exitSelectMode() {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+    setShowBulkMove(false)
+  }
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  function bulkDelete() {
+    selectedIds.forEach(id => onDeleteProject(id))
+    setPendingBulkDelete(false)
+    exitSelectMode()
+  }
+  function bulkMove(folderId: string | null) {
+    selectedIds.forEach(id => onMoveProject(id, folderId))
+    exitSelectMode()
+  }
+  function bulkExport() {
+    projects.filter(p => selectedIds.has(p.id)).forEach(exportProjectFile)
+  }
 
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -174,17 +209,27 @@ export default function HomeScreen({
               Tu archivo.
             </h1>
           )}
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar proyectos..."
-            style={{
-              height: 36, padding: '0 14px', borderRadius: 8,
-              background: 'var(--surface)', border: '1px solid var(--line)',
-              color: 'var(--fg)', fontFamily: 'var(--ui)', fontSize: 12,
-              outline: 'none', width: 220,
-            }}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar proyectos..."
+              style={{
+                height: 36, padding: '0 14px', borderRadius: 8,
+                background: 'var(--surface)', border: '1px solid var(--line)',
+                color: 'var(--fg)', fontFamily: 'var(--ui)', fontSize: 12,
+                outline: 'none', width: 220,
+              }}
+            />
+            <button
+              onClick={() => selectMode ? exitSelectMode() : enterSelectMode()}
+              className={selectMode ? 'btn btn-primary' : 'btn btn-ghost'}
+              style={{ height: 36, padding: '0 14px', fontSize: 12, whiteSpace: 'nowrap' }}
+              title="Seleccionar varios proyectos"
+            >
+              {selectMode ? 'Cancelar' : 'Seleccionar'}
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -259,7 +304,11 @@ export default function HomeScreen({
                 project={p}
                 folders={folders}
                 delay={(visibleFolders.length + i) * 0.03}
+                selectMode={selectMode}
+                selected={selectedIds.has(p.id)}
                 onClick={() => onOpenProject(p)}
+                onToggleSelect={() => toggleSelect(p.id)}
+                onLongPress={() => enterSelectMode(p.id)}
                 onDelete={() => setPendingDelete(p)}
                 onMove={folderId => onMoveProject(p.id, folderId)}
                 onDragStart={e => {
@@ -383,6 +432,167 @@ export default function HomeScreen({
           </div>
         </div>
       )}
+
+      {/* Barra de acciones de selección múltiple */}
+      {selectMode && (
+        <div style={{
+          position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)',
+          zIndex: 150, display: 'flex', alignItems: 'center', gap: 6,
+          background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14,
+          padding: '8px 10px', boxShadow: 'var(--shadow-lg)',
+          animation: 'rise 0.2s var(--ease) both',
+        }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)', padding: '0 8px', whiteSpace: 'nowrap' }}>
+            {selectedIds.size} {selectedIds.size === 1 ? 'seleccionado' : 'seleccionados'}
+          </span>
+
+          <button
+            onClick={() => {
+              const allSelected = visibleProjects.length > 0 && visibleProjects.every(p => selectedIds.has(p.id))
+              setSelectedIds(allSelected ? new Set() : new Set(visibleProjects.map(p => p.id)))
+            }}
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: '7px 12px', whiteSpace: 'nowrap' }}
+          >
+            {visibleProjects.length > 0 && visibleProjects.every(p => selectedIds.has(p.id)) ? 'Ninguno' : 'Todos'}
+          </button>
+
+          <div style={{ width: 1, height: 22, background: 'var(--line)', margin: '0 2px' }} />
+
+          {/* Mover a carpeta */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowBulkMove(v => !v)}
+              disabled={selectedIds.size === 0}
+              className="btn btn-ghost"
+              style={{ fontSize: 12, padding: '7px 12px', whiteSpace: 'nowrap', opacity: selectedIds.size === 0 ? 0.4 : 1 }}
+            >
+              Mover
+            </button>
+            {showBulkMove && selectedIds.size > 0 && (
+              <div style={{
+                position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 10,
+                background: 'var(--bg)', border: '1px solid var(--line)',
+                borderRadius: 8, overflow: 'hidden', minWidth: 160,
+                boxShadow: 'var(--shadow-lg)', maxHeight: 240, overflowY: 'auto',
+              }}>
+                <button
+                  onClick={() => bulkMove(null)}
+                  style={{
+                    width: '100%', padding: '9px 12px', background: 'none', border: 'none',
+                    color: 'var(--muted)', fontSize: 11, fontFamily: 'var(--ui)',
+                    cursor: 'pointer', textAlign: 'left', borderBottom: '1px solid var(--line-soft)',
+                  }}
+                >
+                  Sin carpeta
+                </button>
+                {folders.length === 0 ? (
+                  <div style={{ padding: '9px 12px', fontSize: 11, color: 'var(--muted)' }}>No hay carpetas</div>
+                ) : folders.map(f => (
+                  <button
+                    key={f.id}
+                    onClick={() => bulkMove(f.id)}
+                    style={{
+                      width: '100%', padding: '9px 12px', background: 'none', border: 'none',
+                      color: 'var(--fg)', fontSize: 11, fontFamily: 'var(--ui)',
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                  >
+                    📁 {f.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => { bulkExport(); }}
+            disabled={selectedIds.size === 0}
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: '7px 12px', whiteSpace: 'nowrap', opacity: selectedIds.size === 0 ? 0.4 : 1 }}
+          >
+            Exportar
+          </button>
+
+          <button
+            onClick={() => setPendingBulkDelete(true)}
+            disabled={selectedIds.size === 0}
+            style={{
+              fontSize: 12, padding: '7px 12px', borderRadius: 8, whiteSpace: 'nowrap',
+              background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--ui)',
+              color: 'var(--danger, #e53935)', opacity: selectedIds.size === 0 ? 0.4 : 1,
+            }}
+          >
+            Eliminar
+          </button>
+
+          <div style={{ width: 1, height: 22, background: 'var(--line)', margin: '0 2px' }} />
+
+          <button
+            onClick={exitSelectMode}
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: '7px 12px', whiteSpace: 'nowrap' }}
+          >
+            Listo
+          </button>
+        </div>
+      )}
+
+      {/* Confirmación de borrado masivo */}
+      {pendingBulkDelete && (
+        <div
+          onClick={() => setPendingBulkDelete(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgb(0 0 0 / 0.5)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'rise 0.15s var(--ease) both',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg)', border: '1px solid var(--line)',
+              borderRadius: 16, padding: '28px 32px', width: 340,
+              display: 'flex', flexDirection: 'column', gap: 20,
+              boxShadow: 'var(--shadow-lg)',
+              animation: 'rise 0.2s var(--ease) both',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', marginBottom: 6 }}>
+                ¿Eliminar {selectedIds.size} {selectedIds.size === 1 ? 'proyecto' : 'proyectos'}?
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+                Se eliminarán permanentemente. Esta acción no se puede deshacer.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingBulkDelete(false)}
+                className="btn btn-ghost"
+                style={{ fontSize: 12, padding: '7px 16px' }}
+                autoFocus
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={bulkDelete}
+                style={{
+                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  background: 'var(--danger, #e53935)', border: 'none',
+                  color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
+                  transition: 'opacity 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -456,11 +666,15 @@ function FolderCard({ folder, projectCount, delay, isDragOver, onClick, onDelete
   )
 }
 
-function ProjectCard({ project: p, folders, delay, onClick, onDelete, onMove, onDragStart }: {
+function ProjectCard({ project: p, folders, delay, selectMode, selected, onClick, onToggleSelect, onLongPress, onDelete, onMove, onDragStart }: {
   project: Project
   folders: Folder[]
   delay: number
+  selectMode: boolean
+  selected: boolean
   onClick: () => void
+  onToggleSelect: () => void
+  onLongPress: () => void
   onDelete: () => void
   onMove: (folderId: string | null) => void
   onDragStart: (e: React.DragEvent) => void
@@ -468,27 +682,67 @@ function ProjectCard({ project: p, folders, delay, onClick, onDelete, onMove, on
   const [hover, setHover]           = useState(false)
   const [showMoveMenu, setShowMoveMenu] = useState(false)
   const [dragging, setDragging]     = useState(false)
+  const longPressTimer = useRef<number | null>(null)
+  const suppressClick  = useRef(false)
+  const startPos       = useRef<{ x: number; y: number } | null>(null)
   const gradient = p.colors?.length >= 2
     ? `linear-gradient(135deg, ${p.colors[0]}, ${p.colors[1]})`
     : 'var(--surface)'
 
+  function clearLongPress() {
+    if (longPressTimer.current !== null) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+    startPos.current = null
+  }
+  function onPointerDown(e: React.PointerEvent) {
+    suppressClick.current = false     // nuevo toque → limpia flag viejo (importante en táctil)
+    if (selectMode) return            // en modo selección el click ya togglea
+    startPos.current = { x: e.clientX, y: e.clientY }
+    longPressTimer.current = window.setTimeout(() => {
+      suppressClick.current = true     // evita que el click posterior abra el proyecto
+      onLongPress()
+      clearLongPress()
+    }, 450)
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    if (!startPos.current) return
+    const dx = Math.abs(e.clientX - startPos.current.x)
+    const dy = Math.abs(e.clientY - startPos.current.y)
+    if (dx > 8 || dy > 8) clearLongPress()   // se movió → es drag/scroll, no long-press
+  }
+  function handleClick() {
+    if (suppressClick.current) { suppressClick.current = false; return }
+    if (selectMode) onToggleSelect()
+    else onClick()
+  }
+
   return (
     <div
-      draggable
-      onClick={onClick}
+      draggable={!selectMode}
+      onClick={handleClick}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={clearLongPress}
+      onPointerLeave={clearLongPress}
+      onContextMenu={e => { if (selectMode) e.preventDefault() }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => { setHover(false); setShowMoveMenu(false) }}
       onDragStart={e => { setDragging(true); onDragStart(e) }}
       onDragEnd={() => setDragging(false)}
       style={{
         borderRadius: 12, overflow: 'hidden', cursor: dragging ? 'grabbing' : 'pointer',
-        border: '1px solid ' + (hover ? 'var(--accent)' : 'var(--line)'),
+        border: '1px solid ' + (selected ? 'var(--accent)' : hover ? 'var(--accent)' : 'var(--line)'),
         transition: 'all 0.2s var(--ease)',
         transform: hover && !dragging ? 'translateY(-2px)' : 'none',
-        boxShadow: hover && !dragging ? 'var(--shadow-lg)' : 'none',
+        boxShadow: selected
+          ? '0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent)'
+          : hover && !dragging ? 'var(--shadow-lg)' : 'none',
         opacity: dragging ? 0.4 : 1,
         animation: `rise 0.5s var(--ease) ${delay}s both`,
         position: 'relative',
+        userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation',
       }}
     >
       <div style={{
@@ -496,10 +750,21 @@ function ProjectCard({ project: p, folders, delay, onClick, onDelete, onMove, on
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         {p.thumbnail
-          ? <img src={p.thumbnail} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" />
-          : <img src={`/mockups/${p.mockupId}.svg`} style={{ width: 60, height: 60, objectFit: 'contain', filter: 'drop-shadow(0 4px 12px rgb(0 0 0 / 0.3))' }} alt="" />
+          ? <img src={p.thumbnail} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" />
+          : <img src={`/mockups/${p.mockupId}.svg`} draggable={false} style={{ width: 60, height: 60, objectFit: 'contain', filter: 'drop-shadow(0 4px 12px rgb(0 0 0 / 0.3))' }} alt="" />
         }
-        {hover && !dragging && (
+        {/* Indicador de selección (círculo / check) */}
+        {selectMode && (
+          <div style={{
+            position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: selected ? 'var(--accent)' : 'rgb(0 0 0 / 0.45)',
+            border: '2px solid ' + (selected ? 'var(--accent)' : '#fff'),
+            color: selected ? '#0a0a0a' : 'transparent', fontSize: 12, fontWeight: 700,
+            backdropFilter: 'blur(4px)', transition: 'all 0.15s',
+          }}>✓</div>
+        )}
+        {hover && !dragging && !selectMode && (
           <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 4 }}>
             <button
               onClick={e => { e.stopPropagation(); exportProjectFile(p) }}

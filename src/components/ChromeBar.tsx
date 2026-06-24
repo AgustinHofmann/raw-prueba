@@ -1,19 +1,19 @@
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
-import { Project } from '../types/project'
+import { Project, Tab, tabKey } from '../types/project'
 
-type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
+type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor' | 'techpack'
 
 interface Props {
   route: Route
-  openTabs: Project[]
+  openTabs: Tab[]
   activeProject: Project | null
   saved: boolean
   email: string
   avatarUrl?: string
   onHome: () => void
-  onTabClick: (p: Project) => void
-  onTabClose: (id: string) => void
+  onTabClick: (t: Tab) => void
+  onTabClose: (t: Tab) => void
   onNewProject: () => void
   onSave: () => void
   onExport: () => void
@@ -146,29 +146,35 @@ export default function ChromeBar({
       {/* Tabs */}
       <div className="scroll-hide" style={{ flex: 1, display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
         {openTabs.map(t => {
-          const active = activeProject?.id === t.id && isEditor
+          const active = activeProject?.id === t.project.id && route === t.kind
+          const isTP = t.kind === 'techpack'
           return (
             <button
-              key={t.id}
+              key={tabKey(t)}
               onClick={() => onTabClick(t)}
+              title={isTP ? `Ficha técnica · ${t.project.name}` : t.project.name}
               style={{
                 height: '100%', padding: '0 8px 0 14px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
                 borderLeft: '1px solid var(--line-soft)',
                 borderRight: 'none', borderTop: 'none',
-                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                borderBottom: active
+                  ? `2px ${isTP ? 'dashed' : 'solid'} var(--accent)`
+                  : '2px solid transparent',
                 borderRadius: 0,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
                 fontSize: 12, fontFamily: 'var(--ui)', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 160,
+                whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 170,
               }}
               onMouseEnter={e => { if (!active) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' }}}
               onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-2)' }}}
             >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 96 }}>{t.name}</span>
+              {isTP && <span style={{ fontSize: 11, flexShrink: 0 }}>📄</span>}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 96 }}>{t.project.name}</span>
+              {isTP && <span className="mono" style={{ fontSize: 8, color: 'var(--muted)', flexShrink: 0, letterSpacing: '0.04em' }}>TP</span>}
               <span
-                onClick={e => { e.stopPropagation(); onTabClose(t.id) }}
+                onClick={e => { e.stopPropagation(); onTabClose(t) }}
                 style={{ fontSize: 10, color: 'var(--muted)', padding: '1px 3px', lineHeight: 1, flexShrink: 0 }}
               >✕</span>
             </button>

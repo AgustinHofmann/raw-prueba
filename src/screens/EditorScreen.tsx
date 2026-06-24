@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project } from '../types/project'
+import { Project, TechPackMeasures } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
-import TechPackSheet from '../components/TechPackSheet'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -14,6 +13,7 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
+  onOpenTechPack: (snapshot: string, measures: TechPackMeasures | null) => void
   onToast?: (msg: string) => void
 }
 
@@ -813,7 +813,7 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady, onToast }: Props) {
+export default function EditorScreen({ project, onSave, saved, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -881,7 +881,6 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
   const measureEditRef = useRef(false)
-  const [techPackImg,    setTechPackImg]    = useState<string | null>(null)  // snapshot para el tech pack
   const isTee = project.mockupId === 'tshirt'
   useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
   // Salir del modo tiradores si cambiás de herramienta o de pestaña
@@ -3575,7 +3574,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     }
     const img = canvas.toDataURL(opts)
     measureEditRef.current = wasMeasure
-    setTechPackImg(img)
+    onOpenTechPack(img, isTee ? measures : null)
   }
 
   function resetView() {
@@ -4628,17 +4627,6 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         style={{ display: 'none' }}
         onChange={handleFontUpload}
       />
-
-      {/* Tech Pack */}
-      {techPackImg && (
-        <TechPackSheet
-          project={project}
-          designer={designer}
-          garmentImg={techPackImg}
-          measures={isTee ? measures : null}
-          onClose={() => setTechPackImg(null)}
-        />
-      )}
 
       {/* Menú contextual (click derecho) */}
       {ctxMenu && (() => {
