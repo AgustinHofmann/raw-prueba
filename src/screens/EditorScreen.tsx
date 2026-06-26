@@ -1058,9 +1058,11 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         if (vpt) {
           vpt[4] += (w - oldW) / 2
           vpt[5] += (h - oldH) / 2
-          canvas.setViewportTransform(vpt)
         }
-        canvas.requestRenderAll()
+        // Redibujado SINCRONO en el mismo frame: setDimensions vacía el bitmap del canvas
+        // (al cambiar canvas.width). Si difiriéramos el render (requestRenderAll) se vería un
+        // frame en blanco en cada paso del arrastre -> la prenda "titila". renderAll() lo evita.
+        canvas.renderAll()
       })
       ro.observe(area)
     }
