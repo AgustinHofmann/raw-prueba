@@ -24,11 +24,36 @@ export async function fetchProjectCanvas(id: string): Promise<string | null> {
   return (data as Record<string, unknown>)?.canvas_json as string | null
 }
 
+// Carga el techpack_json (ficha técnica) de forma lazy al abrir la pestaña.
+// Tolera que la columna no exista todavía (migración pendiente) → devuelve null.
+export async function fetchProjectTechpack(id: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from('projects')
+      .select('techpack_json')
+      .eq('id', id)
+      .single()
+    if (error) throw error
+    return ((data as Record<string, unknown>)?.techpack_json as string | null) ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function upsertProject(p: Project, userId?: string): Promise<void> {
   const { error } = await supabase.from('projects').upsert({
     ...projectToRow(p),
     ...(userId ? { user_id: userId } : {}),
   })
+  if (error) throw error
+}
+
+// Guarda solo techpack_json. Falla silenciosamente si la columna no existe aún.
+export async function saveTechpackJson(id: string, json: string): Promise<void> {
+  const { error } = await supabase
+    .from('projects')
+    .update({ techpack_json: json, updated_at: Date.now() })
+    .eq('id', id)
   if (error) throw error
 }
 
@@ -70,6 +95,7 @@ function rowToProject(row: Record<string, unknown>): Project {
     mockupId:   row.mockup_id   as Project['mockupId'],
     thumbnail:  row.thumbnail   as string | null,
     canvasJson: row.canvas_json as string | null,
+    techpackJson: ((row.techpack_json as string | null) ?? null),
     colors:     (row.colors     as string[]) ?? [],
     tag:        (row.tag        as string)   ?? '',
     folderId:   row.folder_id   as string | null,

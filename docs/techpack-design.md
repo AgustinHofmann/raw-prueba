@@ -1,5 +1,19 @@
 # RAW — Tech Pack Mode: Design & Build Document
 
+> **Estado de implementación (v2 — rediseño multipágina apaisado):**
+> Tras el feedback ("ficha horizontal multipágina para fábrica, UI menos cargada"), se rehízo el modelo de **secciones apiladas (1 hoja vertical)** a **páginas A4 apaisadas**, una por propósito.
+> - **Modelo:** `TechPackDoc.pages: TechPackPage[]` (`design | specs | measures | materials | colorways | notes`), `meta` reducido a lo relevante para fábrica (para quién, tela principal, talle base, rango — sin drop/temporada), imágenes por rol (`front/back/specs/measures`) para separar anotaciones por página.
+> - **UI:** íconos Lucide (`lucide-react`), riel de páginas reordenable con `@dnd-kit`, una **única** barra de anotaciones flotante compacta (en vez de 2 filas de botones), zoom, barra superior limpia.
+> - **Páginas por defecto:** Diseño (frente/espalda) · Especificaciones (vista + construcción + materiales principales) · Tabla de medidas (POM + flat acotado) · Materiales (BOM). Agregables: Colorways, Notas.
+> - **Anotaciones** (`AnnotationLayer`): flechas, líneas guía, callouts numerados, burbujas; ancladas en coords normalizadas (0..1), punta y caja arrastrables, categorías, sólido/punteado, eliminar.
+> - **Export PDF:** `window.print()` con `@page A4 landscape` y salto por página (`break-after: page`); cada página imprime en su propia hoja; el zoom no afecta la impresión.
+>
+> Typecheck sin errores nuevos (quedan los 26 pre-existentes de `EditorScreen`/`NewProjectModal`); Vite transforma todo (lucide + dnd-kit incluidos). **Paso manual pendiente:** correr `supabase/migration_add_techpack.sql` en Supabase → SQL Editor para que la ficha persista.
+>
+> _Nota: el diseño original abajo describe la v1 (secciones verticales); se conserva como referencia. La v2 reemplaza §1–§2 por el modelo de páginas descrito arriba._
+
+
+
 **Scope:** A full, editable, professional Tech Pack workspace that opens as an internal application tab (not a browser tab), runs in parallel with the garment editor, and lets a designer document a remera / hoodie / pantalón for factories — editable sections, BOM, measurements, image place/replace/scale/move, reorderable blocks, and garment-anchored visual annotations (arrows, leader lines, numbered callouts, detail bubbles).
 
 **Verified codebase baseline:** `Route` is `'onboard' | 'home' | 'library' | 'export' | 'editor'` (`src/App.tsx:20`); tabs are `Project[]` (`src/App.tsx:31`); `mockupId: 'tshirt' | 'hoodie' | 'pants'` (`src/types/project.ts:3`); `TechPackMeasures` already lives in `src/components/TechPackSheet.tsx:3-7`; the sheet's `bom`/`notes` are ephemeral `useState` (`TechPackSheet.tsx:28-29`); persistence is hand-mapped camelCase↔snake_case in `src/lib/db.ts`, with `canvas_json` lazy-loaded.

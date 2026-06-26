@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { Project, Folder, Tab, tabKey, TechPackMeasures } from './types/project'
-import { fetchProjects, fetchProjectCanvas, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+import { Project, Folder, Tab, tabKey, TechPackMeasures, TechPackDoc } from './types/project'
+import { fetchProjects, fetchProjectCanvas, fetchProjectTechpack, upsertProject, saveTechpackJson, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
 import AuthScreen from './screens/AuthScreen'
 import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
@@ -94,9 +94,18 @@ export default function App() {
 
   // Abre (o reenfoca y refresca) la pestaña de ficha técnica del proyecto activo,
   // en paralelo con el editor. La llama EditorScreen vía onOpenTechPack.
-  function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
-    const project = activeProject
-    if (!project) return
+  async function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
+    const base = activeProject
+    if (!base) return
+    // Carga lazy del documento guardado (si la columna no existe aún, vuelve null)
+    let project = base
+    if (project.techpackJson == null) {
+      const techpackJson = await fetchProjectTechpack(project.id)
+      if (techpackJson != null) {
+        project = { ...project, techpackJson }
+        setProjects(prev => prev.map(x => x.id === project.id ? project : x))
+      }
+    }
     setOpenTabs(prev => {
       const exists = prev.some(t => t.kind === 'techpack' && t.project.id === project.id)
       if (exists) {
@@ -109,6 +118,20 @@ export default function App() {
     })
     setActive(project)
     go('techpack')
+  }
+
+  // Persiste el documento de ficha técnica del proyecto activo
+  async function handleSaveTechPack(doc: TechPackDoc) {
+    const base = activeProject
+    if (!base) return
+    const json = JSON.stringify(doc)
+    const updated = { ...base, techpackJson: json, updatedAt: Date.now() }
+    setActive(updated)
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
+    setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
+    // Guarda solo techpack_json; si la columna no existe aún, falla en silencio
+    // (el doc queda en memoria para la sesión; se persiste una vez corrida la migración).
+    try { await saveTechpackJson(base.id, json) } catch { /* migración pendiente */ }
   }
 
   // Activa una pestaña (editor o ficha técnica): proyecto activo + ruta correspondiente
@@ -283,17 +306,19 @@ export default function App() {
           <ExportScreen project={exportProject} onGo={go} onBack={() => go('home')} />
         )}
         {(route === 'editor' || route === 'techpack') && activeProject && hasEditorTab && (
-          <EditorScreen
-            key={activeProject.id}
-            project={activeProject}
-            designer={designerName}
-            onSave={handleSave}
-            saved={saved}
-            onSaveComplete={handleSaveComplete}
-            onActionsReady={a => { editorActionsRef.current = a }}
-            onOpenTechPack={openTechPackTab}
-            onToast={showToast}
-          />
+          <div style={{ display: route === 'techpack' ? 'none' : 'contents' }}>
+            <EditorScreen
+              key={activeProject.id}
+              project={activeProject}
+              designer={designerName}
+              onSave={handleSave}
+              saved={saved}
+              onSaveComplete={handleSaveComplete}
+              onActionsReady={a => { editorActionsRef.current = a }}
+              onOpenTechPack={openTechPackTab}
+              onToast={showToast}
+            />
+          </div>
         )}
         {route === 'techpack' && techPackTab && (
           <TechPackScreen
@@ -302,8 +327,10 @@ export default function App() {
             designer={designerName}
             snapshot={techPackTab.snapshot}
             measures={techPackTab.measures}
+            onSave={handleSaveTechPack}
             onBackToEditor={() => openProject(techPackTab.project)}
             onClose={() => closeTab(techPackTab)}
+            onToast={showToast}
           />
         )}
       </div>
