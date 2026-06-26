@@ -36,8 +36,8 @@ export default function ChromeBar({
   const isEditor = route === 'editor' && activeProject !== null
 
   // En pantalla completa la barra crece para aprovechar el espacio y verse más cómoda
-  const barH    = isFullscreen ? 56 : 40
-  const fsScale = isFullscreen ? 1.18 : 1
+  const barH    = isFullscreen ? 66 : 54
+  const fsScale = isFullscreen ? 1.18 : 1.08
 
   // Abre el selector de archivos y ejecuta la acción elegida (importar / calco).
   // El diálogo nativo puede sacar la pantalla completa (API): intentamos re-entrar al volver.
@@ -93,8 +93,8 @@ export default function ChromeBar({
 
       {/* Left: logo clickeable + slogan + home button */}
       <div style={{
-        width: 200, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 12, gap: 0, overflow: 'hidden',
+        width: 236, flexShrink: 0, display: 'flex', alignItems: 'center',
+        paddingLeft: 16, gap: 0, overflow: 'hidden',
       }}>
         <button
           onClick={onHome}
@@ -107,12 +107,12 @@ export default function ChromeBar({
           onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
           onMouseLeave={e => e.currentTarget.style.opacity = '1'}
         >
-          <Logo size={22} />
+          <Logo size={27} />
         </button>
 
         <span style={{
-          flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
-          fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+          flex: 1, marginLeft: 12, paddingLeft: 12, minWidth: 0,
+          fontSize: 10, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
           letterSpacing: '0.02em', lineHeight: 1.3,
           borderLeft: '1px solid var(--line-soft)',
           overflow: 'hidden',
@@ -124,15 +124,15 @@ export default function ChromeBar({
         <button
           onClick={onHome}
           style={{
-            flexShrink: 0, height: '100%', padding: '0 10px',
+            flexShrink: 0, height: '100%', padding: '0 14px',
             background: route === 'home' ? 'var(--surface)' : 'transparent',
             borderLeft: '1px solid ' + (route === 'home' ? 'var(--line-soft)' : 'transparent'),
             borderRight: 'none', borderTop: 'none', borderBottom: 'none',
             borderRadius: 0,
             color: route === 'home' ? 'var(--fg)' : 'var(--fg-2)',
-            fontSize: 12, fontFamily: 'var(--ui)', cursor: 'pointer',
+            fontSize: 14, fontFamily: 'var(--ui)', cursor: 'pointer',
             whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)',
-            display: 'flex', alignItems: 'center', gap: 5,
+            display: 'flex', alignItems: 'center', gap: 6,
           }}
           onMouseEnter={e => { if (route !== 'home') e.currentTarget.style.color = 'var(--fg)' }}
           onMouseLeave={e => { if (route !== 'home') e.currentTarget.style.color = 'var(--fg-2)' }}
@@ -154,7 +154,7 @@ export default function ChromeBar({
               onClick={() => onTabClick(t)}
               title={isTP ? `Ficha técnica · ${t.project.name}` : t.project.name}
               style={{
-                height: '100%', padding: '0 8px 0 14px', flexShrink: 0,
+                height: '100%', padding: '0 10px 0 16px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
                 borderLeft: '1px solid var(--line-soft)',
                 borderRight: 'none', borderTop: 'none',
@@ -163,15 +163,15 @@ export default function ChromeBar({
                   : '2px solid transparent',
                 borderRadius: 0,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
-                fontSize: 12, fontFamily: 'var(--ui)', cursor: 'pointer',
+                fontSize: 13, fontFamily: 'var(--ui)', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 170,
+                whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 190,
               }}
               onMouseEnter={e => { if (!active) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' }}}
               onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-2)' }}}
             >
               {isTP && <span style={{ fontSize: 11, flexShrink: 0 }}>📄</span>}
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 96 }}>{t.project.name}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 112 }}>{t.project.name}</span>
               {isTP && <span className="mono" style={{ fontSize: 8, color: 'var(--muted)', flexShrink: 0, letterSpacing: '0.04em' }}>TP</span>}
               <span
                 onClick={e => { e.stopPropagation(); onTabClose(t) }}
@@ -184,11 +184,11 @@ export default function ChromeBar({
         <button
           onClick={onNewProject}
           style={{
-            width: 36, height: '100%', flexShrink: 0,
+            width: 42, height: '100%', flexShrink: 0,
             background: 'transparent', borderRadius: 0,
             borderLeft: '1px solid var(--line-soft)', borderRight: 'none',
             borderTop: 'none', borderBottom: '2px solid transparent',
-            color: 'var(--muted)', fontSize: 18, cursor: 'pointer',
+            color: 'var(--muted)', fontSize: 22, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             transition: 'all 0.15s var(--ease)',
           }}
@@ -198,7 +198,7 @@ export default function ChromeBar({
       </div>
 
       {/* Right: controles editor + avatar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 10, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 14, flexShrink: 0 }}>
 
         {isEditor && (
           <>
@@ -272,10 +272,10 @@ export default function ChromeBar({
           onClick={toggleFullscreen}
           title={isFullscreen ? 'Salir de pantalla completa (F11)' : 'Pantalla completa (F11)'}
           style={{
-            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+            width: 32, height: 32, borderRadius: 7, flexShrink: 0,
             background: 'transparent', border: '1px solid var(--line)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', color: 'var(--fg-2)', padding: 0, fontSize: 14,
+            cursor: 'pointer', color: 'var(--fg-2)', padding: 0, fontSize: 16,
             transition: 'all 0.15s var(--ease)',
           }}
           onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
@@ -289,7 +289,7 @@ export default function ChromeBar({
           onClick={onProfileOpen}
           title={email}
           style={{
-            width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+            width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
             background: 'color-mix(in oklch, var(--accent) 18%, var(--surface))',
             border: '1.5px solid color-mix(in oklch, var(--accent) 50%, var(--line))',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -303,7 +303,7 @@ export default function ChromeBar({
           {avatarUrl ? (
             <img src={avatarUrl} alt="" referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : (
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--ui)' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--ui)' }}>
               {initial}
             </span>
           )}
