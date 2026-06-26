@@ -845,22 +845,26 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
   // Ancho del panel de propiedades, redimensionable arrastrando su borde izquierdo (estilo Illustrator).
   const RIGHT_MIN = 200, RIGHT_MAX = 520
+  const rightPanelRef = useRef<HTMLElement>(null)
   const [rightPanelW, setRightPanelW] = useState<number>(() => {
     const saved = Number(localStorage.getItem('raw.rightPanelW'))
     return saved >= RIGHT_MIN && saved <= RIGHT_MAX ? saved : 232
   })
   const [resizingPanel, setResizingPanel] = useState(false)
   // Arrastre del divisor: el ancho crece al mover el mouse hacia la izquierda.
+  // Durante el arrastre cambiamos el ancho por DOM directo (sin setState por frame, así
+  // no re-renderiza todo el editor ni parpadea el canvas). Al soltar, recién, persistimos.
   function startPanelResize(e: React.PointerEvent) {
     e.preventDefault()
     const startX = e.clientX
-    const startW = rightPanelW
+    const startW = rightPanelRef.current?.offsetWidth ?? rightPanelW
+    let finalW = startW
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     setResizingPanel(true)
     const onMove = (ev: PointerEvent) => {
-      const next = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, startW + (startX - ev.clientX)))
-      setRightPanelW(next)
+      finalW = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, Math.round(startW + (startX - ev.clientX))))
+      if (rightPanelRef.current) rightPanelRef.current.style.width = finalW + 'px'
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMove)
@@ -868,7 +872,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       setResizingPanel(false)
-      setRightPanelW(w => { localStorage.setItem('raw.rightPanelW', String(w)); return w })
+      setRightPanelW(finalW)
+      localStorage.setItem('raw.rightPanelW', String(finalW))
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -4094,16 +4099,15 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         </main>
 
         {/* Right panel — redimensionable arrastrando el borde izquierdo (estilo Illustrator) */}
-        <aside style={{
+        <aside ref={rightPanelRef as RefObject<HTMLElement>} style={{
           width: rightPanelW, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
           display: 'flex', flexDirection: 'column', background: 'var(--bg)',
           position: 'relative',
-          transition: resizingPanel ? 'none' : 'width 0.12s var(--ease)',
         }}>
           {/* Tirador de redimensión: franja fina sobre el borde izquierdo */}
           <div
             onPointerDown={startPanelResize}
-            onDoubleClick={() => { setRightPanelW(232); localStorage.setItem('raw.rightPanelW', '232') }}
+            onDoubleClick={() => { if (rightPanelRef.current) rightPanelRef.current.style.width = '232px'; setRightPanelW(232); localStorage.setItem('raw.rightPanelW', '232') }}
             title="Arrastrar para cambiar el ancho · doble click para restablecer"
             style={{
               position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, zIndex: 30,
