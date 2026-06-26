@@ -843,6 +843,36 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
+  // Ancho del panel de propiedades, redimensionable arrastrando su borde izquierdo (estilo Illustrator).
+  const RIGHT_MIN = 200, RIGHT_MAX = 520
+  const [rightPanelW, setRightPanelW] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('raw.rightPanelW'))
+    return saved >= RIGHT_MIN && saved <= RIGHT_MAX ? saved : 232
+  })
+  const [resizingPanel, setResizingPanel] = useState(false)
+  // Arrastre del divisor: el ancho crece al mover el mouse hacia la izquierda.
+  function startPanelResize(e: React.PointerEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = rightPanelW
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    setResizingPanel(true)
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, startW + (startX - ev.clientX)))
+      setRightPanelW(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setResizingPanel(false)
+      setRightPanelW(w => { localStorage.setItem('raw.rightPanelW', String(w)); return w })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
   // Paleta de color editable por textura + cuál textura tiene el editor abierto
   const [texColors, setTexColors] = useState<Record<TextureKind, string[]>>(() =>
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
@@ -4063,11 +4093,27 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           )}
         </main>
 
-        {/* Right panel */}
+        {/* Right panel — redimensionable arrastrando el borde izquierdo (estilo Illustrator) */}
         <aside style={{
-          width: 232, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
+          width: rightPanelW, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
           display: 'flex', flexDirection: 'column', background: 'var(--bg)',
+          position: 'relative',
+          transition: resizingPanel ? 'none' : 'width 0.12s var(--ease)',
         }}>
+          {/* Tirador de redimensión: franja fina sobre el borde izquierdo */}
+          <div
+            onPointerDown={startPanelResize}
+            onDoubleClick={() => { setRightPanelW(232); localStorage.setItem('raw.rightPanelW', '232') }}
+            title="Arrastrar para cambiar el ancho · doble click para restablecer"
+            style={{
+              position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, zIndex: 30,
+              cursor: 'col-resize', touchAction: 'none',
+              background: resizingPanel ? 'var(--accent)' : 'transparent',
+              transition: 'background 0.12s var(--ease)',
+            }}
+            onMouseEnter={e => { if (!resizingPanel) e.currentTarget.style.background = 'color-mix(in oklch, var(--accent) 45%, transparent)' }}
+            onMouseLeave={e => { if (!resizingPanel) e.currentTarget.style.background = 'transparent' }}
+          />
           {/* Tabs */}
           <div style={{
             display: 'flex', flexShrink: 0,
