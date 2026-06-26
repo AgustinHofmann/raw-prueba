@@ -36,8 +36,8 @@ export default function ChromeBar({
   const isEditor = route === 'editor' && activeProject !== null
 
   // En pantalla completa la barra crece para aprovechar el espacio y verse más cómoda
-  const barH    = isFullscreen ? 66 : 54
-  const fsScale = isFullscreen ? 1.18 : 1.08
+  const barH    = isFullscreen ? 62 : 50
+  const fsScale = isFullscreen ? 1.18 : 1.06
 
   // Abre el selector de archivos y ejecuta la acción elegida (importar / calco).
   // El diálogo nativo puede sacar la pantalla completa (API): intentamos re-entrar al volver.
@@ -91,10 +91,12 @@ export default function ChromeBar({
       transition: 'height 0.18s var(--ease)',
     }}>
 
-      {/* Left: logo clickeable + slogan + home button */}
+      {/* Left: logo clickeable + slogan + home button.
+          width 199 = ancho del rail izquierdo del Home (aside 200 con borde a 199→200),
+          así el divisor de la derecha queda alineado con esa línea. */}
       <div style={{
-        width: 236, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 16, gap: 0, overflow: 'hidden',
+        width: 199, flexShrink: 0, display: 'flex', alignItems: 'center',
+        paddingLeft: 14, gap: 0, overflow: 'hidden',
       }}>
         <button
           onClick={onHome}
@@ -107,12 +109,12 @@ export default function ChromeBar({
           onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
           onMouseLeave={e => e.currentTarget.style.opacity = '1'}
         >
-          <Logo size={27} />
+          <Logo size={24} />
         </button>
 
         <span style={{
-          flex: 1, marginLeft: 12, paddingLeft: 12, minWidth: 0,
-          fontSize: 10, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+          flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
+          fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
           letterSpacing: '0.02em', lineHeight: 1.3,
           borderLeft: '1px solid var(--line-soft)',
           overflow: 'hidden',
@@ -124,13 +126,13 @@ export default function ChromeBar({
         <button
           onClick={onHome}
           style={{
-            flexShrink: 0, height: '100%', padding: '0 14px',
+            flexShrink: 0, height: '100%', padding: '0 12px',
             background: route === 'home' ? 'var(--surface)' : 'transparent',
             borderLeft: '1px solid ' + (route === 'home' ? 'var(--line-soft)' : 'transparent'),
             borderRight: 'none', borderTop: 'none', borderBottom: 'none',
             borderRadius: 0,
             color: route === 'home' ? 'var(--fg)' : 'var(--fg-2)',
-            fontSize: 14, fontFamily: 'var(--ui)', cursor: 'pointer',
+            fontSize: 13, fontFamily: 'var(--ui)', cursor: 'pointer',
             whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)',
             display: 'flex', alignItems: 'center', gap: 6,
           }}
