@@ -894,6 +894,13 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [starPointCount, setStarPointCount] = useState(5) // puntas de la estrella
   const polySidesRef    = useRef(6)
   const starPointsRef   = useRef(5)
+  // Símbolos (sellos): se guardan serializados y se estampan con la herramienta Símbolo.
+  const [symbols, setSymbols] = useState<{ id: string; name: string; json: any }[]>(() => {
+    try { return JSON.parse(localStorage.getItem('raw.symbols') || '[]') } catch { return [] }
+  })
+  const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
+  const symbolsRef      = useRef<{ id: string; name: string; json: any }[]>([])
+  const activeSymbolRef = useRef<string | null>(null)
   const [propFill,      setPropFill]      = useState<string | null>(null)
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
@@ -975,6 +982,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   useEffect(() => { fillRef.current       = propFill      }, [propFill])
   useEffect(() => { polySidesRef.current  = polySides     }, [polySides])
   useEffect(() => { starPointsRef.current = starPointCount }, [starPointCount])
+  useEffect(() => { symbolsRef.current      = symbols      }, [symbols])
+  useEffect(() => { activeSymbolRef.current = activeSymbol }, [activeSymbol])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
 
@@ -2714,6 +2723,169 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       })
     }
 
+    // ── Degradado (relleno lineal sobre el objeto, arrastrando la dirección) ──
+    if (tool === 'gradient') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'crosshair'
+      let target: fabric.FabricObject | null = null
+      let downPt: fabric.Point | null = null
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        const t = e.target
+        if (!t || mockupObjects.current.includes(t) || (t as any)._locked) { target = null; return }
+        target = t
+        downPt = e.scenePoint
+      }
+      const onUp = (e: fabric.TPointerEventInfo) => {
+        if (!target || !downPt) { target = null; downPt = null; return }
+        const up = e.scenePoint ?? downPt
+        const dx = up.x - downPt.x, dy = up.y - downPt.y
+        const w = target.width ?? 1, h = target.height ?? 1
+        // La dirección del arrastre define horizontal / vertical (y el sentido).
+        let coords: { x1: number; y1: number; x2: number; y2: number }
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          coords = dx >= 0 ? { x1: 0, y1: 0, x2: w, y2: 0 } : { x1: w, y1: 0, x2: 0, y2: 0 }
+        } else {
+          coords = dy >= 0 ? { x1: 0, y1: 0, x2: 0, y2: h } : { x1: 0, y1: h, x2: 0, y2: 0 }
+        }
+        // Dos paradas: color de relleno → color de trazado (ambos los controlás en el panel).
+        const c1 = fillRef.current ?? '#ffffff'
+        const c2 = colorRef.current ?? '#000000'
+        const prevFill = target.fill
+        const grad = new (fabric.Gradient as any)({
+          type: 'linear', gradientUnits: 'pixels', coords,
+          colorStops: [ { offset: 0, color: c1 }, { offset: 1, color: c2 } ],
+        })
+        target.set({ fill: grad })
+        ;(target as any).dirty = true
+        undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
+        redoHistory.current = []
+        canvas.requestRenderAll()
+        target = null; downPt = null
+      }
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:up',   onUp)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Cortar (cuchilla): parte objetos en dos con una línea recta ───────────
+    if (tool === 'cut') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'crosshair'
+      let p0: fabric.Point | null = null
+      let guide: fabric.Line | null = null
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        p0 = e.scenePoint
+        guide = new fabric.Line([p0.x, p0.y, p0.x, p0.y], {
+          stroke: '#ff3b3b', strokeWidth: 1, strokeDashArray: [4, 4],
+          selectable: false, evented: false, strokeUniform: true,
+        })
+        canvas.add(guide)
+      }
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        if (!p0 || !guide) return
+        const p = e.scenePoint
+        guide.set({ x2: p.x, y2: p.y })
+        canvas.requestRenderAll()
+      }
+      const onUp = async (e: fabric.TPointerEventInfo) => {
+        const start = p0
+        if (guide) { canvas.remove(guide); guide = null }
+        p0 = null
+        if (!start) return
+        const end = e.scenePoint ?? start
+        const ax = start.x, ay = start.y, bx = end.x, by = end.y
+        if (Math.hypot(bx - ax, by - ay) < 5) { canvas.requestRenderAll(); return }  // trazo muy corto
+        const dirx = bx - ax, diry = by - ay
+        const sideOf = (px: number, py: number) => dirx * (py - ay) - diry * (px - ax)  // signo = lado de la línea
+        // Objetos que la línea realmente atraviesa (esquinas a ambos lados)
+        const crossed = canvas.getObjects().filter(o => {
+          if (mockupObjects.current.includes(o) || (o as any)._locked) return false
+          const b = o.getBoundingRect()
+          const corners: [number, number][] = [
+            [b.left, b.top], [b.left + b.width, b.top],
+            [b.left, b.top + b.height], [b.left + b.width, b.top + b.height],
+          ]
+          let pos = false, neg = false
+          for (const [cx, cy] of corners) { const s = sideOf(cx, cy); if (s > 0) pos = true; else if (s < 0) neg = true }
+          return pos && neg
+        })
+        if (!crossed.length) { canvas.requestRenderAll(); return }
+        const angleDeg = Math.atan2(diry, dirx) * 180 / Math.PI
+        const mid = { x: (ax + bx) / 2, y: (ay + by) / 2 }
+        const L = 20000
+        const nrad = Math.atan2(diry, dirx) + Math.PI / 2
+        const nx = Math.cos(nrad), ny = Math.sin(nrad)
+        const removed: fabric.FabricObject[] = []
+        const added: fabric.FabricObject[] = []
+        for (const o of crossed) {
+          const half1 = await o.clone()
+          const half2 = await o.clone()
+          half1.clipPath = new fabric.Rect({
+            width: L, height: L, originX: 'center', originY: 'center',
+            left: mid.x + nx * L / 2, top: mid.y + ny * L / 2, angle: angleDeg, absolutePositioned: true,
+          })
+          half2.clipPath = new fabric.Rect({
+            width: L, height: L, originX: 'center', originY: 'center',
+            left: mid.x - nx * L / 2, top: mid.y - ny * L / 2, angle: angleDeg, absolutePositioned: true,
+          })
+          half1.set({ selectable: true, evented: true })
+          half2.set({ selectable: true, evented: true })
+          canvas.remove(o)
+          canvas.add(half1, half2)
+          removed.push(o)
+          added.push(half1, half2)
+        }
+        undoHistory.current.push({ type: 'erase', removed, added })
+        redoHistory.current = []
+        canvas.discardActiveObject()
+        canvas.requestRenderAll()
+      }
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up',   onUp)
+        if (guide) canvas.remove(guide)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Símbolo (sello): estampa copias del símbolo activo al clickear ────────
+    if (tool === 'symbol') {
+      canvas.selection     = false
+      canvas.defaultCursor = activeSymbolRef.current ? 'copy' : 'default'
+
+      const onDown = async (e: fabric.TPointerEventInfo) => {
+        const id  = activeSymbolRef.current
+        const sym = symbolsRef.current.find(s => s.id === id)
+        if (!sym) return
+        const p = e.scenePoint
+        const objs = await fabric.util.enlivenObjects([sym.json]) as fabric.FabricObject[]
+        const obj  = objs[0]
+        if (!obj) return
+        obj.set({ left: p.x, top: p.y, originX: 'center', originY: 'center', selectable: true, evented: true })
+        if (clipEnabledRef.current && clipPath.current) obj.clipPath = clipPath.current
+        obj.setCoords()
+        canvas.add(obj)
+        undoHistory.current.push({ type: 'add', obj })
+        redoHistory.current = []
+        canvas.requestRenderAll()
+      }
+      canvas.on('mouse:down', onDown)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
     // ── Mano (pan arrastrando) ────────────────────────────────────────────────
     if (tool === 'hand') {
       canvas.selection     = false
@@ -3870,6 +4042,28 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     return children
   }
 
+  // ── Símbolos (sellos) ────────────────────────────────────────────────────
+  function saveSymbols(next: { id: string; name: string; json: any }[]) {
+    setSymbols(next)
+    try { localStorage.setItem('raw.symbols', JSON.stringify(next)) } catch { /* cuota llena */ }
+  }
+  function createSymbolFromSelection() {
+    const canvas = fc.current
+    if (!canvas) return
+    const active = canvas.getActiveObject()
+    if (!active || mockupObjects.current.includes(active)) return
+    const json = active.toObject()
+    const n = symbolsRef.current.length + 1
+    const id = 'sym_' + n + '_' + (json.type || 'obj')
+    saveSymbols([...symbolsRef.current, { id, name: 'Símbolo ' + n, json }])
+    setActiveSymbol(id)
+  }
+  function deleteSymbol(id: string) {
+    const next = symbolsRef.current.filter(s => s.id !== id)
+    saveSymbols(next)
+    if (activeSymbolRef.current === id) setActiveSymbol(next[0]?.id ?? null)
+  }
+
   // Reflejar (espejar) lo seleccionado en horizontal o vertical — útil para prendas simétricas.
   function flipSelected(axis: 'x' | 'y') {
     const canvas = fc.current
@@ -4564,6 +4758,56 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7, lineHeight: 1.4 }}>
                 Arrastrá desde el centro hacia afuera para dibujar.
               </p>
+            </div>
+          )}
+
+          {/* Ayuda del degradado */}
+          {tool === 'gradient' && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Degradado</div>
+              <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                Arrastrá sobre un objeto para aplicar un degradado lineal. Va del
+                <b style={{ color: 'var(--fg-2)' }}> color de relleno</b> al
+                <b style={{ color: 'var(--fg-2)' }}> color de trazado</b> (los elegís abajo).
+                La dirección del arrastre define horizontal o vertical.
+              </p>
+            </div>
+          )}
+
+          {/* Símbolos (sellos) */}
+          {tool === 'symbol' && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Símbolos</div>
+              <button className="btn btn-ghost" onClick={createSymbolFromSelection}
+                style={{ width: '100%', padding: '6px 10px', fontSize: 11, marginBottom: 8 }}>
+                + Crear desde la selección
+              </button>
+              {symbols.length === 0 ? (
+                <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                  Seleccioná un objeto y creá un símbolo. Después clickeá en el lienzo para estampar copias.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {symbols.map(s => (
+                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button onClick={() => setActiveSymbol(s.id)} style={{
+                        flex: 1, textAlign: 'left', padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                        background: activeSymbol === s.id ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                        border: '1px solid ' + (activeSymbol === s.id ? 'var(--accent)' : 'var(--line)'),
+                        color: activeSymbol === s.id ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
+                      }}>{s.name}</button>
+                      <button onClick={() => deleteSymbol(s.id)} title="Eliminar símbolo" style={{
+                        background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 12, padding: 4,
+                      }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeSymbol && symbols.length > 0 && (
+                <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 8, lineHeight: 1.4 }}>
+                  Clickeá en el lienzo para estampar el símbolo activo.
+                </p>
+              )}
             </div>
           )}
 
