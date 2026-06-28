@@ -901,6 +901,10 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
   const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
   const symbolsRef      = useRef<{ id: string; name: string; json: any }[]>([])
   const activeSymbolRef = useRef<string | null>(null)
+  // Diálogo de medidas exactas: aparece al hacer click (sin arrastrar) con una forma.
+  const [exactDialog, setExactDialog] = useState<{ sx: number; sy: number; px: number; py: number; tool: Tool } | null>(null)
+  const [exactW, setExactW] = useState(100)
+  const [exactH, setExactH] = useState(100)
   const [propFill,      setPropFill]      = useState<string | null>(null)
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
@@ -2696,9 +2700,18 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         canvas.requestRenderAll()
       }
 
-      const onUp = () => {
+      const onUp = (e: fabric.TPointerEventInfo) => {
         if (!shape) { start = null; return }
-        if (!moved) { canvas.remove(shape); shape = null; start = null; return }  // click sin arrastrar
+        if (!moved) {
+          canvas.remove(shape); shape = null
+          // Click sin arrastrar en rect/redondeado/elipse → pedir medidas exactas (estilo Illustrator)
+          if ((tool === 'rect' || tool === 'rrect' || tool === 'ellipse') && start) {
+            const ev = e.e as MouseEvent
+            setExactDialog({ sx: start.x, sy: start.y, px: ev.clientX, py: ev.clientY, tool })
+          }
+          start = null
+          return
+        }
         shape.set({ selectable: true, evented: true })
         if (clipEnabledRef.current && clipPath.current) shape.clipPath = clipPath.current
         shape.setCoords()
@@ -4064,6 +4077,33 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     if (activeSymbolRef.current === id) setActiveSymbol(next[0]?.id ?? null)
   }
 
+  // Crea una forma con medidas exactas en la posición del click (diálogo de medidas).
+  function createExactShape() {
+    const canvas = fc.current
+    const d = exactDialog
+    if (!canvas || !d) return
+    const stroke = colorRef.current
+    const sw     = brushSizeRef.current
+    const fill   = fillRef.current ?? colorRef.current
+    const common = { strokeWidth: sw, strokeUniform: true } as const
+    const w = Math.max(1, exactW), h = Math.max(1, exactH)
+    let shape: fabric.FabricObject
+    if (d.tool === 'ellipse') {
+      shape = new fabric.Ellipse({ ...common, left: d.sx, top: d.sy, rx: w / 2, ry: h / 2, fill, stroke })
+    } else {
+      const radius = d.tool === 'rrect' ? Math.min(24, Math.min(w, h) * 0.2) : 0
+      shape = new fabric.Rect({ ...common, left: d.sx, top: d.sy, width: w, height: h, rx: radius, ry: radius, fill, stroke })
+    }
+    if (clipEnabledRef.current && clipPath.current) shape.clipPath = clipPath.current
+    shape.setCoords()
+    canvas.add(shape)
+    undoHistory.current.push({ type: 'add', obj: shape })
+    redoHistory.current = []
+    canvas.setActiveObject(shape)
+    canvas.requestRenderAll()
+    setExactDialog(null)
+  }
+
   // Reflejar (espejar) lo seleccionado en horizontal o vertical — útil para prendas simétricas.
   function flipSelected(axis: 'x' | 'y') {
     const canvas = fc.current
@@ -5062,6 +5102,39 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       />
 
       {/* Menú contextual (click derecho) */}
+      {/* Diálogo de medidas exactas (click sin arrastrar con una forma) */}
+      {exactDialog && (
+        <>
+          <div onClick={() => setExactDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 320 }} />
+          <div style={{
+            position: 'fixed', zIndex: 321,
+            left: Math.min(exactDialog.px, window.innerWidth - 230),
+            top: Math.min(exactDialog.py, window.innerHeight - 150),
+            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+            padding: 12, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', width: 210,
+          }}
+            onKeyDown={e => { if (e.key === 'Enter') createExactShape(); if (e.key === 'Escape') setExactDialog(null) }}>
+            <div className="label" style={{ marginBottom: 8 }}>
+              Medidas {exactDialog.tool === 'ellipse' ? '(elipse)' : exactDialog.tool === 'rrect' ? '(redondeado)' : '(rectángulo)'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Ancho</div>
+                <NumberField value={exactW} onChange={v => setExactW(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Alto</div>
+                <NumberField value={exactH} onChange={v => setExactH(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setExactDialog(null)} style={{ padding: '5px 12px', fontSize: 12 }}>Cancelar</button>
+              <button className="btn btn-primary" onClick={createExactShape} style={{ padding: '5px 12px', fontSize: 12 }}>Crear</button>
+            </div>
+          </div>
+        </>
+      )}
+
       {ctxMenu && (() => {
         const pieces = mockupObjects.current
         const named = pieces.filter(p => !/^Pieza/.test(pieceNameOf(p, 'Pieza')))
