@@ -1457,9 +1457,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         return
       }
       obj.set({
-        evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || (tool === 'text' && isIText),
+        evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || tool === 'fill' || (tool === 'text' && isIText),
         selectable: tool === 'select',
-        hoverCursor: drawnHoverCursor,
+        hoverCursor: tool === 'fill' ? 'pointer' : drawnHoverCursor,
         // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
         // huecos entre letras tambien son seleccionables. El resto usa hit-test por pixel.
         perPixelTargetFind: !isIText,
@@ -2520,14 +2520,16 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
       const onDown = (e: fabric.TPointerEventInfo) => {
+        // Rellenar el objeto que realmente se clickeó: si es una prenda (mockup)
+        // se rellena la prenda; si es un item dibujado (forma/trazo) se rellena
+        // ese item, no la prenda que tiene detrás.
         const target = e.target
-        if (target && mockupObjects.current.includes(target)) {
-          const prevFill = target.fill as fabric.TFiller | string | null
-          target.set({ fill: colorRef.current })
-          undoHistory.current.push({ type: 'fill', obj: target, prevFill })
-          redoHistory.current = []
-          canvas.requestRenderAll()
-        }
+        if (!target || (target as any)._locked) return
+        const prevFill = target.fill as fabric.TFiller | string | null
+        target.set({ fill: colorRef.current })
+        undoHistory.current.push({ type: 'fill', obj: target, prevFill })
+        redoHistory.current = []
+        canvas.requestRenderAll()
       }
       canvas.on('mouse:down', onDown)
       offs.push(() => canvas.off('mouse:down', onDown))
