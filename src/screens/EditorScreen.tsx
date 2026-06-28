@@ -2635,7 +2635,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         canvas.setActiveObject(shape)
         canvas.requestRenderAll()
         shape = null; start = null
-        setTool('select')   // tras dibujar, pasa a seleccionar (como hace la herramienta texto)
+        // La figura recién dibujada queda seleccionada, pero la herramienta NO
+        // cambia: seguís con rectángulo/elipse/línea para dibujar otra.
       }
 
       canvas.on('mouse:down', onDown)
