@@ -68,10 +68,18 @@
 html, body, #root { height: 100%; }
 
 /* Impresión del Tech Pack: solo se imprime la hoja */
+@page { size: A4 landscape; margin: 0; }
+
 @media print {
   body * { visibility: hidden !important; }
   #techpack-print, #techpack-print * { visibility: visible !important; }
-  #techpack-print { position: absolute !important; left: 0; top: 0; width: 100%; box-shadow: none !important; }
+  #techpack-print { position: absolute !important; left: 0; top: 0; width: 100%; display: block !important; gap: 0 !important; }
+  /* Cada página del tech pack imprime en su propia hoja A4 apaisada */
+  .tp-page {
+    transform: none !important; box-shadow: none !important; margin: 0 !important;
+    break-after: page; page-break-after: always; break-inside: avoid;
+  }
+  .tp-page:last-child { break-after: auto; page-break-after: auto; }
   .no-print { display: none !important; }
 }
 

@@ -27,6 +27,7 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
       mockupId: mockup,
       thumbnail: null,
       canvasJson: null,
+      techpackJson: null,
       colors: [],
       tag: 'Activo',
       folderId,

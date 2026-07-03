@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project } from '../types/project'
+import { Project, TechPackMeasures } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
-import TechPackSheet from '../components/TechPackSheet'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -14,11 +13,13 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
+  onOpenTechPack: (snapshot: string, measures: TechPackMeasures | null) => void
   onToast?: (msg: string) => void
 }
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
-  | 'rect' | 'ellipse' | 'line' | 'hand' | 'zoom'
+  | 'rect' | 'ellipse' | 'line' | 'polygon' | 'star' | 'rrect'
+  | 'gradient' | 'symbol' | 'cut' | 'hand' | 'zoom'
 
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
@@ -34,6 +35,7 @@ type HistoryEntry =
   | { type: 'group';   children: fabric.FabricObject[]; group: fabric.Group }
   | { type: 'ungroup'; children: fabric.FabricObject[]; group: fabric.Group }
   | { type: 'transform'; items: { obj: fabric.FabricObject; left: number; top: number }[] }
+  | { type: 'props';  obj: fabric.FabricObject; prev: Record<string, any> }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -813,7 +815,7 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, designer, onSave, saved, onSaveComplete, onActionsReady, onToast }: Props) {
+export default function EditorScreen({ project, onSave, saved, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -846,6 +848,41 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
+  // Ancho del panel de propiedades, redimensionable arrastrando su borde izquierdo (estilo Illustrator).
+  const RIGHT_MIN = 200, RIGHT_MAX = 520
+  const rightPanelRef = useRef<HTMLElement>(null)
+  const [rightPanelW, setRightPanelW] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('raw.rightPanelW'))
+    return saved >= RIGHT_MIN && saved <= RIGHT_MAX ? saved : 232
+  })
+  const [resizingPanel, setResizingPanel] = useState(false)
+  // Arrastre del divisor: el ancho crece al mover el mouse hacia la izquierda.
+  // Durante el arrastre cambiamos el ancho por DOM directo (sin setState por frame, así
+  // no re-renderiza todo el editor ni parpadea el canvas). Al soltar, recién, persistimos.
+  function startPanelResize(e: React.PointerEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = rightPanelRef.current?.offsetWidth ?? rightPanelW
+    let finalW = startW
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    setResizingPanel(true)
+    const onMove = (ev: PointerEvent) => {
+      finalW = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, Math.round(startW + (startX - ev.clientX))))
+      if (rightPanelRef.current) rightPanelRef.current.style.width = finalW + 'px'
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setResizingPanel(false)
+      setRightPanelW(finalW)
+      localStorage.setItem('raw.rightPanelW', String(finalW))
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
   // Paleta de color editable por textura + cuál textura tiene el editor abierto
   const [texColors, setTexColors] = useState<Record<TextureKind, string[]>>(() =>
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
@@ -856,6 +893,21 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
 
   const [hasSel,        setHasSel]        = useState(false)
   const [isText,        setIsText]        = useState(false)
+  const [polySides,     setPolySides]     = useState(6)   // lados del polígono
+  const [starPointCount, setStarPointCount] = useState(5) // puntas de la estrella
+  const polySidesRef    = useRef(6)
+  const starPointsRef   = useRef(5)
+  // Símbolos (sellos): se guardan serializados y se estampan con la herramienta Símbolo.
+  const [symbols, setSymbols] = useState<{ id: string; name: string; json: any }[]>(() => {
+    try { return JSON.parse(localStorage.getItem('raw.symbols') || '[]') } catch { return [] }
+  })
+  const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
+  const symbolsRef      = useRef<{ id: string; name: string; json: any }[]>([])
+  const activeSymbolRef = useRef<string | null>(null)
+  // Diálogo de medidas exactas: aparece al hacer click (sin arrastrar) con una forma.
+  const [exactDialog, setExactDialog] = useState<{ sx: number; sy: number; px: number; py: number; tool: Tool } | null>(null)
+  const [exactW, setExactW] = useState(100)
+  const [exactH, setExactH] = useState(100)
   const [propFill,      setPropFill]      = useState<string | null>(null)
   const [propStroke,    setPropStroke]    = useState('#ff6b00')
   const [propSWidth,    setPropSWidth]    = useState(8)
@@ -884,7 +936,6 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
   const measureEditRef = useRef(false)
-  const [techPackImg,    setTechPackImg]    = useState<string | null>(null)  // snapshot para el tech pack
   const isTee = project.mockupId === 'tshirt'
   useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
   // Salir del modo tiradores si cambiás de herramienta o de pestaña
@@ -936,6 +987,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
   useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
   useEffect(() => { strokeStyleRef.current = strokeStyle   }, [strokeStyle])
   useEffect(() => { fillRef.current       = propFill      }, [propFill])
+  useEffect(() => { polySidesRef.current  = polySides     }, [polySides])
+  useEffect(() => { starPointsRef.current = starPointCount }, [starPointCount])
+  useEffect(() => { symbolsRef.current      = symbols      }, [symbols])
+  useEffect(() => { activeSymbolRef.current = activeSymbol }, [activeSymbol])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
 
@@ -1027,9 +1082,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         if (vpt) {
           vpt[4] += (w - oldW) / 2
           vpt[5] += (h - oldH) / 2
-          canvas.setViewportTransform(vpt)
         }
-        canvas.requestRenderAll()
+        // Redibujado SINCRONO en el mismo frame: setDimensions vacía el bitmap del canvas
+        // (al cambiar canvas.width). Si difiriéramos el render (requestRenderAll) se vería un
+        // frame en blanco en cada paso del arrastre -> la prenda "titila". renderAll() lo evita.
+        canvas.renderAll()
       })
       ro.observe(area)
     }
@@ -1424,9 +1481,10 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         return
       }
       obj.set({
-        evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || (tool === 'text' && isIText),
+        evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || tool === 'fill'
+                 || tool === 'eyedropper' || tool === 'gradient' || tool === 'cut' || (tool === 'text' && isIText),
         selectable: tool === 'select',
-        hoverCursor: drawnHoverCursor,
+        hoverCursor: (tool === 'fill' || tool === 'gradient') ? 'pointer' : drawnHoverCursor,
         // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
         // huecos entre letras tambien son seleccionables. El resto usa hit-test por pixel.
         perPixelTargetFind: !isIText,
@@ -2497,14 +2555,16 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
       const onDown = (e: fabric.TPointerEventInfo) => {
+        // Rellenar el objeto que realmente se clickeó: si es una prenda (mockup)
+        // se rellena la prenda; si es un item dibujado (forma/trazo) se rellena
+        // ese item, no la prenda que tiene detrás.
         const target = e.target
-        if (target && mockupObjects.current.includes(target)) {
-          const prevFill = target.fill as fabric.TFiller | string | null
-          target.set({ fill: colorRef.current })
-          undoHistory.current.push({ type: 'fill', obj: target, prevFill })
-          redoHistory.current = []
-          canvas.requestRenderAll()
-        }
+        if (!target || (target as any)._locked) return
+        const prevFill = target.fill as fabric.TFiller | string | null
+        target.set({ fill: colorRef.current })
+        undoHistory.current.push({ type: 'fill', obj: target, prevFill })
+        redoHistory.current = []
+        canvas.requestRenderAll()
       }
       canvas.on('mouse:down', onDown)
       offs.push(() => canvas.off('mouse:down', onDown))
@@ -2516,23 +2576,39 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       canvas.defaultCursor = EYEDROPPER_CURSOR
 
       const onDown = (e: fabric.TPointerEventInfo) => {
-        const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
-        const p   = e.scenePoint
-        // Convert scene coords → canvas element pixels
-        const px = Math.round(vpt[0] * p.x + vpt[4])
-        const py = Math.round(vpt[3] * p.y + vpt[5])
-        const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
-        if (!ctx) return
-        const [r, g, b, a] = ctx.getImageData(px, py, 1, 1).data
-        if (a < 10) return   // transparent pixel — skip
-        const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
-        // Set as active color (stroke)
-        colorRef.current = hex
-        setPropStroke(hex)
-        // If a non-mockup object is selected, apply to its stroke too
-        const active = canvas.getActiveObject()
+        const active  = canvas.getActiveObject()
+        const clicked = e.target
+        let pickedFill: string | null = null
+        let copied: Record<string, any> | null = null
+        // 1) Si clickeo sobre un objeto dibujado, copio TODA su apariencia
+        //    (relleno + trazo + grosor), como hace el gotero de Illustrator.
+        if (clicked && !mockupObjects.current.includes(clicked) && typeof clicked.fill === 'string') {
+          pickedFill = clicked.fill as string
+          copied = { fill: clicked.fill, stroke: clicked.stroke, strokeWidth: clicked.strokeWidth }
+        } else {
+          // 2) Si no, muestreo el pixel pintado (prenda, imagen, textura…)
+          const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
+          const p   = e.scenePoint
+          const px  = Math.round(vpt[0] * p.x + vpt[4])
+          const py  = Math.round(vpt[3] * p.y + vpt[5])
+          const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
+          if (!ctx) return
+          const [r, g, b, a] = ctx.getImageData(px, py, 1, 1).data
+          if (a < 10) return   // pixel transparente — ignorar
+          pickedFill = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+        }
+        if (!pickedFill) return
+        // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
+        fillRef.current = pickedFill
+        setPropFill(pickedFill)
+        // Si hay un objeto dibujado seleccionado, le aplico la apariencia tomada
         if (active && !mockupObjects.current.includes(active)) {
-          active.set({ stroke: hex })
+          const patch = copied ?? { fill: pickedFill }
+          const prev: Record<string, any> = {}
+          for (const k of Object.keys(patch)) prev[k] = (active as any).get(k)
+          active.set(patch as any)
+          undoHistory.current.push({ type: 'props', obj: active, prev })
+          redoHistory.current = []
           canvas.requestRenderAll()
         }
       }
@@ -2544,13 +2620,37 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
       })
     }
 
-    // ── Formas: rectángulo / elipse / línea (arrastrar para dibujar) ───────────
-    if (tool === 'rect' || tool === 'ellipse' || tool === 'line') {
+    // ── Formas: rectángulo / rect. redondeado / elipse / línea / polígono / estrella ──
+    if (tool === 'rect' || tool === 'rrect' || tool === 'ellipse' || tool === 'line'
+        || tool === 'polygon' || tool === 'star') {
       canvas.selection     = false
       canvas.defaultCursor = 'crosshair'
       let start: fabric.Point | null = null
       let shape: fabric.FabricObject | null = null
       let moved = false
+      const centerBased = tool === 'polygon' || tool === 'star'
+      const BASE_R = 50   // radio base de polígono/estrella; el tamaño real se logra escalando
+
+      // Vértices (centrados en 0,0) de un polígono regular o de una estrella.
+      const buildPolyPoints = () => {
+        if (tool === 'star') {
+          const n = Math.max(3, Math.round(starPointsRef.current))
+          const pts: { x: number; y: number }[] = []
+          for (let i = 0; i < n * 2; i++) {
+            const r = i % 2 === 0 ? BASE_R : BASE_R * 0.45
+            const a = -Math.PI / 2 + i * Math.PI / n
+            pts.push({ x: r * Math.cos(a), y: r * Math.sin(a) })
+          }
+          return pts
+        }
+        const n = Math.max(3, Math.round(polySidesRef.current))
+        const pts: { x: number; y: number }[] = []
+        for (let i = 0; i < n; i++) {
+          const a = -Math.PI / 2 + i * 2 * Math.PI / n
+          pts.push({ x: BASE_R * Math.cos(a), y: BASE_R * Math.sin(a) })
+        }
+        return pts
+      }
 
       const onDown = (e: fabric.TPointerEventInfo) => {
         start = e.scenePoint
@@ -2562,10 +2662,17 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         if (tool === 'line') {
           shape = new fabric.Line([start.x, start.y, start.x, start.y],
             { ...common, stroke, strokeLineCap: 'round' })
-        } else if (tool === 'rect') {
-          shape = new fabric.Rect({ ...common, left: start.x, top: start.y, width: 1, height: 1, fill, stroke })
-        } else {
+        } else if (tool === 'rect' || tool === 'rrect') {
+          shape = new fabric.Rect({ ...common, left: start.x, top: start.y, width: 1, height: 1, fill, stroke,
+            rx: tool === 'rrect' ? 0 : undefined, ry: tool === 'rrect' ? 0 : undefined })
+        } else if (tool === 'ellipse') {
           shape = new fabric.Ellipse({ ...common, left: start.x, top: start.y, rx: 0.5, ry: 0.5, fill, stroke })
+        } else {
+          // polígono / estrella: centrados en el click, crecen con el arrastre
+          shape = new fabric.Polygon(buildPolyPoints(), {
+            ...common, left: start.x, top: start.y, originX: 'center', originY: 'center',
+            fill, stroke, scaleX: 0.002, scaleY: 0.002,
+          })
         }
         canvas.add(shape)
       }
@@ -2585,6 +2692,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
             ey = start.y + Math.sin(snapped) * len
           }
           ;(shape as fabric.Line).set({ x2: ex, y2: ey })
+        } else if (centerBased) {
+          // radio = distancia arrastrada; el alto/ancho se logra escalando uniformemente
+          const r = Math.max(1, Math.hypot(dx, dy))
+          const s = r / BASE_R
+          shape.set({ scaleX: s, scaleY: s })
         } else {
           if (shift) {  // cuadrado / círculo perfecto
             const m = Math.max(Math.abs(dx), Math.abs(dy))
@@ -2592,16 +2704,27 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           }
           const left = Math.min(start.x, start.x + dx), top = Math.min(start.y, start.y + dy)
           const w = Math.abs(dx), h = Math.abs(dy)
-          if (tool === 'rect') (shape as fabric.Rect).set({ left, top, width: w, height: h })
-          else (shape as fabric.Ellipse).set({ left, top, rx: w / 2, ry: h / 2 })
+          if (tool === 'rect' || tool === 'rrect') {
+            const radius = tool === 'rrect' ? Math.min(24, Math.min(w, h) * 0.2) : 0
+            ;(shape as fabric.Rect).set({ left, top, width: w, height: h, rx: radius, ry: radius })
+          } else (shape as fabric.Ellipse).set({ left, top, rx: w / 2, ry: h / 2 })
         }
         shape.setCoords()
         canvas.requestRenderAll()
       }
 
-      const onUp = () => {
+      const onUp = (e: fabric.TPointerEventInfo) => {
         if (!shape) { start = null; return }
-        if (!moved) { canvas.remove(shape); shape = null; start = null; return }  // click sin arrastrar
+        if (!moved) {
+          canvas.remove(shape); shape = null
+          // Click sin arrastrar en rect/redondeado/elipse → pedir medidas exactas (estilo Illustrator)
+          if ((tool === 'rect' || tool === 'rrect' || tool === 'ellipse') && start) {
+            const ev = e.e as MouseEvent
+            setExactDialog({ sx: start.x, sy: start.y, px: ev.clientX, py: ev.clientY, tool })
+          }
+          start = null
+          return
+        }
         shape.set({ selectable: true, evented: true })
         if (clipEnabledRef.current && clipPath.current) shape.clipPath = clipPath.current
         shape.setCoords()
@@ -2610,7 +2733,8 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         canvas.setActiveObject(shape)
         canvas.requestRenderAll()
         shape = null; start = null
-        setTool('select')   // tras dibujar, pasa a seleccionar (como hace la herramienta texto)
+        // La figura recién dibujada queda seleccionada, pero la herramienta NO
+        // cambia: seguís con rectángulo/elipse/línea para dibujar otra.
       }
 
       canvas.on('mouse:down', onDown)
@@ -2621,6 +2745,169 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         canvas.off('mouse:move', onMove)
         canvas.off('mouse:up',   onUp)
         if (shape && !moved) canvas.remove(shape)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Degradado (relleno lineal sobre el objeto, arrastrando la dirección) ──
+    if (tool === 'gradient') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'crosshair'
+      let target: fabric.FabricObject | null = null
+      let downPt: fabric.Point | null = null
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        const t = e.target
+        if (!t || mockupObjects.current.includes(t) || (t as any)._locked) { target = null; return }
+        target = t
+        downPt = e.scenePoint
+      }
+      const onUp = (e: fabric.TPointerEventInfo) => {
+        if (!target || !downPt) { target = null; downPt = null; return }
+        const up = e.scenePoint ?? downPt
+        const dx = up.x - downPt.x, dy = up.y - downPt.y
+        const w = target.width ?? 1, h = target.height ?? 1
+        // La dirección del arrastre define horizontal / vertical (y el sentido).
+        let coords: { x1: number; y1: number; x2: number; y2: number }
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          coords = dx >= 0 ? { x1: 0, y1: 0, x2: w, y2: 0 } : { x1: w, y1: 0, x2: 0, y2: 0 }
+        } else {
+          coords = dy >= 0 ? { x1: 0, y1: 0, x2: 0, y2: h } : { x1: 0, y1: h, x2: 0, y2: 0 }
+        }
+        // Dos paradas: color de relleno → color de trazado (ambos los controlás en el panel).
+        const c1 = fillRef.current ?? '#ffffff'
+        const c2 = colorRef.current ?? '#000000'
+        const prevFill = target.fill
+        const grad = new (fabric.Gradient as any)({
+          type: 'linear', gradientUnits: 'pixels', coords,
+          colorStops: [ { offset: 0, color: c1 }, { offset: 1, color: c2 } ],
+        })
+        target.set({ fill: grad })
+        ;(target as any).dirty = true
+        undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
+        redoHistory.current = []
+        canvas.requestRenderAll()
+        target = null; downPt = null
+      }
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:up',   onUp)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Cortar (cuchilla): parte objetos en dos con una línea recta ───────────
+    if (tool === 'cut') {
+      canvas.selection     = false
+      canvas.defaultCursor = 'crosshair'
+      let p0: fabric.Point | null = null
+      let guide: fabric.Line | null = null
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        p0 = e.scenePoint
+        guide = new fabric.Line([p0.x, p0.y, p0.x, p0.y], {
+          stroke: '#ff3b3b', strokeWidth: 1, strokeDashArray: [4, 4],
+          selectable: false, evented: false, strokeUniform: true,
+        })
+        canvas.add(guide)
+      }
+      const onMove = (e: fabric.TPointerEventInfo) => {
+        if (!p0 || !guide) return
+        const p = e.scenePoint
+        guide.set({ x2: p.x, y2: p.y })
+        canvas.requestRenderAll()
+      }
+      const onUp = async (e: fabric.TPointerEventInfo) => {
+        const start = p0
+        if (guide) { canvas.remove(guide); guide = null }
+        p0 = null
+        if (!start) return
+        const end = e.scenePoint ?? start
+        const ax = start.x, ay = start.y, bx = end.x, by = end.y
+        if (Math.hypot(bx - ax, by - ay) < 5) { canvas.requestRenderAll(); return }  // trazo muy corto
+        const dirx = bx - ax, diry = by - ay
+        const sideOf = (px: number, py: number) => dirx * (py - ay) - diry * (px - ax)  // signo = lado de la línea
+        // Objetos que la línea realmente atraviesa (esquinas a ambos lados)
+        const crossed = canvas.getObjects().filter(o => {
+          if (mockupObjects.current.includes(o) || (o as any)._locked) return false
+          const b = o.getBoundingRect()
+          const corners: [number, number][] = [
+            [b.left, b.top], [b.left + b.width, b.top],
+            [b.left, b.top + b.height], [b.left + b.width, b.top + b.height],
+          ]
+          let pos = false, neg = false
+          for (const [cx, cy] of corners) { const s = sideOf(cx, cy); if (s > 0) pos = true; else if (s < 0) neg = true }
+          return pos && neg
+        })
+        if (!crossed.length) { canvas.requestRenderAll(); return }
+        const angleDeg = Math.atan2(diry, dirx) * 180 / Math.PI
+        const mid = { x: (ax + bx) / 2, y: (ay + by) / 2 }
+        const L = 20000
+        const nrad = Math.atan2(diry, dirx) + Math.PI / 2
+        const nx = Math.cos(nrad), ny = Math.sin(nrad)
+        const removed: fabric.FabricObject[] = []
+        const added: fabric.FabricObject[] = []
+        for (const o of crossed) {
+          const half1 = await o.clone()
+          const half2 = await o.clone()
+          half1.clipPath = new fabric.Rect({
+            width: L, height: L, originX: 'center', originY: 'center',
+            left: mid.x + nx * L / 2, top: mid.y + ny * L / 2, angle: angleDeg, absolutePositioned: true,
+          })
+          half2.clipPath = new fabric.Rect({
+            width: L, height: L, originX: 'center', originY: 'center',
+            left: mid.x - nx * L / 2, top: mid.y - ny * L / 2, angle: angleDeg, absolutePositioned: true,
+          })
+          half1.set({ selectable: true, evented: true })
+          half2.set({ selectable: true, evented: true })
+          canvas.remove(o)
+          canvas.add(half1, half2)
+          removed.push(o)
+          added.push(half1, half2)
+        }
+        undoHistory.current.push({ type: 'erase', removed, added })
+        redoHistory.current = []
+        canvas.discardActiveObject()
+        canvas.requestRenderAll()
+      }
+      canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up',   onUp)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up',   onUp)
+        if (guide) canvas.remove(guide)
+        canvas.defaultCursor = 'default'
+      })
+    }
+
+    // ── Símbolo (sello): estampa copias del símbolo activo al clickear ────────
+    if (tool === 'symbol') {
+      canvas.selection     = false
+      canvas.defaultCursor = activeSymbolRef.current ? 'copy' : 'default'
+
+      const onDown = async (e: fabric.TPointerEventInfo) => {
+        const id  = activeSymbolRef.current
+        const sym = symbolsRef.current.find(s => s.id === id)
+        if (!sym) return
+        const p = e.scenePoint
+        const objs = await fabric.util.enlivenObjects([sym.json]) as fabric.FabricObject[]
+        const obj  = objs[0]
+        if (!obj) return
+        obj.set({ left: p.x, top: p.y, originX: 'center', originY: 'center', selectable: true, evented: true })
+        if (clipEnabledRef.current && clipPath.current) obj.clipPath = clipPath.current
+        obj.setCoords()
+        canvas.add(obj)
+        undoHistory.current.push({ type: 'add', obj })
+        redoHistory.current = []
+        canvas.requestRenderAll()
+      }
+      canvas.on('mouse:down', onDown)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
         canvas.defaultCursor = 'default'
       })
     }
@@ -3329,8 +3616,17 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         }
       }
 
-      // Atajos de herramienta (un solo carácter, sin Ctrl) — al estilo Illustrator
-      if (!ctrl && !e.altKey) {
+      // Atajos con Shift — herramientas alternativas / acciones (estilo Illustrator)
+      if (!ctrl && !e.altKey && e.shiftKey) {
+        switch (e.key) {
+          case 'E': setTool('eraser'); return   // Shift+E — goma
+          case 'H': flipSelected('x'); return   // Shift+H — reflejar horizontal
+          case 'V': flipSelected('y'); return   // Shift+V — reflejar vertical
+        }
+      }
+
+      // Atajos de herramienta (un solo carácter, sin Ctrl/Alt/Shift) — al estilo Illustrator
+      if (!ctrl && !e.altKey && !e.shiftKey) {
         switch (e.key) {
           case 'v': case 'V': setTool('select');     return
           case 'p': case 'P': setTool('pen');        return
@@ -3342,6 +3638,9 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           case 'h': case 'H': setTool('hand');       return
           case 'z': case 'Z': setTool('zoom');       return
           case 'i': case 'I': setTool('eyedropper'); return
+          case 'k': case 'K': setTool('fill');       return   // K — balde (relleno)
+          case 'g': case 'G': setTool('gradient');   return   // G — degradado
+          case 'c': case 'C': setTool('cut');        return   // C — cortar (tijera)
         }
       }
 
@@ -3452,6 +3751,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
           entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
           undoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'props') {
+          const cur: Record<string, any> = {}
+          for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
+          entry.obj.set(entry.prev as any); entry.obj.setCoords()
+          undoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
           const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
           entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
@@ -3502,6 +3806,11 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
           entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
           redoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'props') {
+          const cur: Record<string, any> = {}
+          for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
+          entry.obj.set(entry.prev as any); entry.obj.setCoords()
+          redoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
           const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
           entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
@@ -3591,7 +3900,7 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     }
     const img = canvas.toDataURL(opts)
     measureEditRef.current = wasMeasure
-    setTechPackImg(img)
+    onOpenTechPack(img, isTee ? measures : null)
   }
 
   function resetView() {
@@ -3774,6 +4083,72 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
     canvas.remove(group)
     children.forEach(o => { o.set({ selectable: true, evented: true }); canvas.add(o) })
     return children
+  }
+
+  // ── Símbolos (sellos) ────────────────────────────────────────────────────
+  function saveSymbols(next: { id: string; name: string; json: any }[]) {
+    setSymbols(next)
+    try { localStorage.setItem('raw.symbols', JSON.stringify(next)) } catch { /* cuota llena */ }
+  }
+  function createSymbolFromSelection() {
+    const canvas = fc.current
+    if (!canvas) return
+    const active = canvas.getActiveObject()
+    if (!active || mockupObjects.current.includes(active)) return
+    const json = active.toObject()
+    const n = symbolsRef.current.length + 1
+    const id = 'sym_' + n + '_' + (json.type || 'obj')
+    saveSymbols([...symbolsRef.current, { id, name: 'Símbolo ' + n, json }])
+    setActiveSymbol(id)
+  }
+  function deleteSymbol(id: string) {
+    const next = symbolsRef.current.filter(s => s.id !== id)
+    saveSymbols(next)
+    if (activeSymbolRef.current === id) setActiveSymbol(next[0]?.id ?? null)
+  }
+
+  // Crea una forma con medidas exactas en la posición del click (diálogo de medidas).
+  function createExactShape() {
+    const canvas = fc.current
+    const d = exactDialog
+    if (!canvas || !d) return
+    const stroke = colorRef.current
+    const sw     = brushSizeRef.current
+    const fill   = fillRef.current ?? colorRef.current
+    const common = { strokeWidth: sw, strokeUniform: true } as const
+    const w = Math.max(1, exactW), h = Math.max(1, exactH)
+    let shape: fabric.FabricObject
+    if (d.tool === 'ellipse') {
+      shape = new fabric.Ellipse({ ...common, left: d.sx, top: d.sy, rx: w / 2, ry: h / 2, fill, stroke })
+    } else {
+      const radius = d.tool === 'rrect' ? Math.min(24, Math.min(w, h) * 0.2) : 0
+      shape = new fabric.Rect({ ...common, left: d.sx, top: d.sy, width: w, height: h, rx: radius, ry: radius, fill, stroke })
+    }
+    if (clipEnabledRef.current && clipPath.current) shape.clipPath = clipPath.current
+    shape.setCoords()
+    canvas.add(shape)
+    undoHistory.current.push({ type: 'add', obj: shape })
+    redoHistory.current = []
+    canvas.setActiveObject(shape)
+    canvas.requestRenderAll()
+    setExactDialog(null)
+  }
+
+  // Reflejar (espejar) lo seleccionado en horizontal o vertical — útil para prendas simétricas.
+  function flipSelected(axis: 'x' | 'y') {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    if (!objs.length) return
+    const key = axis === 'x' ? 'flipX' : 'flipY'
+    for (const o of objs) {
+      const prev = { [key]: (o as any)[key] ?? false }
+      o.set({ [key]: !((o as any)[key] ?? false) } as any)
+      o.setCoords()
+      undoHistory.current.push({ type: 'props', obj: o, prev })
+    }
+    redoHistory.current = []
+    canvas.requestRenderAll()
   }
 
   function groupSelection() {
@@ -3980,12 +4355,18 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           <ToolBtn icon={<IconText />} label="Texto (T)"          active={tool === 'text'}   onClick={() => setTool('text')} />
           <ToolDivider />
           <ToolBtn icon={<IconRect />} label="Rectángulo (M)"     active={tool === 'rect'}    onClick={() => setTool('rect')} />
+          <ToolBtn icon={<IconRRect />} label="Rect. redondeado"  active={tool === 'rrect'}   onClick={() => setTool('rrect')} />
           <ToolBtn icon={<IconEllipse />} label="Elipse (L)"      active={tool === 'ellipse'} onClick={() => setTool('ellipse')} />
+          <ToolBtn icon={<IconPolygon />} label="Polígono"        active={tool === 'polygon'} onClick={() => setTool('polygon')} />
+          <ToolBtn icon={<IconStar />} label="Estrella"           active={tool === 'star'}    onClick={() => setTool('star')} />
           <ToolBtn icon={<IconLine />} label="Línea (\)"          active={tool === 'line'}    onClick={() => setTool('line')} />
+          <ToolBtn icon={<IconSymbol />} label="Símbolo · sello"  active={tool === 'symbol'}  onClick={() => setTool('symbol')} />
           <ToolDivider />
-          <ToolBtn icon={<IconBucket />} label="Relleno"          active={tool === 'fill'}        onClick={() => setTool('fill')} />
+          <ToolBtn icon={<IconBucket />} label="Relleno (K)"      active={tool === 'fill'}        onClick={() => setTool('fill')} />
+          <ToolBtn icon={<IconGradient />} label="Degradado (G)"  active={tool === 'gradient'}   onClick={() => setTool('gradient')} />
           <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"   active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
-          <ToolBtn icon={<IconEraser />} label="Goma"             active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <ToolBtn icon={<IconEraser />} label="Goma (Shift+E)"   active={tool === 'eraser'} onClick={() => setTool('eraser')} />
+          <ToolBtn icon={<IconScissors />} label="Cortar (C)"     active={tool === 'cut'}    onClick={() => setTool('cut')} />
           <div style={{ marginTop: 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <ToolDivider />
             <ToolBtn icon={<IconHand />} label="Mano · pan (H · Espacio)" active={tool === 'hand'} onClick={() => setTool('hand')} />
@@ -4094,11 +4475,26 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
           )}
         </main>
 
-        {/* Right panel */}
-        <aside style={{
-          width: 232, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
+        {/* Right panel — redimensionable arrastrando el borde izquierdo (estilo Illustrator) */}
+        <aside ref={rightPanelRef as RefObject<HTMLElement>} style={{
+          width: rightPanelW, flexShrink: 0, borderLeft: '1px solid var(--line-soft)',
           display: 'flex', flexDirection: 'column', background: 'var(--bg)',
+          position: 'relative',
         }}>
+          {/* Tirador de redimensión: franja fina sobre el borde izquierdo */}
+          <div
+            onPointerDown={startPanelResize}
+            onDoubleClick={() => { if (rightPanelRef.current) rightPanelRef.current.style.width = '232px'; setRightPanelW(232); localStorage.setItem('raw.rightPanelW', '232') }}
+            title="Arrastrar para cambiar el ancho · doble click para restablecer"
+            style={{
+              position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, zIndex: 30,
+              cursor: 'col-resize', touchAction: 'none',
+              background: resizingPanel ? 'var(--accent)' : 'transparent',
+              transition: 'background 0.12s var(--ease)',
+            }}
+            onMouseEnter={e => { if (!resizingPanel) e.currentTarget.style.background = 'color-mix(in oklch, var(--accent) 45%, transparent)' }}
+            onMouseLeave={e => { if (!resizingPanel) e.currentTarget.style.background = 'transparent' }}
+          />
           {/* Tabs */}
           <div style={{
             display: 'flex', flexShrink: 0,
@@ -4358,6 +4754,16 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
                 <span className="label">Rotación</span>
                 <NumberField value={propAngle} onChange={applyAngle} step={1} min={-360} max={360} suffix="°" />
               </div>
+              {/* Reflejar (espejar) */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 6 }}>
+                <span className="label">Reflejar</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button className="btn btn-ghost" title="Reflejar horizontal (Shift+H)" onClick={() => flipSelected('x')}
+                    style={{ padding: '4px 10px', fontSize: 11 }}>⇆ H</button>
+                  <button className="btn btn-ghost" title="Reflejar vertical (Shift+V)" onClick={() => flipSelected('y')}
+                    style={{ padding: '4px 10px', fontSize: 11 }}>⇅ V</button>
+                </div>
+              </div>
               {/* Opacidad */}
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -4406,6 +4812,72 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
               <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
                 Combina las formas en un trazado nuevo
               </div>
+            </div>
+          )}
+
+          {/* Opciones de polígono / estrella (al estilo Illustrator) */}
+          {(tool === 'polygon' || tool === 'star') && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>{tool === 'star' ? 'Estrella' : 'Polígono'}</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span className="label">{tool === 'star' ? 'Puntas' : 'Lados'}</span>
+                {tool === 'star'
+                  ? <NumberField value={starPointCount} onChange={v => setStarPointCount(Math.max(3, Math.min(20, Math.round(v))))} min={3} max={20} step={1} />
+                  : <NumberField value={polySides} onChange={v => setPolySides(Math.max(3, Math.min(20, Math.round(v))))} min={3} max={20} step={1} />}
+              </div>
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7, lineHeight: 1.4 }}>
+                Arrastrá desde el centro hacia afuera para dibujar.
+              </p>
+            </div>
+          )}
+
+          {/* Ayuda del degradado */}
+          {tool === 'gradient' && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Degradado</div>
+              <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                Arrastrá sobre un objeto para aplicar un degradado lineal. Va del
+                <b style={{ color: 'var(--fg-2)' }}> color de relleno</b> al
+                <b style={{ color: 'var(--fg-2)' }}> color de trazado</b> (los elegís abajo).
+                La dirección del arrastre define horizontal o vertical.
+              </p>
+            </div>
+          )}
+
+          {/* Símbolos (sellos) */}
+          {tool === 'symbol' && (
+            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+              <div className="label" style={{ marginBottom: 8 }}>Símbolos</div>
+              <button className="btn btn-ghost" onClick={createSymbolFromSelection}
+                style={{ width: '100%', padding: '6px 10px', fontSize: 11, marginBottom: 8 }}>
+                + Crear desde la selección
+              </button>
+              {symbols.length === 0 ? (
+                <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                  Seleccioná un objeto y creá un símbolo. Después clickeá en el lienzo para estampar copias.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {symbols.map(s => (
+                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button onClick={() => setActiveSymbol(s.id)} style={{
+                        flex: 1, textAlign: 'left', padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                        background: activeSymbol === s.id ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                        border: '1px solid ' + (activeSymbol === s.id ? 'var(--accent)' : 'var(--line)'),
+                        color: activeSymbol === s.id ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
+                      }}>{s.name}</button>
+                      <button onClick={() => deleteSymbol(s.id)} title="Eliminar símbolo" style={{
+                        background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 12, padding: 4,
+                      }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeSymbol && symbols.length > 0 && (
+                <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 8, lineHeight: 1.4 }}>
+                  Clickeá en el lienzo para estampar el símbolo activo.
+                </p>
+              )}
             </div>
           )}
 
@@ -4646,18 +5118,40 @@ export default function EditorScreen({ project, designer, onSave, saved, onSaveC
         onChange={handleFontUpload}
       />
 
-      {/* Tech Pack */}
-      {techPackImg && (
-        <TechPackSheet
-          project={project}
-          designer={designer}
-          garmentImg={techPackImg}
-          measures={isTee ? measures : null}
-          onClose={() => setTechPackImg(null)}
-        />
+      {/* Menú contextual (click derecho) */}
+      {/* Diálogo de medidas exactas (click sin arrastrar con una forma) */}
+      {exactDialog && (
+        <>
+          <div onClick={() => setExactDialog(null)} style={{ position: 'fixed', inset: 0, zIndex: 320 }} />
+          <div style={{
+            position: 'fixed', zIndex: 321,
+            left: Math.min(exactDialog.px, window.innerWidth - 230),
+            top: Math.min(exactDialog.py, window.innerHeight - 150),
+            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+            padding: 12, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', width: 210,
+          }}
+            onKeyDown={e => { if (e.key === 'Enter') createExactShape(); if (e.key === 'Escape') setExactDialog(null) }}>
+            <div className="label" style={{ marginBottom: 8 }}>
+              Medidas {exactDialog.tool === 'ellipse' ? '(elipse)' : exactDialog.tool === 'rrect' ? '(redondeado)' : '(rectángulo)'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Ancho</div>
+                <NumberField value={exactW} onChange={v => setExactW(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Alto</div>
+                <NumberField value={exactH} onChange={v => setExactH(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setExactDialog(null)} style={{ padding: '5px 12px', fontSize: 12 }}>Cancelar</button>
+              <button className="btn btn-primary" onClick={createExactShape} style={{ padding: '5px 12px', fontSize: 12 }}>Crear</button>
+            </div>
+          </div>
+        </>
       )}
 
-      {/* Menú contextual (click derecho) */}
       {ctxMenu && (() => {
         const pieces = mockupObjects.current
         const named = pieces.filter(p => !/^Pieza/.test(pieceNameOf(p, 'Pieza')))
@@ -5249,6 +5743,52 @@ const IconEyedropper = () => (
     <path d="M11.5 1.5 L14.5 4.5 L7 12 L5 14 L2 11 L4 9 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     <path d="M11.5 1.5 L14.5 4.5 L12.5 6.5 L9.5 3.5 Z" />
     <rect x="3" y="11" width="3" height="3" rx="0.8" opacity="0.6" />
+  </svg>
+)
+
+const IconGradient = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16">
+    <defs>
+      <linearGradient id="gradTool" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stopColor="currentColor" stopOpacity="1" />
+        <stop offset="1" stopColor="currentColor" stopOpacity="0.15" />
+      </linearGradient>
+    </defs>
+    <rect x="2" y="2" width="12" height="12" rx="2" fill="url(#gradTool)" stroke="currentColor" strokeWidth="1" />
+  </svg>
+)
+
+const IconScissors = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+    <circle cx="4" cy="11.5" r="2.2" />
+    <circle cx="4" cy="4.5" r="2.2" />
+    <line x1="6" y1="5.7" x2="14" y2="11" strokeLinecap="round" />
+    <line x1="6" y1="10.3" x2="14" y2="5" strokeLinecap="round" />
+  </svg>
+)
+
+const IconRRect = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="2.5" y="3.5" width="11" height="9" rx="3" />
+  </svg>
+)
+
+const IconPolygon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+    <path d="M8 2 L14 6 L11.5 13 L4.5 13 L2 6 Z" />
+  </svg>
+)
+
+const IconStar = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+    <path d="M8 1.5 L9.8 6 L14.5 6.2 L10.8 9.1 L12.1 13.7 L8 11 L3.9 13.7 L5.2 9.1 L1.5 6.2 L6.2 6 Z" />
+  </svg>
+)
+
+const IconSymbol = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+    <rect x="2" y="2" width="8" height="8" rx="1.5" />
+    <rect x="6" y="6" width="8" height="8" rx="1.5" opacity="0.55" />
   </svg>
 )
 

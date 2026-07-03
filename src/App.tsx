@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { Project, Folder } from './types/project'
-import { fetchProjects, fetchProjectCanvas, upsertProject, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+import { Project, Folder, Tab, tabKey, TechPackMeasures, TechPackDoc } from './types/project'
+import { fetchProjects, fetchProjectCanvas, fetchProjectTechpack, upsertProject, saveTechpackJson, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
 import AuthScreen from './screens/AuthScreen'
 import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
@@ -10,6 +10,7 @@ import HomeScreen from './screens/HomeScreen'
 import LibraryScreen from './screens/LibraryScreen'
 import ExportScreen from './screens/ExportScreen'
 import EditorScreen from './screens/EditorScreen'
+import TechPackScreen from './screens/TechPackScreen'
 import NewProjectSheet from './screens/NewProjectSheet'
 import ChromeBar from './components/ChromeBar'
 import Toast from './components/Toast'
@@ -17,7 +18,7 @@ import EasterEgg from './components/EasterEgg'
 import PageTransition from './components/PageTransition'
 import Spotlight from './components/Spotlight'
 
-type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor'
+type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor' | 'techpack'
 export type Theme = 'dark' | 'light' | 'illustrator'
 
 export default function App() {
@@ -28,7 +29,7 @@ export default function App() {
   const [projects, setProjects]     = useState<Project[]>([])
   const [folders, setFolders]       = useState<Folder[]>([])
   const [activeProject, setActive]  = useState<Project | null>(null)
-  const [openTabs, setOpenTabs]     = useState<Project[]>([])
+  const [openTabs, setOpenTabs]     = useState<Tab[]>([])
   const [loading, setLoading]         = useState(false)
   const [showSheet, setShowSheet]     = useState(false)
   const [showProfile, setShowProfile] = useState(false)
@@ -70,9 +71,9 @@ export default function App() {
   const showToast = (msg: string) => setToast(msg)
 
   async function openProject(p: Project) {
-    // Si ya está abierto en un tab, usá la versión en memoria (tiene canvas)
-    const existing = openTabs.find(t => t.id === p.id)
-    if (existing) { setActive(existing); go('editor'); return }
+    // Si ya hay un tab de editor para este proyecto, reusá su versión en memoria (tiene canvas)
+    const existing = openTabs.find(t => t.kind === 'editor' && t.project.id === p.id)
+    if (existing) { setActive(existing.project); go('editor'); return }
 
     // Carga lazy del canvas_json solo al abrir
     let project = p
@@ -87,16 +88,65 @@ export default function App() {
       }
     }
     setActive(project)
-    setOpenTabs(prev => [...prev, project])
+    setOpenTabs(prev => [...prev, { kind: 'editor', project }])
     go('editor')
   }
 
-  function closeTab(id: string) {
+  // Abre (o reenfoca y refresca) la pestaña de ficha técnica del proyecto activo,
+  // en paralelo con el editor. La llama EditorScreen vía onOpenTechPack.
+  async function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
+    const base = activeProject
+    if (!base) return
+    // Carga lazy del documento guardado (si la columna no existe aún, vuelve null)
+    let project = base
+    if (project.techpackJson == null) {
+      const techpackJson = await fetchProjectTechpack(project.id)
+      if (techpackJson != null) {
+        project = { ...project, techpackJson }
+        setProjects(prev => prev.map(x => x.id === project.id ? project : x))
+      }
+    }
     setOpenTabs(prev => {
-      const next = prev.filter(t => t.id !== id)
-      if (activeProject?.id === id) {
+      const exists = prev.some(t => t.kind === 'techpack' && t.project.id === project.id)
+      if (exists) {
+        return prev.map(t =>
+          t.kind === 'techpack' && t.project.id === project.id
+            ? { ...t, project, snapshot, measures }
+            : t)
+      }
+      return [...prev, { kind: 'techpack', project, snapshot, measures }]
+    })
+    setActive(project)
+    go('techpack')
+  }
+
+  // Persiste el documento de ficha técnica del proyecto activo
+  async function handleSaveTechPack(doc: TechPackDoc) {
+    const base = activeProject
+    if (!base) return
+    const json = JSON.stringify(doc)
+    const updated = { ...base, techpackJson: json, updatedAt: Date.now() }
+    setActive(updated)
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
+    setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
+    // Guarda solo techpack_json; si la columna no existe aún, falla en silencio
+    // (el doc queda en memoria para la sesión; se persiste una vez corrida la migración).
+    try { await saveTechpackJson(base.id, json) } catch { /* migración pendiente */ }
+  }
+
+  // Activa una pestaña (editor o ficha técnica): proyecto activo + ruta correspondiente
+  function activateTab(t: Tab) {
+    setActive(t.project)
+    go(t.kind)
+  }
+
+  function closeTab(t: Tab) {
+    setOpenTabs(prev => {
+      const next = prev.filter(x => tabKey(x) !== tabKey(t))
+      const wasActive = activeProject?.id === t.project.id && route === t.kind
+      if (wasActive) {
         const last = next[next.length - 1]
-        if (last) setActive(last)
+        if (last) { setActive(last.project); go(last.kind) }
         else { setActive(null); go('home') }
       }
       return next
@@ -124,7 +174,16 @@ export default function App() {
     try {
       await deleteProject(id)
       setProjects(prev => prev.filter(p => p.id !== id))
-      closeTab(id)
+      // Purga ambas pestañas (editor + ficha técnica) del proyecto borrado
+      setOpenTabs(prev => {
+        const next = prev.filter(t => t.project.id !== id)
+        if (activeProject?.id === id) {
+          const last = next[next.length - 1]
+          if (last) { setActive(last.project); go(last.kind) }
+          else { setActive(null); go('home') }
+        }
+        return next
+      })
       showToast('Proyecto eliminado')
     } catch { showToast('Error al eliminar el proyecto') }
   }
@@ -161,7 +220,7 @@ export default function App() {
       await upsertProject(updated, user!.id)
       setActive(updated)
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
-      setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+      setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
     } catch { showToast('Error al guardar — revisá tu conexión') }
   }
 
@@ -177,7 +236,7 @@ export default function App() {
     await upsertProject(updated, user!.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
-    setOpenTabs(prev => prev.map(t => t.id === updated.id ? updated : t))
+    setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
   }
 
   const exportProject = activeProject ?? projects[0] ?? null
@@ -187,6 +246,14 @@ export default function App() {
 
   // Sin sesión → pantalla de login
   if (!user) return <AuthScreen />
+
+  const designerName = user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'
+  // El editor se mantiene montado debajo de la ficha técnica para no perder el
+  // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
+  const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
+  const techPackTab = activeProject != null
+    ? openTabs.find((t): t is Extract<Tab, { kind: 'techpack' }> => t.kind === 'techpack' && t.project.id === activeProject.id)
+    : undefined
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -205,7 +272,7 @@ export default function App() {
           email={user.email ?? ''}
           avatarUrl={user.user_metadata?.avatar_url}
           onHome={() => go('home')}
-          onTabClick={openProject}
+          onTabClick={activateTab}
           onTabClose={closeTab}
           onNewProject={() => setShowSheet(true)}
           onSave={() => editorActionsRef.current?.save()}
@@ -238,15 +305,31 @@ export default function App() {
         {route === 'export'   && exportProject && (
           <ExportScreen project={exportProject} onGo={go} onBack={() => go('home')} />
         )}
-        {route === 'editor'   && activeProject && (
-          <EditorScreen
-            key={activeProject.id}
-            project={activeProject}
-            designer={user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'}
-            onSave={handleSave}
-            saved={saved}
-            onSaveComplete={handleSaveComplete}
-            onActionsReady={a => { editorActionsRef.current = a }}
+        {(route === 'editor' || route === 'techpack') && activeProject && hasEditorTab && (
+          <div style={{ display: route === 'techpack' ? 'none' : 'contents' }}>
+            <EditorScreen
+              key={activeProject.id}
+              project={activeProject}
+              designer={designerName}
+              onSave={handleSave}
+              saved={saved}
+              onSaveComplete={handleSaveComplete}
+              onActionsReady={a => { editorActionsRef.current = a }}
+              onOpenTechPack={openTechPackTab}
+              onToast={showToast}
+            />
+          </div>
+        )}
+        {route === 'techpack' && techPackTab && (
+          <TechPackScreen
+            key={'tp:' + techPackTab.project.id}
+            project={techPackTab.project}
+            designer={designerName}
+            snapshot={techPackTab.snapshot}
+            measures={techPackTab.measures}
+            onSave={handleSaveTechPack}
+            onBackToEditor={() => openProject(techPackTab.project)}
+            onClose={() => closeTab(techPackTab)}
             onToast={showToast}
           />
         )}
