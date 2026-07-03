@@ -1,0 +1,34 @@
+# Single source of tunables for the parking POC.
+# Milestones add sections here; nothing is hardcoded in src/.
+
+source:
+  kind: file            # webcam | file | rtsp
+  webcam_index: 0
+  file_path: data/sample_clips/synthetic_lot.mp4
+  loop_file: true       # loop clips so live-style testing works on short videos
+  rtsp_url: ""
+  reconnect_attempts: 3 # rtsp/webcam reopen tries before failing loud
+  reconnect_delay_s: 2.0
+
+model:                  # used from M1
+  weights: yolo11n.pt   # switch to yolo11s.pt / yolo11m.pt if a GPU is present
+  device: cpu           # cpu | cuda:0
+  confidence: 0.35
+  vehicle_classes: [2, 3, 5, 7]   # COCO: car, motorcycle, bus, truck
+  footprint_height_ratio: 0.35    # lower fraction of bbox used as ground footprint
+
+occupancy:              # used from M3
+  occupied_threshold: 0.25
+  debounce_frames: 5
+
+fit:                    # used from M4/M5
+  clearance_side_m: 0.25
+  tight_band_m: 0.10
+  vehicle_sizes_m:      # [width, length]
+    compact: [1.7, 4.2]
+    standard: [1.85, 4.7]
+    suv_van: [2.0, 5.0]
+
+display:
+  window_name: "Parking POC"
+  max_width: 1280       # downscale display (not processing) if wider
