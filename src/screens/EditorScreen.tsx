@@ -3361,10 +3361,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     fc.current?.requestRenderAll()
   }
 
-  // ── Alinear (como el panel Alinear de Illustrator) ──────────────────────────
-  // Si hay 2+ objetos seleccionados, se alinean entre sí (caja de la selección).
-  // Si hay uno solo, se alinea respecto a la remera (o al lienzo si no hay remera).
-  type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom'
+  // Caja combinada del mockup (remera) — usada por el snapping / guías inteligentes.
   function mockupBounds(): { left: number; top: number; width: number; height: number } | null {
     const m = mockupObjects.current
     if (!m.length) return null
@@ -3372,74 +3369,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
     const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
     const maxX = Math.max(...r.map(b => b.left + b.width)), maxY = Math.max(...r.map(b => b.top + b.height))
     return { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
-  }
-  function alignObjects(mode: AlignMode) {
-    const canvas = fc.current
-    if (!canvas) return
-    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
-    if (!targets.length) return
-    // Refrescar la caja real: si el objeto (p. ej. un texto editado) tiene aCoords viejos,
-    // getBoundingRect daría una caja desactualizada y la alineación lo mandaría fuera.
-    targets.forEach(o => o.setCoords())
-    const prev = targets.map(o => ({ obj: o, left: o.left ?? 0, top: o.top ?? 0 }))
-    let ref: { left: number; top: number; width: number; height: number }
-    if (targets.length >= 2) {
-      const r = targets.map(o => o.getBoundingRect())
-      const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
-      const maxX = Math.max(...r.map(b => b.left + b.width)), maxY = Math.max(...r.map(b => b.top + b.height))
-      ref = { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
-    } else {
-      ref = mockupBounds() ?? { left: 0, top: 0, width: canvas.getWidth(), height: canvas.getHeight() }
-    }
-    targets.forEach(o => {
-      const b = o.getBoundingRect()
-      let dx = 0, dy = 0
-      if (mode === 'left')         dx = ref.left - b.left
-      else if (mode === 'hcenter') dx = (ref.left + ref.width / 2) - (b.left + b.width / 2)
-      else if (mode === 'right')   dx = (ref.left + ref.width) - (b.left + b.width)
-      else if (mode === 'top')     dy = ref.top - b.top
-      else if (mode === 'vmiddle') dy = (ref.top + ref.height / 2) - (b.top + b.height / 2)
-      else if (mode === 'bottom')  dy = (ref.top + ref.height) - (b.top + b.height)
-      o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy })
-      o.setCoords()
-    })
-    // Registrar el movimiento como un paso deshacible (si algo se movió)
-    if (prev.some(p => p.left !== (p.obj.left ?? 0) || p.top !== (p.obj.top ?? 0))) {
-      undoHistory.current.push({ type: 'transform', items: prev })
-      redoHistory.current = []
-    }
-    canvas.requestRenderAll()
-    const act = canvas.getActiveObject()
-    if (act) { setPropX(Math.round(act.left ?? 0)); setPropY(Math.round(act.top ?? 0)) }
-  }
-  // Distribuir: reparte el espacio entre 3+ objetos de forma pareja (por centros).
-  function distributeObjects(axis: 'h' | 'v') {
-    const canvas = fc.current
-    if (!canvas) return
-    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
-    if (targets.length < 3) return
-    targets.forEach(o => o.setCoords())
-    const prev = targets.map(o => ({ obj: o, left: o.left ?? 0, top: o.top ?? 0 }))
-    const withRect = targets.map(o => ({ o, b: o.getBoundingRect() }))
-    withRect.sort((a, z) => axis === 'h'
-      ? (a.b.left + a.b.width / 2) - (z.b.left + z.b.width / 2)
-      : (a.b.top + a.b.height / 2) - (z.b.top + z.b.height / 2))
-    const first = withRect[0], last = withRect[withRect.length - 1]
-    const c0 = axis === 'h' ? first.b.left + first.b.width / 2 : first.b.top + first.b.height / 2
-    const c1 = axis === 'h' ? last.b.left + last.b.width / 2 : last.b.top + last.b.height / 2
-    const step = (c1 - c0) / (withRect.length - 1)
-    withRect.forEach(({ o, b }, i) => {
-      if (i === 0 || i === withRect.length - 1) return
-      const target = c0 + step * i
-      if (axis === 'h') { const cur = b.left + b.width / 2; o.set({ left: (o.left ?? 0) + (target - cur) }) }
-      else              { const cur = b.top + b.height / 2; o.set({ top:  (o.top  ?? 0) + (target - cur) }) }
-      o.setCoords()
-    })
-    if (prev.some(p => p.left !== (p.obj.left ?? 0) || p.top !== (p.obj.top ?? 0))) {
-      undoHistory.current.push({ type: 'transform', items: prev })
-      redoHistory.current = []
-    }
-    canvas.requestRenderAll()
   }
 
   // ── Pathfinder (unir / restar / intersecar / excluir) ───────────────────────
@@ -4324,13 +4253,7 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
           <ToolBtn icon={<IconPencil />} label="Lápiz (N)"        active={tool === 'pencil'} onClick={() => setTool('pencil')} />
           <ToolBtn icon={<IconText />} label="Texto (T)"          active={tool === 'text'}   onClick={() => setTool('text')} />
           <ToolDivider />
-          <ToolBtn icon={<IconRect />} label="Rectángulo (M)"     active={tool === 'rect'}    onClick={() => setTool('rect')} />
-          <ToolBtn icon={<IconRRect />} label="Rect. redondeado"  active={tool === 'rrect'}   onClick={() => setTool('rrect')} />
-          <ToolBtn icon={<IconEllipse />} label="Elipse (L)"      active={tool === 'ellipse'} onClick={() => setTool('ellipse')} />
-          <ToolBtn icon={<IconPolygon />} label="Polígono"        active={tool === 'polygon'} onClick={() => setTool('polygon')} />
-          <ToolBtn icon={<IconStar />} label="Estrella"           active={tool === 'star'}    onClick={() => setTool('star')} />
-          <ToolBtn icon={<IconLine />} label="Línea (\)"          active={tool === 'line'}    onClick={() => setTool('line')} />
-          <ToolBtn icon={<IconSymbol />} label="Símbolo · sello"  active={tool === 'symbol'}  onClick={() => setTool('symbol')} />
+          <ShapeToolGroup tool={tool} setTool={setTool} />
           <ToolDivider />
           <ToolBtn icon={<IconBucket />} label="Relleno (K)"      active={tool === 'fill'}        onClick={() => setTool('fill')} />
           <ToolBtn icon={<IconGradient />} label="Degradado (G)"  active={tool === 'gradient'}   onClick={() => setTool('gradient')} />
@@ -4743,28 +4666,6 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
                 <input type="range" min={0} max={100} step={1} value={propOpacity}
                   onChange={e => applyOpacity(Number(e.target.value))}
                   style={{ width: '100%', accentColor: 'var(--accent)' }} />
-              </div>
-            </div>
-          )}
-
-          {/* Alinear */}
-          {hasSel && (
-            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
-              <div className="label" style={{ marginBottom: 8 }}>Alinear</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
-                <AlignBtn title="Alinear a la izquierda"  onClick={() => alignObjects('left')}><AlignGlyph dir="left" /></AlignBtn>
-                <AlignBtn title="Centrar horizontal"      onClick={() => alignObjects('hcenter')}><AlignGlyph dir="hcenter" /></AlignBtn>
-                <AlignBtn title="Alinear a la derecha"    onClick={() => alignObjects('right')}><AlignGlyph dir="right" /></AlignBtn>
-                <AlignBtn title="Alinear arriba"          onClick={() => alignObjects('top')}><AlignGlyph dir="top" /></AlignBtn>
-                <AlignBtn title="Centrar vertical"        onClick={() => alignObjects('vmiddle')}><AlignGlyph dir="vmiddle" /></AlignBtn>
-                <AlignBtn title="Alinear abajo"           onClick={() => alignObjects('bottom')}><AlignGlyph dir="bottom" /></AlignBtn>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4, marginTop: 4 }}>
-                <AlignBtn title="Distribuir horizontal (3+ objetos)" onClick={() => distributeObjects('h')}><AlignGlyph dir="disth" /></AlignBtn>
-                <AlignBtn title="Distribuir vertical (3+ objetos)"   onClick={() => distributeObjects('v')}><AlignGlyph dir="distv" /></AlignBtn>
-              </div>
-              <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
-                {selKind === 'multi' ? 'Entre los objetos seleccionados' : 'Respecto a la remera'}
               </div>
             </div>
           )}
@@ -5704,6 +5605,79 @@ function ToolBtn({ icon, label, active, onClick }: {
   )
 }
 
+// Botón agrupado "Figuras": un solo botón que despliega todas las formas
+// (rectángulo, elipse, polígono, estrella, línea, símbolo…) en un flyout.
+function ShapeToolGroup({ tool, setTool }: { tool: Tool; setTool: (t: Tool) => void }) {
+  const shapes: { k: Tool; label: string; icon: React.ReactNode }[] = [
+    { k: 'rect',    label: 'Rectángulo (M)',   icon: <IconRect /> },
+    { k: 'rrect',   label: 'Rect. redondeado', icon: <IconRRect /> },
+    { k: 'ellipse', label: 'Elipse (L)',       icon: <IconEllipse /> },
+    { k: 'polygon', label: 'Polígono',         icon: <IconPolygon /> },
+    { k: 'star',    label: 'Estrella',         icon: <IconStar /> },
+    { k: 'line',    label: 'Línea (\\)',        icon: <IconLine /> },
+    { k: 'symbol',  label: 'Símbolo · sello',  icon: <IconSymbol /> },
+  ]
+  const [open, setOpen] = useState(false)
+  const [last, setLast] = useState<Tool>('rect')
+  const isShape = shapes.some(s => s.k === tool)
+  useEffect(() => { if (isShape) setLast(tool) }, [tool, isShape])
+  const shown = shapes.find(s => s.k === (isShape ? tool : last)) ?? shapes[0]
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button onClick={() => setOpen(o => !o)} title="Figuras" style={{
+        width: 36, height: 36, borderRadius: 8, flexShrink: 0, position: 'relative',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: (isShape || open) ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+        border: '1.5px solid ' + ((isShape || open) ? 'var(--accent)' : 'transparent'),
+        color: (isShape || open) ? 'var(--accent)' : 'var(--fg-2)',
+        cursor: 'pointer', fontSize: 16, transition: 'all 0.15s var(--ease)',
+      }}>
+        {shown.icon}
+        {/* triángulo indicador de submenú */}
+        <span style={{
+          position: 'absolute', right: 3, bottom: 3, width: 0, height: 0,
+          borderLeft: '4px solid transparent', borderBottom: '4px solid currentColor', opacity: 0.7,
+        }} />
+      </button>
+      {open && (
+        <>
+          {/* backdrop: cierra el flyout al clickear afuera */}
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
+          <div style={{
+            position: 'absolute', left: 'calc(100% + 8px)', top: 0, zIndex: 70,
+            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+            padding: 6, display: 'flex', flexDirection: 'column', gap: 2,
+            boxShadow: '0 10px 30px rgb(0 0 0 / 0.28)', minWidth: 184,
+          }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)', padding: '4px 8px 6px', letterSpacing: '0.06em' }}>FIGURAS</div>
+            {shapes.map(s => {
+              const active = tool === s.k
+              return (
+                <button key={s.k} title={s.label}
+                  onClick={() => { setTool(s.k); setLast(s.k); setOpen(false) }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg)' }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                    padding: '7px 10px', borderRadius: 7, fontSize: 13, textAlign: 'left',
+                    background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
+                    border: '1px solid ' + (active ? 'var(--accent)' : 'transparent'),
+                    color: active ? 'var(--accent)' : 'var(--fg)',
+                    cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.12s var(--ease)',
+                  }}>
+                  <span style={{ width: 18, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: active ? 'var(--accent)' : 'var(--fg-2)' }}>{s.icon}</span>
+                  {s.label}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 
 const IconEraser = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -5815,23 +5789,6 @@ function AlignBtn({ title, onClick, children }: { title: string; onClick: () => 
       onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
     >{children}</button>
   )
-}
-function AlignGlyph({ dir }: { dir: 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom' | 'disth' | 'distv' }) {
-  const c = 'currentColor'
-  const guide = (x1: number, y1: number, x2: number, y2: number) =>
-    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth={1.2} />
-  const bar = (x: number, y: number, w: number, h: number) =>
-    <rect x={x} y={y} width={w} height={h} fill={c} rx={0.5} />
-  let body: React.ReactNode = null
-  if (dir === 'left')         body = <>{guide(2, 1.5, 2, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(3, 8.9, 6, 2.6)}</>
-  else if (dir === 'hcenter') body = <>{guide(7.5, 1.5, 7.5, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(4.5, 8.9, 6, 2.6)}</>
-  else if (dir === 'right')   body = <>{guide(13, 1.5, 13, 13.5)}{bar(3, 3.5, 9, 2.6)}{bar(6, 8.9, 6, 2.6)}</>
-  else if (dir === 'top')     body = <>{guide(1.5, 2, 13.5, 2)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 3, 2.6, 6)}</>
-  else if (dir === 'vmiddle') body = <>{guide(1.5, 7.5, 13.5, 7.5)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 4.5, 2.6, 6)}</>
-  else if (dir === 'bottom')  body = <>{guide(1.5, 13, 13.5, 13)}{bar(3.5, 3, 2.6, 9)}{bar(8.9, 6, 2.6, 6)}</>
-  else if (dir === 'disth')   body = <>{bar(2, 2.5, 2, 10)}{bar(6.5, 2.5, 2, 10)}{bar(11, 2.5, 2, 10)}</>
-  else                        body = <>{bar(2.5, 2, 10, 2)}{bar(2.5, 6.5, 10, 2)}{bar(2.5, 11, 10, 2)}</>
-  return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
 }
 function PathfinderGlyph({ op }: { op: 'unite' | 'subtract' | 'intersect' | 'exclude' }) {
   const c = 'currentColor', bg = 'var(--surface)'
