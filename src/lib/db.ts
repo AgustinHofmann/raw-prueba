@@ -86,6 +86,36 @@ export async function deleteFolder(id: string): Promise<void> {
   if (error) throw error
 }
 
+// ─── Profile (nickname) ──────────────────────────────────────────────────────
+
+// Mismas reglas que el CHECK de la base (supabase/security.sql). Validar en el
+// cliente da un error amable al instante; la base sigue siendo la autoridad.
+export const NICKNAME_RE = /^[A-Za-z0-9_]{3,24}$/
+
+export async function fetchMyNickname(userId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('nickname')
+    .eq('id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return (data as { nickname: string } | null)?.nickname ?? null
+}
+
+export async function saveNickname(userId: string, nickname: string): Promise<void> {
+  if (!NICKNAME_RE.test(nickname)) {
+    throw new Error('El nickname debe tener 3–24 caracteres: letras, números o _')
+  }
+  const { error } = await supabase.from('profiles').upsert({ id: userId, nickname })
+  if (error) {
+    // 23505 = unique_violation (índice único sobre lower(nickname))
+    if ((error as { code?: string }).code === '23505') {
+      throw new Error('Ese nickname ya está en uso')
+    }
+    throw error
+  }
+}
+
 // ─── Mappers (camelCase ↔ snake_case) ────────────────────────────────────────
 
 function rowToProject(row: Record<string, unknown>): Project {

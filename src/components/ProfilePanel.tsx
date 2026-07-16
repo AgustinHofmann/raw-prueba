@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import type { Project } from '../types/project'
 import type { Theme } from '../App'
 import { supabase } from '../lib/supabase'
+import { fetchMyNickname, saveNickname, NICKNAME_RE } from '../lib/db'
 
 interface Props {
   user: User
@@ -31,6 +33,31 @@ export default function ProfilePanel({ user, projects, theme, onThemeChange, onC
   const initial    = (user.email?.[0] ?? '?').toUpperCase()
   const joinedAt   = formatJoinDate(user.created_at)
   const totalGarments = projects.length
+
+  // ── Nickname (tabla profiles, ver supabase/security.sql) ──
+  const [nickname, setNickname] = useState<string | null>(null)
+  const [nickDraft, setNickDraft] = useState<string | null>(null)  // null = no editando
+  const [nickBusy, setNickBusy] = useState(false)
+  const [nickErr, setNickErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchMyNickname(user.id).then(setNickname).catch(() => {})
+  }, [user.id])
+
+  async function handleNickSave() {
+    const draft = (nickDraft ?? '').trim()
+    if (draft === (nickname ?? '')) { setNickDraft(null); setNickErr(null); return }
+    setNickBusy(true); setNickErr(null)
+    try {
+      await saveNickname(user.id, draft)
+      setNickname(draft)
+      setNickDraft(null)
+    } catch (e) {
+      setNickErr(e instanceof Error ? e.message : 'No se pudo guardar')
+    } finally {
+      setNickBusy(false)
+    }
+  }
 
   return (
     <div
@@ -112,6 +139,54 @@ export default function ProfilePanel({ user, projects, theme, onThemeChange, onC
                 {user.email}
               </div>
             </div>
+          </div>
+
+          {/* Nickname (guardado en la tabla profiles con RLS) */}
+          <div style={{
+            marginTop: 14, padding: '12px 14px',
+            background: 'var(--surface)', borderRadius: 'var(--radius)',
+            border: '1px solid var(--line-soft)',
+          }}>
+            <div className="label" style={{ marginBottom: 8 }}>Nickname</div>
+            {nickDraft === null ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 13, color: nickname ? 'var(--fg)' : 'var(--muted)', fontFamily: 'var(--mono)' }}>
+                  {nickname ? `@${nickname}` : 'Sin nickname todavía'}
+                </span>
+                <button
+                  onClick={() => { setNickDraft(nickname ?? ''); setNickErr(null) }}
+                  className="btn btn-ghost"
+                  style={{ fontSize: 11, padding: '5px 10px' }}
+                >
+                  {nickname ? 'Editar' : 'Elegir'}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    autoFocus
+                    value={nickDraft}
+                    maxLength={24}
+                    onChange={e => setNickDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleNickSave(); if (e.key === 'Escape') { setNickDraft(null); setNickErr(null) } }}
+                    placeholder="tu_nickname"
+                    style={{ flex: 1, minWidth: 0 }}
+                  />
+                  <button
+                    onClick={handleNickSave}
+                    disabled={nickBusy || !NICKNAME_RE.test((nickDraft ?? '').trim())}
+                    className="btn btn-primary"
+                    style={{ fontSize: 11, padding: '5px 12px' }}
+                  >
+                    {nickBusy ? '…' : 'Guardar'}
+                  </button>
+                </div>
+                <div style={{ fontSize: 10.5, marginTop: 6, color: nickErr ? 'var(--danger)' : 'var(--muted)', lineHeight: 1.4 }}>
+                  {nickErr ?? '3–24 caracteres: letras, números o guión bajo.'}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Joined */}
