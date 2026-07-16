@@ -4,3 +4,7 @@ dist
 .env.local
 .claude/
 .vercel
+
+# Skill tooling (no forma parte de RAW)
+.agents/
+skills-lock.json
