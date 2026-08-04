@@ -220,6 +220,8 @@ function rdp(pts: fabric.Point[], epsilon: number): fabric.Point[] {
 
 const PEN_CURSOR     = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3C/svg%3E") 2 18, crosshair`
 const PEN_DEL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3Ccircle cx='18' cy='4' r='4.5' fill='%23dd0000'/%3E%3Crect x='15.5' y='3' width='5' height='2' rx='1' fill='white'/%3E%3C/svg%3E") 2 18, crosshair`
+// Conservado a proposito: cursor para el modo 'borrar ancla' (aun sin conectar).
+void PEN_DEL_CURSOR
 const PEN_ADD_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3Ccircle cx='18' cy='4' r='4.5' fill='%231D77E0'/%3E%3Crect x='15.5' y='3' width='5' height='2' rx='1' fill='white'/%3E%3Crect x='17' y='1.5' width='2' height='5' rx='1' fill='white'/%3E%3C/svg%3E") 2 18, crosshair`
 const CURVE_CURSOR   = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M2 18 L5 10 L14 1 L19 6 L10 15 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M2 18 L5 10 L10 15 Z' fill='%23aaa'/%3E%3Cpath d='M14 2 Q16 0.5 17.5 2 Q19 3.5 21 2' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") 2 18, crosshair`
 
@@ -359,15 +361,15 @@ function rebuildFromAnchors(
     newObj = new fabric.Line([-len / 2, 0, len / 2, 0], {
       left: cx, top: cy, angle, originX: 'center', originY: 'center',
       stroke: old.stroke as string, strokeWidth: old.strokeWidth,
-      strokeLineCap: (old.strokeLineCap ?? 'round') as string,
+      strokeLineCap: (old.strokeLineCap ?? 'round') as CanvasLineCap,
       fill: undefined, selectable: false, evented: true, clipPath: clip ?? undefined,
     })
   } else {
     const d = hasSmooth ? catmullRomToBezier(pts) : straightPathStr(pts)
     newObj = new fabric.Path(d, {
       stroke: old.stroke as string, strokeWidth: old.strokeWidth,
-      strokeLineCap: (old.strokeLineCap ?? 'round') as string,
-      strokeLineJoin: (old.strokeLineJoin ?? 'round') as string,
+      strokeLineCap: (old.strokeLineCap ?? 'round') as CanvasLineCap,
+      strokeLineJoin: (old.strokeLineJoin ?? 'round') as CanvasLineJoin,
       fill: (old.fill as string | null) ?? null,
       selectable: false, evented: true, clipPath: clip ?? undefined,
       strokeUniform: true,
@@ -690,7 +692,7 @@ function eraseCircleFromPath(path: fabric.Path, cx: number, cy: number, r: numbe
     .filter(f => f.length > 0)
     .map(segs => {
       let d = `M ${segs[0][0].x} ${segs[0][0].y}`
-      for (const [sp0, scp1, scp2, sp1] of segs)
+      for (const [, scp1, scp2, sp1] of segs)
         d += ` C ${scp1.x} ${scp1.y} ${scp2.x} ${scp2.y} ${sp1.x} ${sp1.y}`
       return d
     })
@@ -815,7 +817,7 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, onSave, saved, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
+export default function EditorScreen({ project, onSave, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -1721,6 +1723,9 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       // Dibuja un brazo de handle (línea + circulito en el extremo)
+      // Conservado a proposito: suavizado automatico de esquinas, listo para usar.
+      void autoSmoothCorners
+
       const drawArm = (from: fabric.Point, to: fabric.Point) => {
         if (from.x === to.x && from.y === to.y) return
         addTemp(new fabric.Line([from.x, from.y, to.x, to.y], {
@@ -2513,8 +2518,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
               newPath = new fabric.Path(pathStr, {
                 stroke:         obj.stroke as string,
                 strokeWidth:    obj.strokeWidth,
-                strokeLineCap:  (obj.strokeLineCap  ?? 'round') as string,
-                strokeLineJoin: (obj.strokeLineJoin ?? 'round') as string,
+                strokeLineCap:  (obj.strokeLineCap  ?? 'round') as CanvasLineCap,
+                strokeLineJoin: (obj.strokeLineJoin ?? 'round') as CanvasLineJoin,
                 // Open fragments with fill auto-close visually with a straight line, which looks wrong.
                 // Strip fill so only the stroke outline remains after erasing.
                 fill:           null,
@@ -2994,8 +2999,8 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
         }
       }
 
-      const onCreated = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
-      const onUpdated = (e: { selected?: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
+      const onCreated = (e: { selected: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
+      const onUpdated = (e: { selected: fabric.FabricObject[] }) => syncProps(e.selected?.[0] ?? null)
       const onCleared = () => syncProps(null)
 
       const onScaled   = (e: any) => syncProps(e.target ?? null)
@@ -3024,19 +3029,19 @@ export default function EditorScreen({ project, onSave, saved, onSaveComplete, o
       }
 
       canvas.on('mouse:down', onDownMockup)
-      canvas.on('selection:created', onCreated as Parameters<typeof canvas.on>[1])
-      canvas.on('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
+      canvas.on('selection:created', onCreated)
+      canvas.on('selection:updated', onUpdated)
       canvas.on('selection:cleared', onCleared)
-      canvas.on('object:scaled',    onScaled)
+      canvas.on('object:scaling',    onScaled)
       canvas.on('object:moving',    onMoved)
       canvas.on('object:rotating',  onRotated)
 
       offs.push(() => {
         canvas.off('mouse:down', onDownMockup)
-        canvas.off('selection:created', onCreated as Parameters<typeof canvas.on>[1])
-        canvas.off('selection:updated', onUpdated as Parameters<typeof canvas.on>[1])
+        canvas.off('selection:created', onCreated)
+        canvas.off('selection:updated', onUpdated)
         canvas.off('selection:cleared', onCleared)
-        canvas.off('object:scaled',    onScaled)
+        canvas.off('object:scaling',    onScaled)
         canvas.off('object:moving',    onMoved)
         canvas.off('object:rotating',  onRotated)
         setHasSel(false)

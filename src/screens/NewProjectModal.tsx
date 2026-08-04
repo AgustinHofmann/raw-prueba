@@ -24,6 +24,11 @@ export default function NewProjectModal({ onConfirm, onCancel }: Props) {
       name: name.trim() || 'Sin titulo',
       mockupId: selectedMockup,
       thumbnail: null,
+      canvasJson: null,
+      techpackJson: null,
+      colors: [],
+      tag: '',
+      folderId: null,
       createdAt: now,
       updatedAt: now,
     })
