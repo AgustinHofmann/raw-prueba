@@ -889,6 +889,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [texColors, setTexColors] = useState<Record<TextureKind, string[]>>(() =>
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
   const [activeTexKind, setActiveTexKind] = useState<TextureKind | null>(null)
+  const [activeEffect,  setActiveEffect]  = useState<EffectKind | null>(null)
+  const [effectIntensity, setEffectIntensity] = useState(0.6)
   const [texAdvanced, setTexAdvanced] = useState(false)  // editor por-slot (avanzado) colapsado
   const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
@@ -3226,10 +3228,49 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
   // recolorearla después sin perder la textura.
   function setObjTexture(obj: fabric.FabricObject, kind: TextureKind, colors: string[]) {
-    const tile = makeTextureCanvas(kind, colors)
-    const pattern = new fabric.Pattern({ source: tile, repeat: 'repeat' })
-    obj.set({ fill: pattern as any, dirty: true })
     ;(obj as any)._texture = { kind, colors: [...colors] }
+    delete (obj as any)._baseColor          // la textura pasa a ser la base
+    recomposeFill(obj)
+  }
+
+  // ── Composición base + efecto ───────────────────────────────────────────────
+  // El relleno final de una pieza se arma con dos capas:
+  //   base   → color liso (_baseColor) o estampado (_texture)
+  //   efecto → desgaste/grunge/vintage (_effect), dibujado ENCIMA
+  // Se rehace desde cero cada vez, así cambiar uno no pisa al otro.
+  function recomposeFill(obj: fabric.FabricObject) {
+    const tex    = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+    const eff    = (obj as any)._effect  as { kind: EffectKind; intensity: number } | undefined
+    const baseCol = (obj as any)._baseColor as string | undefined
+
+    // Sin efecto: patrón simple (o color liso), como antes.
+    if (!eff) {
+      if (tex) {
+        const tile = makeTextureCanvas(tex.kind, tex.colors)
+        obj.set({ fill: new fabric.Pattern({ source: tile, repeat: 'repeat' }) as any, dirty: true })
+      } else if (baseCol) {
+        obj.set({ fill: baseCol, dirty: true })
+      }
+      return
+    }
+
+    // Con efecto: se compone en un tile grande (múltiplo del de estampado).
+    const s = EFFECT_TILE
+    const c = document.createElement('canvas'); c.width = s; c.height = s
+    const x = c.getContext('2d')!
+
+    if (tex) {
+      const t = makeTextureCanvas(tex.kind, tex.colors)      // 56×56
+      for (let iy = 0; iy < s; iy += t.height)
+        for (let ix = 0; ix < s; ix += t.width) x.drawImage(t, ix, iy)
+    } else {
+      const f = obj.fill
+      x.fillStyle = baseCol ?? (typeof f === 'string' && f ? f : '#c9c9c9')
+      x.fillRect(0, 0, s, s)
+    }
+
+    paintEffect(x, eff.kind, Math.max(0, Math.min(1, eff.intensity)), s)
+    obj.set({ fill: new fabric.Pattern({ source: c, repeat: 'repeat' }) as any, dirty: true })
   }
 
   // Piezas de la prenda que pueden recibir tela/color (las que tienen área de relleno).
@@ -3275,12 +3316,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     setActiveTexKind(kind)
   }
 
-  // Color sólido de la prenda (o de lo seleccionado): reemplaza cualquier textura.
+  // Color sólido de la prenda (o de lo seleccionado): reemplaza el estampado,
+  // pero CONSERVA el efecto de tela (el desgaste sigue encima del color nuevo).
   function applyGarmentSolid(val: string) {
     const { targets, label } = fillTargets()
-    applyFillToTargets(targets, o => { o.set({ fill: val, dirty: true }); delete (o as any)._texture }, 'Color aplicado', label)
+    applyFillToTargets(targets, o => {
+      delete (o as any)._texture
+      ;(o as any)._baseColor = val
+      o.set({ fill: val, dirty: true })
+      recomposeFill(o)
+    }, 'Color aplicado', label)
     setActiveTexKind(null)
     setPropFill(val)
+  }
+
+  // ── Efectos de tela ─────────────────────────────────────────────────────────
+  function applyEffect(kind: EffectKind, intensity: number) {
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => {
+      // Si la pieza tenía color liso y aún no lo registramos, guardarlo como base.
+      if (!(o as any)._texture && !(o as any)._baseColor && typeof o.fill === 'string' && o.fill) {
+        ;(o as any)._baseColor = o.fill
+      }
+      ;(o as any)._effect = { kind, intensity }
+      recomposeFill(o)
+    }, 'Efecto aplicado', label)
+    setActiveEffect(kind)
+    setEffectIntensity(intensity)
+  }
+
+  function removeEffect() {
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => {
+      delete (o as any)._effect
+      recomposeFill(o)
+    }, 'Efecto quitado', label)
+    setActiveEffect(null)
   }
 
   // Aplica una paleta completa a una textura: actualiza lo seleccionado, o todas las
@@ -3800,7 +3871,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas) return
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
-      .map(o => { const j = o.toObject(['_texture']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor']); delete j.clipPath; return j })
     const canvasJson = JSON.stringify(userObjs)
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
     onSave(thumbnail, canvasJson)
@@ -3855,7 +3926,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Guardar la tela/color aplicado a cada pieza ANTES de rehacer la remera, para no
     // perderlo al cambiar las medidas (se restaura por índice — las piezas no cambian de orden).
     const prevPaint = mockupObjects.current.map(o => ({
-      fill: (o as any).fill, tex: (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
+      fill: (o as any).fill,
+      tex:  (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
+      eff:  (o as any)._effect  as { kind: EffectKind; intensity: number } | undefined,
+      base: (o as any)._baseColor as string | undefined,
     }))
     mockupObjects.current.forEach(o => canvas.remove(o))
 
@@ -3868,13 +3942,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ;(p as any)._rawMockup = true
       return p
     })
-    // Restaurar tela/color por pieza
+    // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar medidas)
     if (prevPaint.length === objs.length) {
       objs.forEach((o, i) => {
         const pp = prevPaint[i]
         if (!pp) return
-        if (pp.tex) { setObjTexture(o, pp.tex.kind, pp.tex.colors) }
-        else if (typeof pp.fill === 'string' && pp.fill !== '') { o.set({ fill: pp.fill }) }
+        if (pp.tex)  (o as any)._texture   = pp.tex
+        if (pp.eff)  (o as any)._effect    = pp.eff
+        if (pp.base) (o as any)._baseColor = pp.base
+        else if (!pp.tex && typeof pp.fill === 'string' && pp.fill !== '') {
+          ;(o as any)._baseColor = pp.fill
+        }
+        if (pp.tex || pp.eff || pp.base) recomposeFill(o)
+        else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
       })
     }
     // Escala FIJA calculada con las medidas por defecto (una sola vez): así al cambiar
@@ -5012,6 +5092,69 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   Quitar textura (volver a color liso)
                 </button>
               )}
+
+              {/* ── Efectos de tela ──────────────────────────────────────────
+                  Van ENCIMA del color o del estampado, no lo reemplazan:
+                  denim + desgaste = jean gastado. */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+                <div className="label" style={{ marginBottom: 4 }}>Efectos de tela</div>
+                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                  Se suman al color o estampado que ya tenga la prenda.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                  {EFFECTS.map(e => {
+                    const on = activeEffect === e.id
+                    return (
+                      <button
+                        key={e.id}
+                        onClick={() => applyEffect(e.id, effectIntensity)}
+                        title={e.hint}
+                        style={{
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+                          padding: '8px 4px', borderRadius: 7, cursor: 'pointer',
+                          background: on ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                          border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                          color: on ? 'var(--accent)' : 'var(--fg-2)',
+                          transition: 'all 0.15s var(--ease)',
+                        }}
+                      >
+                        <span style={{
+                          width: '100%', height: 26, borderRadius: 4,
+                          backgroundImage: `url(${effectPreview(e.id, effectIntensity)})`,
+                          backgroundSize: 'cover',
+                          border: '1px solid var(--line-soft)',
+                        }} />
+                        <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>{e.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {activeEffect && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
+                      <span className="label">Intensidad</span>
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>
+                        {Math.round(effectIntensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={10} max={100} value={Math.round(effectIntensity * 100)}
+                      onChange={e => {
+                        const v = Number(e.target.value) / 100
+                        setEffectIntensity(v)
+                        applyEffect(activeEffect, v)
+                      }}
+                      style={{ width: '100%', accentColor: 'var(--accent)', marginTop: 4 }}
+                    />
+                    <button onClick={removeEffect} className="btn btn-ghost"
+                      style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                      Quitar efecto
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </aside>
@@ -5150,6 +5293,119 @@ const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
   animal:    [{ label: 'Fondo', def: '#d9a441' }, { label: 'Manchas', def: '#3a2410' }],
 }
 const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
+
+// ── Efectos de tela (grunge / vintage / desgaste) ────────────────────────────
+// A diferencia de los estampados, un efecto NO reemplaza el relleno: se dibuja
+// ENCIMA de lo que ya hay (color liso o estampado). Por eso se combinan:
+// denim + desgaste = jean gastado.
+type EffectKind = 'grunge' | 'vintage' | 'desgaste'
+
+const EFFECTS: { id: EffectKind; label: string; hint: string }[] = [
+  { id: 'desgaste', label: 'Desgaste', hint: 'Zonas donde la tela se gastó' },
+  { id: 'grunge',   label: 'Grunge',   hint: 'Manchas y suciedad irregular' },
+  { id: 'vintage',  label: 'Vintage',  hint: 'Tono envejecido y desvaído' },
+]
+
+// El tile del efecto es múltiplo del tile de estampado (56) para que el
+// estampado de abajo no se corte en la unión al repetirse.
+const EFFECT_TILE = 168   // 56 × 3
+
+// Miniatura del efecto para el panel: se dibuja sobre un gris neutro para que
+// se vea el efecto en sí y no el color de la prenda. Cacheada por kind+intensidad.
+const effectPreviewCache = new Map<string, string>()
+function effectPreview(kind: EffectKind, intensity: number): string {
+  const key = `${kind}:${Math.round(intensity * 10)}`
+  const hit = effectPreviewCache.get(key)
+  if (hit) return hit
+  const s = EFFECT_TILE
+  const c = document.createElement('canvas'); c.width = s; c.height = s
+  const x = c.getContext('2d')!
+  x.fillStyle = '#b9b9b9'; x.fillRect(0, 0, s, s)
+  paintEffect(x, kind, Math.max(0, Math.min(1, intensity)), s)
+  const url = c.toDataURL()
+  effectPreviewCache.set(key, url)
+  return url
+}
+
+// Dibuja el desgaste sobre el contexto ya pintado con la base.
+// `amount` 0..1 controla la intensidad.
+function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: number, s: number): void {
+  const rnd = (seed: number) => { const v = Math.sin(seed * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v) }
+  x.save()
+
+  if (kind === 'desgaste') {
+    // Abrasión real: la fibra se afina (zonas MÁS claras) pero además quedan
+    // sombras y suciedad en el roce (zonas MÁS oscuras). Se usan las dos capas
+    // para que el efecto se lea tanto en telas oscuras como en telas claras
+    // (si fuera solo aclarado, sobre una prenda blanca no se vería nada).
+    x.globalCompositeOperation = 'multiply'
+    for (let i = 0; i < Math.round(70 * amount); i++) {
+      const px = rnd(i + 500) * s, py = rnd(i + 531) * s
+      const len = 8 + rnd(i + 505) * 30, ang = -1.0 + rnd(i + 509) * 2.0
+      x.strokeStyle = `rgba(120,115,110,${0.05 + rnd(i + 502) * 0.14 * amount})`
+      x.lineWidth = 0.5 + rnd(i + 503) * 1.4
+      x.beginPath(); x.moveTo(px, py)
+      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
+    }
+    x.globalCompositeOperation = 'screen'
+    for (let i = 0; i < Math.round(110 * amount); i++) {
+      const px = rnd(i) * s, py = rnd(i + 31) * s
+      const len = 6 + rnd(i + 5) * 26, ang = -1.0 + rnd(i + 9) * 2.0
+      x.strokeStyle = `rgba(255,255,255,${0.07 + rnd(i + 2) * 0.22 * amount})`
+      x.lineWidth = 0.5 + rnd(i + 3) * 1.3
+      x.beginPath(); x.moveTo(px, py)
+      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
+    }
+    // Nota: el desgaste se dibuja SOLO con detalle fino (rayas + grano).
+    // Las manchas grandes se leían como wallpaper al repetirse el tile; el
+    // desgaste localizado (rodilla, codo) es otra cosa y va por zonas, no acá.
+    x.globalCompositeOperation = 'source-over'
+    for (let i = 0; i < Math.round(2600 * amount); i++) {
+      const px = rnd(i + 900) * s, py = rnd(i + 950) * s
+      const light = rnd(i + 17) > 0.45
+      x.fillStyle = light
+        ? `rgba(255,255,255,${0.06 + rnd(i + 21) * 0.16 * amount})`
+        : `rgba(110,105,100,${0.04 + rnd(i + 23) * 0.11 * amount})`
+      x.fillRect(px, py, 1, 1)
+    }
+
+  } else if (kind === 'grunge') {
+    // Moteado sucio: muchas manchas CHICAS y débiles superpuestas. Pocas manchas
+    // grandes se notarían como patrón repetido al tilear; muchas chicas leen
+    // como suciedad y disimulan la repetición.
+    x.globalCompositeOperation = 'multiply'
+    for (let i = 0; i < Math.round(70 * amount); i++) {
+      const cx = rnd(i + 11) * s, cy = rnd(i + 23) * s, r = 4 + rnd(i + 37) * 13
+      const g = x.createRadialGradient(cx, cy, 0, cx, cy, r)
+      g.addColorStop(0, `rgba(70,60,48,${0.16 * amount})`)
+      g.addColorStop(1, 'rgba(70,60,48,0)')
+      x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill()
+    }
+    for (let i = 0; i < Math.round(1600 * amount); i++) {
+      const px = rnd(i + 101) * s, py = rnd(i + 211) * s
+      x.fillStyle = `rgba(40,35,30,${0.05 + rnd(i + 5) * 0.22 * amount})`
+      x.fillRect(px, py, 1, 1)
+    }
+
+  } else {
+    // vintage: baño cálido + desvaído general + grano fino.
+    x.globalCompositeOperation = 'multiply'
+    x.fillStyle = `rgba(196,158,106,${0.34 * amount})`   // sepia
+    x.fillRect(0, 0, s, s)
+    x.globalCompositeOperation = 'screen'                 // lava el contraste
+    x.fillStyle = `rgba(255,246,224,${0.20 * amount})`
+    x.fillRect(0, 0, s, s)
+    x.globalCompositeOperation = 'source-over'
+    for (let i = 0; i < Math.round(1100 * amount); i++) {
+      const px = rnd(i + 303) * s, py = rnd(i + 407) * s
+      const dark = rnd(i + 13) > 0.5
+      x.fillStyle = dark ? `rgba(120,100,70,${0.10 * amount})` : `rgba(255,250,235,${0.12 * amount})`
+      x.fillRect(px, py, 1, 1)
+    }
+  }
+
+  x.restore()
+}
 // Convierte #rrggbb + alpha → rgba() (para el efecto translúcido del cuadrillé)
 function hexA(hex: string, a: number): string {
   const h = hex.replace('#', '')
