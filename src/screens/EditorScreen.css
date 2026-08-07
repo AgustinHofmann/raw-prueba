@@ -10,3 +10,62 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Slider de los paneles.
+   Con `accent-color` el navegador rellena la pista solo hasta el CENTRO del
+   thumb, así que al 100% queda un hueco a la derecha y se ve incompleto.
+   Acá la pista se pinta con un degradado calculado desde el valor (--fill),
+   así 0% queda realmente vacío y 100% realmente lleno. */
+.raw-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.raw-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--fill, 0%),
+    var(--line) var(--fill, 0%),
+    var(--line) 100%
+  );
+}
+
+.raw-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--fill, 0%),
+    var(--line) var(--fill, 0%),
+    var(--line) 100%
+  );
+}
+
+.raw-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;          /* centra el thumb sobre la pista de 4px */
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+
+.raw-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
