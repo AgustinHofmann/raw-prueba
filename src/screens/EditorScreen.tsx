@@ -4,7 +4,10 @@ import { Project, TechPackMeasures } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
-import { RAW_TEXTURES, isRawTexture, loadRawWidths, saveRawWidth } from '../utils/rawTextures'
+import { RAW_TEXTURES, isRawTexture, rawTextureById, loadRawWidths, saveRawWidth,
+         loadRawPalettes, saveRawPalette } from '../utils/rawTextures'
+import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
+         shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -907,6 +910,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }))
   })
   const [activeUserTex, setActiveUserTex] = useState<string | null>(null)
+
+  // Recoloreo de las telas de fábrica.
+  // Los colores elegidos viven en un ref y no en estado porque los lee código
+  // asíncrono (bajar el SVG, reteñir la foto): con estado quedaría leyendo el
+  // valor viejo. paletteVersion es lo único que existe para redibujar la UI.
+  const rawPalettes = useRef<Record<string, string[]>>(loadRawPalettes())
+  const rawSource   = useRef(new Map<string, { text?: string; colors: string[] }>())
+  const rawPhotos   = useRef(new Map<string, HTMLImageElement>())
+  const [paletteVersion, setPaletteVersion] = useState(0)
   const [texImporting,  setTexImporting]  = useState(false)
   const [texError,      setTexError]      = useState<string | null>(null)
   const [effectIntensity, setEffectIntensity] = useState(0.6)
@@ -1048,17 +1060,102 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return () => { cancelled = true }
   }, [])
 
+  // ── Recoloreo de las telas de fábrica ──────────────────────────────────────
+  // Lee del archivo los colores que la tela trae de origen. De un SVG salen sus
+  // rellenos, ordenados por cuánta tela ocupa cada uno; de una foto sale un solo
+  // color, el dominante, porque una foto no tiene colores separables.
+  async function rawSourceOf(def: { id: string; url: string; kind: 'svg' | 'photo' }) {
+    const cached = rawSource.current.get(def.id)
+    if (cached) return cached
+
+    let src: { text?: string; colors: string[] }
+    if (def.kind === 'svg') {
+      const text = await fetch(def.url).then(r => r.text())
+      const found = readSvgColors(text).slice(0, 12)
+      src = { text, colors: await sortColorsByArea(def.url, found) }
+    } else {
+      const img = await loadImage(def.url)
+      rawPhotos.current.set(def.id, img)      // el original, para poder reteñir siempre desde él
+      src = { colors: [dominantColor(img)] }
+    }
+    rawSource.current.set(def.id, src)
+    return src
+  }
+
+  // Deja en userTexImages la imagen de esa tela con los colores elegidos.
+  // Sin colores elegidos usa el archivo tal cual, que es más rápido y no pierde
+  // nada de calidad.
+  async function ensureRawImage(id: string): Promise<boolean> {
+    const def = rawTextureById(id)
+    if (!def) return false
+    try {
+      const src = await rawSourceOf(def)
+      const chosen = rawPalettes.current[id]
+      const original = !chosen || sameColors(chosen, src.colors)
+
+      let img: HTMLImageElement
+      if (original) {
+        img = await loadImage(def.url)
+      } else if (def.kind === 'svg') {
+        img = await loadImage(svgToDataUrl(recolorSvg(src.text!, src.colors, chosen)))
+      } else {
+        const base = rawPhotos.current.get(id) ?? await loadImage(def.url)
+        img = await loadImage(tintImage(base, src.colors[0], chosen[0]).toDataURL('image/png'))
+      }
+      userTexImages.current.set(id, img)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // Cambia la paleta de una tela de fábrica y repinta todas las piezas que la usen.
+  function setRawPalette(id: string, colors: string[] | null) {
+    if (colors) rawPalettes.current[id] = colors
+    else delete rawPalettes.current[id]
+    saveRawPalette(id, colors)
+    setPaletteVersion(v => v + 1)
+
+    ensureRawImage(id).then(ok => {
+      if (!ok) return
+      setPaletteVersion(v => v + 1)     // la miniatura sale de la imagen ya recoloreada
+      const c = fc.current
+      if (!c) return
+      c.getObjects().forEach(o => {
+        if ((o as any)._userTex?.id === id) recomposeFill(o)
+      })
+      c.requestRenderAll()
+    })
+  }
+
   // Baja las telas de fábrica que un diseño ya guardado esté usando. No se
   // precargan todas al abrir el editor: son varios MB y casi siempre no se usa
   // ninguna. Al terminar de cargar, preloadTexImage rehace el relleno solo.
   function preloadRawTexturesUsedBy(objs: fabric.FabricObject[]) {
+    const ids = new Set<string>()
     objs.forEach(o => {
       const u = (o as any)._userTex as { id: string } | undefined
-      if (!u || !isRawTexture(u.id)) return
-      const def = RAW_TEXTURES.find(t => t.id === u.id)
-      if (def) preloadTexImage(def.id, def.url)
+      if (u && isRawTexture(u.id) && !userTexImages.current.has(u.id)) ids.add(u.id)
     })
+    ids.forEach(id => ensureRawImage(id).then(ok => {
+      const c = fc.current
+      if (!ok || !c) return
+      let touched = false
+      c.getObjects().forEach(o => {
+        if ((o as any)._userTex?.id === id) { recomposeFill(o); touched = true }
+      })
+      if (touched) c.requestRenderAll()
+    }))
   }
+
+  // Al elegir una tela de fábrica hay que leerle los colores del archivo para
+  // poder mostrar la paleta. Se hace una sola vez por tela y queda cacheado.
+  useEffect(() => {
+    if (!activeUserTex || !isRawTexture(activeUserTex)) return
+    if (rawSource.current.has(activeUserTex)) return
+    const def = rawTextureById(activeUserTex)
+    if (def) rawSourceOf(def).then(() => setPaletteVersion(v => v + 1))
+  }, [activeUserTex])
 
   async function handleTextureUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -3394,6 +3491,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyUserTexture(t: UserTexture) {
     const img = userTexImages.current.get(t.id)
     if (!img) {                                   // precargar y reintentar
+      // Las de fábrica pasan por ensureRawImage, que además les aplica los
+      // colores elegidos antes de que la tela toque la prenda.
+      if (isRawTexture(t.id)) {
+        ensureRawImage(t.id).then(ok => { if (ok) applyUserTexture(t) })
+        return
+      }
       const el = new Image()
       el.onload = () => { userTexImages.current.set(t.id, el); applyUserTexture(t) }
       el.src = t.dataUrl
@@ -5300,9 +5403,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
                   Telas reales. Se aplican a escala: ajustá el ancho de la muestra abajo.
                 </p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div key={paletteVersion} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   {userTextures.filter(t => t.builtIn).map(t => {
                     const on = activeUserTex === t.id
+                    // La miniatura sale de la imagen ya cargada, que es la que
+                    // tiene los colores elegidos. Si todavía no cargó, el archivo.
+                    const thumb = userTexImages.current.get(t.id)?.src ?? t.dataUrl
                     return (
                       <button
                         key={t.id}
@@ -5315,7 +5421,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                       >
                         <div style={{
                           width: '100%', aspectRatio: '1', borderRadius: 8,
-                          backgroundImage: `url(${t.dataUrl})`, backgroundSize: 'cover',
+                          backgroundImage: `url("${thumb}")`, backgroundSize: 'cover',
                           border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
                           outline: on ? '1px solid var(--accent)' : 'none',
                         }} />
@@ -5402,6 +5508,85 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 )}
 
               </div>
+
+              {/* ── Color de una tela de fábrica ─────────────────────────────
+                  Un SVG trae los colores adentro, así que se editan uno por
+                  uno. Una foto no: se reteñe entera desde un solo color. */}
+              {activeUserTex && isRawTexture(activeUserTex) && (() => {
+                const def = rawTextureById(activeUserTex)
+                const src = rawSource.current.get(activeUserTex)
+                if (!def || !src) return null
+                const cur = rawPalettes.current[activeUserTex] ?? src.colors
+                const tocada = !sameColors(cur, src.colors)
+                const porColor = def.kind === 'svg' && src.colors.length > 1
+
+                return (
+                  <div key={paletteVersion} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                    <div className="label" style={{ marginBottom: 10 }}>Color · {def.name}</div>
+
+                    {/* Color principal: el que más tela ocupa. Al cambiarlo, el
+                        resto de los hilos lo acompañan, así el tartán sigue
+                        siendo el mismo tartán en otro color. */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <label style={{ position: 'relative', cursor: 'pointer' }}>
+                        <input type="color" value={cur[0]}
+                          onChange={e => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, e.target.value))}
+                          style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                        <div style={{ width: 32, height: 32, borderRadius: 8, background: cur[0], border: '2px solid var(--line)' }} />
+                      </label>
+                      <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[0]}</span>
+                    </div>
+
+                    {porColor && (
+                      <>
+                        <button onClick={() => setTexAdvanced(v => !v)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none',
+                            color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: '6px 0', fontFamily: 'var(--ui)' }}>
+                          <span style={{ display: 'inline-block', transform: texAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
+                          Opciones avanzadas
+                        </button>
+                        {texAdvanced && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
+                            {src.colors.map((_, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <label style={{ position: 'relative', cursor: 'pointer' }}>
+                                  <input type="color" value={cur[i]}
+                                    onChange={e => {
+                                      const next = [...cur]
+                                      next[i] = e.target.value
+                                      setRawPalette(activeUserTex, next)
+                                    }}
+                                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                                  <div style={{ width: 26, height: 26, borderRadius: 6, background: cur[i], border: '2px solid var(--line)' }} />
+                                </label>
+                                <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>
+                                  {i === 0 ? 'Color principal' : `Color ${i + 1}`}
+                                </span>
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[i]}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {def.kind === 'photo' && (
+                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '2px 0 0', lineHeight: 1.4 }}>
+                        Es una foto, así que se tiñe entera desde un solo color. Los negros
+                        y los blancos no se mueven.
+                      </p>
+                    )}
+
+                    {tocada && (
+                      <button onClick={() => setRawPalette(activeUserTex, null)}
+                        className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                        Volver al color original
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
 
               {/* Escala real: lo que separa esto de "insertar una imagen".
                   Vale para las dos bibliotecas, las de fábrica y las propias,

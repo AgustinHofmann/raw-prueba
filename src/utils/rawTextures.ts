@@ -18,22 +18,28 @@ export interface RawTexture {
   name: string
   url: string
   widthCm: number   // ancho real de la muestra: define la escala del estampado
+  // Define cómo se recolorea, y no es un detalle técnico sino lo que el
+  // diseñador ve: un vector se edita color por color, una foto se reteñe
+  // entera desde un solo color. Ver utils/rawRecolor.ts.
+  kind: 'svg' | 'photo'
 }
 
 // El ancho en cm es una estimación de fábrica, no un dato del archivo. Es el
 // punto de partida; el diseñador lo ajusta con el slider y ese valor sí queda
 // guardado (ver loadRawWidths).
 export const RAW_TEXTURES: RawTexture[] = [
-  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', widthCm: 40 },
-  { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       widthCm: 15 },
-  { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    widthCm: 50 },
-  { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     widthCm: 15 },
-  { id: 'raw:tartan-2', name: 'Tartán 2',     url: '/texturas/tartan-2.svg',     widthCm: 15 },
-  { id: 'raw:tartan-3', name: 'Tartán 3',     url: '/texturas/tartan-3.svg',     widthCm: 15 },
-  { id: 'raw:tartan-4', name: 'Tartán 4',     url: '/texturas/tartan-4.svg',     widthCm: 15 },
-  { id: 'raw:tartan-5', name: 'Tartán 5',     url: '/texturas/tartan-5.svg',     widthCm: 15 },
-  { id: 'raw:tartan-6', name: 'Tartán 6',     url: '/texturas/tartan-6.svg',     widthCm: 15 },
+  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', widthCm: 40, kind: 'photo' },
+  { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       widthCm: 15, kind: 'photo' },
+  { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    widthCm: 50, kind: 'svg' },
+  { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-2', name: 'Tartán 2',     url: '/texturas/tartan-2.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-3', name: 'Tartán 3',     url: '/texturas/tartan-3.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-4', name: 'Tartán 4',     url: '/texturas/tartan-4.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-5', name: 'Tartán 5',     url: '/texturas/tartan-5.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-6', name: 'Tartán 6',     url: '/texturas/tartan-6.svg',     widthCm: 15, kind: 'svg' },
 ]
+
+export const rawTextureById = (id: string) => RAW_TEXTURES.find(t => t.id === id)
 
 export const isRawTexture = (id: string) => id.startsWith('raw:')
 
@@ -56,4 +62,26 @@ export function saveRawWidth(id: string, widthCm: number): void {
     all[id] = widthCm
     localStorage.setItem(WIDTHS_KEY, JSON.stringify(all))
   } catch { /* sin localStorage la app sigue andando, solo no recuerda el ancho */ }
+}
+
+// Los colores que el diseñador le puso a cada tela de fábrica. Mismo criterio
+// que el ancho: son pocos y se eligen una vez, no cada vez que abre el programa.
+// Guarda SOLO los colores elegidos; los originales salen siempre del archivo,
+// así una tela que cambie en disco no queda con una paleta vieja pegada.
+const PALETTE_KEY = 'raw-design:texturas-color'
+
+export function loadRawPalettes(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(PALETTE_KEY)
+    return raw ? JSON.parse(raw) as Record<string, string[]> : {}
+  } catch { return {} }
+}
+
+export function saveRawPalette(id: string, colors: string[] | null): void {
+  try {
+    const all = loadRawPalettes()
+    if (colors) all[id] = colors
+    else delete all[id]                 // volver al original = no guardar nada
+    localStorage.setItem(PALETTE_KEY, JSON.stringify(all))
+  } catch { /* idem */ }
 }
