@@ -3433,9 +3433,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function fillableGarmentPieces(): fabric.FabricObject[] {
     return mockupObjects.current.filter(o => {
       if (o.visible === false) return false
+      if ((o as any)._rawInner) return false   // el hueco del cuello no es una pieza
       const f = (o as any).fill
       return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
     })
+  }
+
+  // El interior sigue al color de la prenda, apagado, para que se lea como el
+  // revés de la tela. Si la prenda tiene estampado no hay color liso del que
+  // salir, y ahí cae en el gris neutro.
+  function syncInnerShade() {
+    const inner = mockupObjects.current.find(o => (o as any)._rawInner)
+    if (!inner) return
+    const body = mockupObjects.current.find(o => (o as any)._rawBody)
+    const base = body ? (body as any)._baseColor as string | undefined : undefined
+    const plain = base && /^#[0-9a-f]{6}$/i.test(base)
+    inner.set({ fill: plain ? adjL(base!, -0.16) : TEE_INNER_FALLBACK, dirty: true })
   }
 
   // ¿A qué se aplica la tela/color? A lo seleccionado si hay algo; si no, a toda la prenda.
@@ -3455,9 +3468,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyFillToTargets(targets: fabric.FabricObject[], mut: (o: fabric.FabricObject) => void, verb: string, label: string) {
     const canvas = fc.current
     if (!canvas) return
+    // El hueco del cuello se filtra acá y no en cada llamador: es el único paso
+    // por el que entra cualquier pintura, así que blindarlo una vez alcanza.
+    targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
     const items = targets.map(o => ({ obj: o, prevFill: o.fill as fabric.TFiller | string | null }))
     targets.forEach(mut)
+    syncInnerShade()
     undoHistory.current.push(items.length === 1
       ? { type: 'fill', obj: items[0].obj, prevFill: items[0].prevFill }
       : { type: 'fillBatch', items })
@@ -4098,14 +4115,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const objs = shapes.map(s => {
       const p = new fabric.Path(s.d, {
         fill: s.fill ?? null, stroke: s.stroke, strokeWidth: s.strokeWidth,
-        selectable: false, evented: true, hoverCursor: 'crosshair', strokeUniform: true,
+        selectable: false,
+        // El interior no se pinta, así que tampoco se hace clic: el clic lo
+        // atraviesa y cae en el cuerpo, que es lo que el diseñador quiso tocar.
+        evented: s.role !== 'inner',
+        hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
+      if (s.role === 'inner') { (p as any)._rawInner = true; (p as any)._pieceName = 'Interior del cuello' }
+      if (s.role === 'piece') (p as any)._rawBody  = true
       return p
     })
     // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar medidas)
     if (prevPaint.length === objs.length) {
       objs.forEach((o, i) => {
+        if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
         const pp = prevPaint[i]
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
@@ -4135,6 +4159,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
+    syncInnerShade()
 
     // Clip = unión de todas las piezas (cuerpo + mangas)
     const clipObjs = shapes.filter(s => s.role === 'piece').map(s => {
@@ -5903,6 +5928,21 @@ const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
 const TEE_BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
+
+// El hueco del cuello: lo que se ve del OTRO lado de la remera al mirarla de frente.
+// No es una pieza más, es un agujero, y por eso nunca lleva el estampado: la tela
+// se ve por el revés. Sin esto el leopardo seguía de largo por el cuello y la
+// prenda dejaba de leerse como una prenda.
+//
+// Se arma con geometría que ya existe, así encaja sin costuras aunque cambien las
+// medidas: la curva del escote (TEE_DETAILS[6], que empieza y termina justo en los
+// extremos del hombro) y la vuelta por el canto de arriba del cuerpo, que es la
+// misma curva de TEE_BODY escrita al revés.
+const TEE_INNER = "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25C228.15,17.99,205.89,1.08,205.89,1.08Z"
+
+// Color del interior cuando el cuerpo tiene estampado (ahí no hay color liso del
+// que derivarlo). Gris apagado: tiene que leerse como sombra, no como una pieza.
+const TEE_INNER_FALLBACK = '#8f8f8f'
 const TEE_DETAILS = [
   "M208.82,15.39s38.5,12.6,80.07,2.15",
   "M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06",
@@ -5977,10 +6017,13 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
 // Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
 // La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
 // y empuja la manga hacia afuera, como una remera real.
-function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
+function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
   const W = teeWarp(m)
-  const shapes: { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
+  const shapes: { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
     { d: transformPath(TEE_BODY, W), role: 'piece', fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
+    // Va después del cuerpo y antes de los detalles: tapa el estampado y las
+    // líneas del escote le quedan dibujadas encima.
+    { d: transformPath(TEE_INNER, W), role: 'inner', fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
   ]
   for (const d of TEE_DETAILS) shapes.push({ d: transformPath(d, W), role: 'detail', fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
   return shapes
