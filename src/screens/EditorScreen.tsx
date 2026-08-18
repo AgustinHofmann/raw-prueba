@@ -27,7 +27,7 @@ interface Props {
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
   | 'rect' | 'ellipse' | 'line' | 'polygon' | 'star' | 'rrect'
-  | 'gradient' | 'symbol' | 'cut' | 'hand' | 'zoom'
+  | 'symbol' | 'cut' | 'hand' | 'zoom'
 
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
@@ -1838,9 +1838,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
       obj.set({
         evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || tool === 'fill'
-                 || tool === 'eyedropper' || tool === 'gradient' || tool === 'cut' || (tool === 'text' && isIText),
+                 || tool === 'eyedropper' || tool === 'cut' || (tool === 'text' && isIText),
         selectable: tool === 'select',
-        hoverCursor: (tool === 'fill' || tool === 'gradient') ? 'pointer' : drawnHoverCursor,
+        hoverCursor: tool === 'fill' ? 'pointer' : drawnHoverCursor,
         // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
         // huecos entre letras tambien son seleccionables. El resto usa hit-test por pixel.
         perPixelTargetFind: !isIText,
@@ -3116,56 +3116,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
 
     // ── Degradado (relleno lineal sobre el objeto, arrastrando la dirección) ──
-    if (tool === 'gradient') {
-      canvas.selection     = false
-      canvas.defaultCursor = 'crosshair'
-      let target: fabric.FabricObject | null = null
-      let downPt: fabric.Point | null = null
-
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        const t = e.target
-        if (!t || mockupObjects.current.includes(t) || (t as any)._locked) { target = null; return }
-        target = t
-        downPt = e.scenePoint
-      }
-      const onUp = (e: fabric.TPointerEventInfo) => {
-        if (!target || !downPt) { target = null; downPt = null; return }
-        const up = e.scenePoint ?? downPt
-        const dx = up.x - downPt.x, dy = up.y - downPt.y
-        const w = target.width ?? 1, h = target.height ?? 1
-        // La dirección del arrastre define horizontal / vertical (y el sentido).
-        let coords: { x1: number; y1: number; x2: number; y2: number }
-        if (Math.abs(dx) >= Math.abs(dy)) {
-          coords = dx >= 0 ? { x1: 0, y1: 0, x2: w, y2: 0 } : { x1: w, y1: 0, x2: 0, y2: 0 }
-        } else {
-          coords = dy >= 0 ? { x1: 0, y1: 0, x2: 0, y2: h } : { x1: 0, y1: h, x2: 0, y2: 0 }
-        }
-        // Dos paradas: color de relleno → color de trazado (ambos los controlás en el panel).
-        const c1 = fillRef.current ?? '#ffffff'
-        const c2 = colorRef.current ?? '#000000'
-        const prev = snapshotPaint(target)
-        const grad = new (fabric.Gradient as any)({
-          type: 'linear', gradientUnits: 'pixels', coords,
-          colorStops: [ { offset: 0, color: c1 }, { offset: 1, color: c2 } ],
-        })
-        // Un degradado no se puede describir con la receta (que solo entiende
-        // color liso o estampado), así que la receta se borra: si quedara,
-        // el próximo redibujo pisaría el degradado.
-        applyPaint(target, { fill: grad })
-        undoHistory.current.push({ type: 'fill', obj: target, prev })
-        redoHistory.current = []
-        canvas.requestRenderAll()
-        target = null; downPt = null
-      }
-      canvas.on('mouse:down', onDown)
-      canvas.on('mouse:up',   onUp)
-      offs.push(() => {
-        canvas.off('mouse:down', onDown)
-        canvas.off('mouse:up',   onUp)
-        canvas.defaultCursor = 'default'
-      })
-    }
-
     // ── Cortar (cuchilla): parte objetos en dos con una línea recta ───────────
     if (tool === 'cut') {
       canvas.selection     = false
@@ -4101,7 +4051,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           case 'z': case 'Z': setTool('zoom');       return
           case 'i': case 'I': setTool('eyedropper'); return
           case 'k': case 'K': setTool('fill');       return   // K — balde (relleno)
-          case 'g': case 'G': setTool('gradient');   return   // G — degradado
           case 'c': case 'C': setTool('cut');        return   // C — cortar (tijera)
         }
       }
@@ -4947,7 +4896,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <ShapeToolGroup tool={tool} setTool={setTool} />
           <ToolDivider />
           <ToolBtn icon={<IconBucket />} label="Relleno (K)"      active={tool === 'fill'}        onClick={() => setTool('fill')} />
-          <ToolBtn icon={<IconGradient />} label="Degradado (G)"  active={tool === 'gradient'}   onClick={() => setTool('gradient')} />
           <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"   active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
           <ToolBtn icon={<IconEraser />} label="Goma (Shift+E)"   active={tool === 'eraser'} onClick={() => setTool('eraser')} />
           <ToolBtn icon={<IconScissors />} label="Cortar (C)"     active={tool === 'cut'}    onClick={() => setTool('cut')} />
@@ -5389,19 +5337,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </div>
               <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7, lineHeight: 1.4 }}>
                 Arrastrá desde el centro hacia afuera para dibujar.
-              </p>
-            </div>
-          )}
-
-          {/* Ayuda del degradado */}
-          {tool === 'gradient' && (
-            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
-              <div className="label" style={{ marginBottom: 8 }}>Degradado</div>
-              <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
-                Arrastrá sobre un objeto para aplicar un degradado lineal. Va del
-                <b style={{ color: 'var(--fg-2)' }}> color de relleno</b> al
-                <b style={{ color: 'var(--fg-2)' }}> color de trazado</b> (los elegís abajo).
-                La dirección del arrastre define horizontal o vertical.
               </p>
             </div>
           )}
@@ -6871,18 +6806,6 @@ const IconEyedropper = () => (
     <path d="M11.5 1.5 L14.5 4.5 L7 12 L5 14 L2 11 L4 9 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     <path d="M11.5 1.5 L14.5 4.5 L12.5 6.5 L9.5 3.5 Z" />
     <rect x="3" y="11" width="3" height="3" rx="0.8" opacity="0.6" />
-  </svg>
-)
-
-const IconGradient = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16">
-    <defs>
-      <linearGradient id="gradTool" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="currentColor" stopOpacity="1" />
-        <stop offset="1" stopColor="currentColor" stopOpacity="0.15" />
-      </linearGradient>
-    </defs>
-    <rect x="2" y="2" width="12" height="12" rx="2" fill="url(#gradTool)" stroke="currentColor" strokeWidth="1" />
   </svg>
 )
 
