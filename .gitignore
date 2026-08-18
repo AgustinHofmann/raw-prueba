@@ -10,3 +10,7 @@ dist
 skills-lock.json
 .env.bak-*
 supabase/.temp/
+
+# Salida del servidor de desarrollo: cambia en cada arranque y no aporta nada
+# al repo. Trababa cada push con un conflicto en un archivo de log.
+dev.log
