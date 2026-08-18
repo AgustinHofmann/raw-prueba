@@ -307,6 +307,53 @@ function pieceLabelFromId(id: string | undefined | null, fallback: string): stri
 function pieceNameOf(obj: fabric.FabricObject, fallback = 'Pieza'): string {
   return ((obj as any)._pieceName as string) || fallback
 }
+
+// El gotero del navegador (Chrome/Edge). Deja tomar un color de CUALQUIER parte
+// de la pantalla, no solo del lienzo, con lupa incluida.
+interface EyeDropperCtor { new (): { open: () => Promise<{ sRGBHex: string }> } }
+const nativeEyeDropper = (): EyeDropperCtor | null =>
+  (window as unknown as { EyeDropper?: EyeDropperCtor }).EyeDropper ?? null
+
+/**
+ * Gotero al lado de la muestra de color, como en Illustrator: en vez de cambiar
+ * de herramienta, perder lo que estabas haciendo y volver, tomás el color ahí
+ * mismo y seguís.
+ *
+ * Donde el navegador no lo soporta cae en la herramienta gotero de siempre, que
+ * hace lo mismo pero solo sobre el lienzo.
+ */
+function PickColorBtn({ onPick, onFallback, title }: {
+  onPick: (hex: string) => void
+  onFallback: () => void
+  title: string
+}) {
+  return (
+    <button
+      title={title}
+      onClick={async () => {
+        const Ctor = nativeEyeDropper()
+        if (!Ctor) { onFallback(); return }
+        try {
+          const { sRGBHex } = await new Ctor().open()
+          if (sRGBHex) onPick(sRGBHex)
+        } catch { /* el usuario cancelo con Escape */ }
+      }}
+      style={{
+        display: 'grid', placeItems: 'center', width: 26, height: 26,
+        borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+        background: 'none', border: '1px solid var(--line)', color: 'var(--fg-2)',
+        transition: 'all 0.15s var(--ease)',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'var(--accent)' }}
+      onMouseLeave={e => { e.currentTarget.style.color = 'var(--fg-2)'; e.currentTarget.style.borderColor = 'var(--line)' }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m2 22 1-1h3l9-9" /><path d="M3 21v-3l9-9" />
+        <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
+      </svg>
+    </button>
+  )
+}
 const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón' }
 
 // Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
@@ -1183,6 +1230,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       c.getObjects().forEach(o => {
         if ((o as any)._userTex?.id === id) recomposeFill(o)
       })
+      markDirty()
       c.requestRenderAll()
     })
   }
@@ -1560,6 +1608,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Lo guardado se lee ANTES de construir la prenda: las medidas tienen que
     // estar puestas cuando se dibuja, o saldría con el talle por defecto y
     // después habría que rehacerla entera.
+    autosaveListo.current = false
     const design = project.canvasJson ? parseDesign(project.canvasJson) : null
     if (design?.garment?.measures) {
       const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
@@ -1591,6 +1640,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         redoHistory.current = []
         canvas.renderAll()
       })
+
+      // Desde acá en adelante, cualquier cambio dispara el guardado automático.
+      // Antes no: agregar la prenda y restaurar lo guardado también son cambios,
+      // y guardarlos apenas se abre el proyecto sería guardar lo mismo que se
+      // acaba de leer.
+      canvas.on('object:added',    markDirty)
+      canvas.on('object:removed',  markDirty)
+      canvas.on('object:modified', markDirty)
+      autosaveListo.current = true
+
       canvas.renderAll()
     }
 
@@ -3037,8 +3096,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.setActiveObject(shape)
         canvas.requestRenderAll()
         shape = null; start = null
-        // La figura recién dibujada queda seleccionada, pero la herramienta NO
-        // cambia: seguís con rectángulo/elipse/línea para dibujar otra.
+        // Dibujada la figura, se vuelve a Seleccionar. Lo normal después de
+        // dibujar es acomodar lo que dibujaste, no dibujar otra igual; quedarse
+        // en la herramienta hacía que el primer clic para moverla creara una
+        // figura nueva encima.
+        setTool('select')
       }
 
       canvas.on('mouse:down', onDown)
@@ -3177,6 +3239,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         redoHistory.current = []
         canvas.discardActiveObject()
         canvas.requestRenderAll()
+        // Hecho el corte, se vuelve a Seleccionar: lo que sigue siempre es
+        // agarrar una de las dos mitades.
+        setTool('select')
       }
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:move', onMove)
@@ -3378,6 +3443,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.setActiveObject(text)
         ;(text as fabric.IText).enterEditing()
         ;(text as fabric.IText).selectAll()
+        // Al terminar de escribir se vuelve a Seleccionar, no antes: cambiar la
+        // herramienta con el cursor todavía dentro del texto cortaría la edición.
+        text.on('editing:exited', () => setTool('select'))
         canvas.requestRenderAll()
       }
 
@@ -3638,6 +3706,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const t = userTextures.find(x => x.id === id)
       if (t) updateUserTexture({ ...t, widthCm })
     }
+    markDirty()
     canvas.requestRenderAll()
   }
 
@@ -3692,6 +3761,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       : { type: 'fillBatch', items })
     redoHistory.current = []
     canvas.requestRenderAll()
+    markDirty()
     onToast?.(`${verb} a ${label}`)
   }
 
@@ -4159,6 +4229,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           syncInnerShade()
           undoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
+        markDirty()   // deshacer y rehacer tambien cambian el diseño
         canvas.discardActiveObject()
         canvas.requestRenderAll()
         return
@@ -4216,6 +4287,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           syncInnerShade()
           redoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
+        markDirty()   // deshacer y rehacer tambien cambian el diseño
         canvas.discardActiveObject()
         canvas.requestRenderAll()
       }
@@ -4298,9 +4370,41 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }
 
-  async function handleSave() {
+  // ── Guardado automático ────────────────────────────────────────────────────
+  // Guardar a mano es una cosa más que el diseñador tiene que acordarse de
+  // hacer, y la única consecuencia de olvidarse es perder el trabajo.
+  //
+  // No se guarda en cada trazo: se espera a que pare de hacer cosas. Cada cambio
+  // reinicia el reloj, así dibujar diez líneas seguidas es UN guardado y no diez.
+  const AUTOSAVE_MS = 2000
+  const autosaveListo = useRef(false)     // no guardar mientras se abre el proyecto
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const guardando     = useRef(false)
+
+  function markDirty() {
+    if (!autosaveListo.current) return
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => { void autoSave() }, AUTOSAVE_MS)
+  }
+
+  async function autoSave() {
+    const payload = buildSavePayload()
+    if (!payload) return
+    // Si ya hay un guardado en vuelo, se reintenta después en vez de mandar dos
+    // versiones a la vez y que gane la que conteste última.
+    if (guardando.current) { markDirty(); return }
+    guardando.current = true
+    try { await onSave(payload.thumbnail, payload.canvasJson) }
+    finally { guardando.current = false }
+  }
+
+  useEffect(() => () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }, [])
+
+  // Lo que se manda a guardar. Lo usan el guardado a mano y el automático: si
+  // fueran dos armados distintos, tarde o temprano guardarían cosas distintas.
+  function buildSavePayload(): { thumbnail: string; canvasJson: string } | null {
     const canvas = fc.current
-    if (!canvas) return
+    if (!canvas) return null
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
@@ -4317,12 +4421,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         uTex: (o as any)._userTex,
       })),
     }
-    const canvasJson = JSON.stringify({ v: 2, objects: userObjs, garment })
-    const thumbnail = garmentThumbnail(canvas)
+    return {
+      canvasJson: JSON.stringify({ v: 2, objects: userObjs, garment }),
+      thumbnail: garmentThumbnail(canvas),
+    }
+  }
+
+  async function handleSave() {
+    const payload = buildSavePayload()
+    if (!payload) return
+    // El guardado a mano cancela el automático pendiente: si no, guardaría dos
+    // veces lo mismo con dos segundos de diferencia.
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
     // Se espera al guardado de verdad. Avisar "Guardado ✓" antes de que la base
     // conteste hacía que el cartel de error y el de éxito salieran juntos, y el
     // diseñador se iba pensando que su trabajo estaba a salvo.
-    if (await onSave(thumbnail, canvasJson)) onSaveComplete()
+    if (await onSave(payload.thumbnail, payload.canvasJson)) onSaveComplete()
   }
 
   function handleExport() {
@@ -4607,6 +4721,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.setActiveObject(shape)
     canvas.requestRenderAll()
     setExactDialog(null)
+    setTool('select')
   }
 
   // Reflejar (espejar) lo seleccionado en horizontal o vertical — útil para prendas simétricas.
@@ -5343,6 +5458,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     }} />
                   </label>
                   <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propFill}</span>
+                  <PickColorBtn title="Tomar un color de la pantalla"
+                    onPick={applyFill} onFallback={() => setTool('eyedropper')} />
                   <button onClick={() => applyFill(null)} style={{
                     background: 'none', border: 'none', color: 'var(--muted)',
                     cursor: 'pointer', fontSize: 12, padding: 4,
@@ -5369,6 +5486,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 }} />
               </label>
               <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propStroke}</span>
+              <PickColorBtn title="Tomar un color de la pantalla"
+                onPick={applyStroke} onFallback={() => setTool('eyedropper')} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span className="label">Grosor</span>
