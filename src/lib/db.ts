@@ -25,19 +25,14 @@ export async function fetchProjectCanvas(id: string): Promise<string | null> {
 }
 
 // Carga el techpack_json (ficha técnica) de forma lazy al abrir la pestaña.
-// Tolera que la columna no exista todavía (migración pendiente) → devuelve null.
 export async function fetchProjectTechpack(id: string): Promise<string | null> {
-  try {
-    const { data, error } = await supabase
-      .from('projects')
-      .select('techpack_json')
-      .eq('id', id)
-      .single()
-    if (error) throw error
-    return ((data as Record<string, unknown>)?.techpack_json as string | null) ?? null
-  } catch {
-    return null
-  }
+  const { data, error } = await supabase
+    .from('projects')
+    .select('techpack_json')
+    .eq('id', id)
+    .single()
+  if (error) throw error
+  return ((data as Record<string, unknown>)?.techpack_json as string | null) ?? null
 }
 
 export async function upsertProject(p: Project, userId?: string): Promise<void> {
@@ -48,7 +43,7 @@ export async function upsertProject(p: Project, userId?: string): Promise<void> 
   if (error) throw error
 }
 
-// Guarda solo techpack_json. Falla silenciosamente si la columna no existe aún.
+// Guarda solo el techpack_json, sin tocar el resto del proyecto.
 export async function saveTechpackJson(id: string, json: string): Promise<void> {
   const { error } = await supabase
     .from('projects')
@@ -88,8 +83,8 @@ export async function deleteFolder(id: string): Promise<void> {
 
 // ─── Profile (nickname) ──────────────────────────────────────────────────────
 
-// Mismas reglas que el CHECK de la base (supabase/security.sql). Validar en el
-// cliente da un error amable al instante; la base sigue siendo la autoridad.
+// Mismas reglas que el CHECK de la base (migrations/0003_profiles_and_rls.sql).
+// Validar en el cliente da un error amable al instante; la base es la autoridad.
 export const NICKNAME_RE = /^[A-Za-z0-9_]{3,24}$/
 
 export async function fetchMyNickname(userId: string): Promise<string | null> {

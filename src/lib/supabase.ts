@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 // Credenciales del proyecto Supabase.
 //
 // La anon key es pública por diseño (viaja al navegador igual): la seguridad
-// real la da el RLS de la base, no esconder esta clave. Ver supabase/setup.sql.
+// real la da el RLS de la base, no esconder esta clave. Ver supabase/migrations/.
 //
 // Se leen del .env para que cambiar de proyecto (o tener uno de dev y otro de
 // prod) sea editar un archivo y no tocar el código.

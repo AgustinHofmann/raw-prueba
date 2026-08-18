@@ -97,10 +97,12 @@ export default function App() {
   async function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
     const base = activeProject
     if (!base) return
-    // Carga lazy del documento guardado (si la columna no existe aún, vuelve null)
+    // Carga lazy del documento guardado
     let project = base
     if (project.techpackJson == null) {
-      const techpackJson = await fetchProjectTechpack(project.id)
+      let techpackJson: string | null = null
+      try { techpackJson = await fetchProjectTechpack(project.id) }
+      catch { showToast('No se pudo cargar la ficha técnica guardada') }
       if (techpackJson != null) {
         project = { ...project, techpackJson }
         setProjects(prev => prev.map(x => x.id === project.id ? project : x))
@@ -129,9 +131,10 @@ export default function App() {
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
-    // Guarda solo techpack_json; si la columna no existe aún, falla en silencio
-    // (el doc queda en memoria para la sesión; se persiste una vez corrida la migración).
-    try { await saveTechpackJson(base.id, json) } catch { /* migración pendiente */ }
+    // Un fallo al guardar TIENE que verse: mientras esto se tragaba en silencio,
+    // la ficha técnica se perdía al recargar y nadie se enteraba.
+    try { await saveTechpackJson(base.id, json) }
+    catch { showToast('Error al guardar la ficha técnica — revisá tu conexión') }
   }
 
   // Activa una pestaña (editor o ficha técnica): proyecto activo + ruta correspondiente

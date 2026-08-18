@@ -8,7 +8,7 @@
 > - **Anotaciones** (`AnnotationLayer`): flechas, líneas guía, callouts numerados, burbujas; ancladas en coords normalizadas (0..1), punta y caja arrastrables, categorías, sólido/punteado, eliminar.
 > - **Export PDF:** `window.print()` con `@page A4 landscape` y salto por página (`break-after: page`); cada página imprime en su propia hoja; el zoom no afecta la impresión.
 >
-> Typecheck sin errores nuevos (quedan los 26 pre-existentes de `EditorScreen`/`NewProjectModal`); Vite transforma todo (lucide + dnd-kit incluidos). **Paso manual pendiente:** correr `supabase/migration_add_techpack.sql` en Supabase → SQL Editor para que la ficha persista.
+> Typecheck sin errores nuevos (quedan los 26 pre-existentes de `EditorScreen`/`NewProjectModal`); Vite transforma todo (lucide + dnd-kit incluidos). **Paso manual pendiente:** correr `supabase/migrations/0004_add_techpack.sql` en Supabase → SQL Editor para que la ficha persista.
 >
 > _Nota: el diseño original abajo describe la v1 (secciones verticales); se conserva como referencia. La v2 reemplaza §1–§2 por el modelo de páginas descrito arriba._
 
@@ -196,7 +196,7 @@ techpack_json: p.techpackJson ?? null,              // projectToRow
 ```
 Extend `fetchProjects` select with `,techpack_json`. No new db functions — `upsertProject` writes the whole row.
 
-**⚠ Manual Supabase migration required** (`supabase/migration_add_techpack.sql`):
+**⚠ Manual Supabase migration required** (`supabase/migrations/0004_add_techpack.sql`):
 ```sql
 alter table projects add column if not exists techpack_json text;
 ```
