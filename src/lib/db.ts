@@ -113,11 +113,20 @@ export async function saveNickname(userId: string, nickname: string): Promise<vo
 
 // ─── Mappers (camelCase ↔ snake_case) ────────────────────────────────────────
 
+// El buzo salió del catálogo, pero puede haber proyectos guardados con
+// mockup_id = 'hoodie'. Sin esto la app buscaría /mockups/hoodie.svg, no lo
+// encontraría y el proyecto abriría vacío. Se abre como remera, que es la
+// prenda por defecto, en vez de romperse.
+const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants']
+function normalizeMockupId(v: unknown): Project['mockupId'] {
+  return MOCKUPS_VALIDOS.includes(v as Project['mockupId']) ? v as Project['mockupId'] : 'tshirt'
+}
+
 function rowToProject(row: Record<string, unknown>): Project {
   return {
     id:         row.id          as string,
     name:       row.name        as string,
-    mockupId:   row.mockup_id   as Project['mockupId'],
+    mockupId:   normalizeMockupId(row.mockup_id),
     thumbnail:  row.thumbnail   as string | null,
     canvasJson: row.canvas_json as string | null,
     techpackJson: ((row.techpack_json as string | null) ?? null),

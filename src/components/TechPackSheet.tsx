@@ -30,7 +30,7 @@ export function TechPackSheetBody({ project, designer, garmentImg, measures }: B
   const [bom, setBom] = useState(DEFAULT_BOM)
   const styleNo = `RAW-${project.id.slice(0, 6).toUpperCase()}`
   const date = new Date(project.createdAt).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
-  const garmentName = project.mockupId === 'tshirt' ? 'Remera' : project.mockupId === 'hoodie' ? 'Buzo' : 'Pantalón'
+  const garmentName = project.mockupId === 'tshirt' ? 'Remera' : project.mockupId === 'chomba' ? 'Chomba' : 'Pantalón'
 
   const cell: React.CSSProperties = { border: '1px solid #999', padding: '5px 8px', fontSize: 11 }
 
