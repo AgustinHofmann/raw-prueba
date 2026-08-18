@@ -33,10 +33,10 @@ cat supabase/migrations/*.sql > /tmp/raw-design-full.sql
 
 ## Estado aplicado en `adiyzzqajvcbtovfdird`
 
-| Migración | Estado |
-|---|---|
-| 0001, 0002, 0003 | aplicadas |
-| 0004, 0005 | **pendientes** |
+| Migración | Estado | Fecha |
+|---|---|---|
+| 0001, 0002, 0003 | aplicadas | mayo–julio 2026 |
+| 0004, 0005 | aplicadas | 18-ago-2026 |
 
 Se verifica con la query del final de `0005_hardening.sql`: las tres tablas deben dar
 `rls_activo = true`, `perm_authent` 4/4/3 y **`perm_anon = 0`**.
