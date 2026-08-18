@@ -19,7 +19,7 @@ export const PAGE_CATALOG: { kind: TechPackPageKind; title: string }[] = [
 const DEFAULT_PAGES: TechPackPageKind[] = ['design', 'specs', 'measures', 'materials']
 
 export const garmentName = (mockupId: Project['mockupId']) =>
-  mockupId === 'tshirt' ? 'Remera' : mockupId === 'hoodie' ? 'Buzo' : 'Pantalón'
+  mockupId === 'tshirt' ? 'Remera' : mockupId === 'chomba' ? 'Chomba' : 'Pantalón'
 
 const titleOf = (kind: TechPackPageKind) => PAGE_CATALOG.find(p => p.kind === kind)?.title ?? kind
 
@@ -27,6 +27,8 @@ function defaultBody(kind: TechPackPageKind, mockupId: Project['mockupId']): str
   if (kind === 'specs') {
     return mockupId === 'pants'
       ? 'Construcción: doble pespunte en tiro y entrepierna · Cintura con elástico/pretina · Ruedo dobladillo 2 cm · Bolsillos según diseño.'
+      : mockupId === 'chomba'
+      ? 'Construcción: cuello tejido piqué · Tapeta con entretela y 3 botones · Costuras de unión overlock · Ruedos con recubridora · Hombro reforzado con cinta · Etiqueta interior en cuello CB.'
       : 'Construcción: cuello ribb 1x1 · Costuras de unión overlock · Ruedos con recubridora · Hombro reforzado con cinta · Etiqueta interior en cuello CB.'
   }
   if (kind === 'notes') return 'Observaciones generales para el taller.'
@@ -42,11 +44,11 @@ function defaultBom(mockupId: Project['mockupId'], colors: string[]): BomRow[] {
     { categoria: 'Etiqueta', descripcion: 'Etiqueta de marca — tejida',             placement: 'Cuello CB', composicion: '', color: '', proveedor: '', consumo: '1', uom: 'u', notas: '' },
     { categoria: 'Etiqueta', descripcion: 'Etiqueta de cuidado',                    placement: 'Costado izq.', composicion: '', color: '', proveedor: '', consumo: '1', uom: 'u', notas: '' },
   ]
-  if (mockupId === 'hoodie') {
+  if (mockupId === 'chomba') {
     base.push(
-      { categoria: 'Tela', descripcion: 'Rib puño/cintura',       placement: 'Puños y cintura', composicion: '95% algodón / 5% elastano', color: dtm, proveedor: '', consumo: '', uom: 'm', notas: '' },
-      { categoria: 'Trim', descripcion: 'Cordón capucha + tanca', placement: 'Capucha', composicion: '', color: '', proveedor: '', consumo: '1', uom: 'u', notas: '' },
-      { categoria: 'Tela', descripcion: 'Frisa interior',         placement: 'Cuerpo', composicion: '100% algodón', color: dtm, proveedor: '', consumo: '', uom: 'm', notas: '' },
+      { categoria: 'Tela', descripcion: 'Piqué para cuello tejido', placement: 'Cuello y puños', composicion: '100% algodón', color: dtm, proveedor: '', consumo: '', uom: 'u', notas: '' },
+      { categoria: 'Trim', descripcion: 'Botones de tapeta',        placement: 'Tapeta delantera', composicion: '', color: '', proveedor: '', consumo: '3', uom: 'u', notas: '' },
+      { categoria: 'Trim', descripcion: 'Entretela de tapeta',      placement: 'Tapeta delantera', composicion: '', color: '', proveedor: '', consumo: '', uom: 'u', notas: '' },
     )
   } else if (mockupId === 'pants') {
     base.push(
@@ -71,11 +73,11 @@ const BASE_POMS: { code: string; punto: string; key: keyof TechPackMeasures; htm
 
 const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm: string; tol: string }[]> = {
   tshirt: [],
-  hoodie: [
-    { code: 'H', punto: 'Alto de capucha',  htm: 'Base a punta',    tol: '1' },
-    { code: 'I', punto: 'Ancho de capucha', htm: 'Plano, mitad',    tol: '1' },
-    { code: 'J', punto: 'Bolsillo canguro', htm: 'Ancho total',     tol: '1' },
-    { code: 'K', punto: 'Alto rib cintura', htm: 'Borde a costura', tol: '0.5' },
+  chomba: [
+    { code: 'H', punto: 'Alto de cuello',    htm: 'Costura a borde',   tol: '0.5' },
+    { code: 'I', punto: 'Largo de tapeta',   htm: 'Escote a punta',    tol: '0.5' },
+    { code: 'J', punto: 'Ancho de tapeta',   htm: 'Plano',             tol: '0.3' },
+    { code: 'K', punto: 'Alto de puño',      htm: 'Borde a costura',   tol: '0.5' },
   ],
   pants: [
     { code: 'A', punto: 'Cintura',          htm: 'Borde a borde, plano',  tol: '1' },
@@ -97,8 +99,8 @@ function defaultPoms(mockupId: Project['mockupId'], measures: TechPackMeasures |
     id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol,
     base: measures ? measures[p.key] : null,
   }))
-  if (mockupId === 'hoodie') {
-    rows.push(...EXTRA_POMS.hoodie.map(p => ({ id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol, base: null })))
+  if (mockupId === 'chomba') {
+    rows.push(...EXTRA_POMS.chomba.map(p => ({ id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol, base: null })))
   }
   return rows
 }

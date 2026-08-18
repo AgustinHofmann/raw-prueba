@@ -9,13 +9,13 @@ interface Props {
 
 const MOCKUPS = [
   { id: 'tshirt' as const, label: 'Remera', src: '/mockups/tshirt.svg' },
-  { id: 'hoodie' as const, label: 'Hoodie', src: '/mockups/hoodie.svg' },
+  { id: 'chomba' as const, label: 'Chomba', src: '/mockups/chomba.svg' },
   { id: 'pants'  as const, label: 'Pantalon', src: '/mockups/pants.svg' },
 ]
 
 export default function NewProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('Sin titulo')
-  const [selectedMockup, setSelectedMockup] = useState<'tshirt' | 'hoodie' | 'pants'>('tshirt')
+  const [selectedMockup, setSelectedMockup] = useState<'tshirt' | 'chomba' | 'pants'>('tshirt')
 
   function handleCreate() {
     const now = Date.now()

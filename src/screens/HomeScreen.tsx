@@ -16,7 +16,7 @@ interface Props {
 
 const MOCKUP_LABELS: Record<string, string> = {
   tshirt: 'Remera',
-  hoodie: 'Hoodie',
+  chomba: 'Chomba',
   pants: 'Pantalón',
 }
 

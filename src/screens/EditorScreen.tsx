@@ -242,6 +242,20 @@ const PIECE_LABELS: Record<string, string> = {
   pocket: 'Bolsillo', bolsillo: 'Bolsillo', collar: 'Cuello', cuello: 'Cuello',
   cuff: 'Puño', 'cuff-left': 'Puño L', 'cuff-right': 'Puño R', hem: 'Ruedo', waistband: 'Cintura',
   waist: 'Cintura', 'leg-left': 'Pierna L', 'leg-right': 'Pierna R', leg: 'Pierna',
+  // Chomba y pantalón: los archivos traen frente y espalda en la misma vista,
+  // así que la etiqueta tiene que decir de cuál de las dos es cada pieza.
+  'body-front': 'Cuerpo frente', 'body-back': 'Cuerpo espalda',
+  'sleeve-left-front': 'Manga L frente', 'sleeve-right-front': 'Manga R frente',
+  'sleeve-left-back': 'Manga L espalda', 'sleeve-right-back': 'Manga R espalda',
+  'cuff-left-front': 'Puño L frente', 'cuff-right-front': 'Puño R frente',
+  'cuff-left-back': 'Puño L espalda', 'cuff-right-back': 'Puño R espalda',
+  'hem-front': 'Ruedo frente', 'hem-back': 'Ruedo espalda',
+  'collar-left-front': 'Cuello L', 'collar-right-front': 'Cuello R',
+  'collar-tip-left': 'Punta cuello L', 'collar-tip-right': 'Punta cuello R',
+  'collar-band-front': 'Tira del cuello', 'collar-back': 'Cuello espalda',
+  'inner-escote': 'Interior del escote',
+  'waistband-left': 'Cintura L', 'waistband-right': 'Cintura R',
+  'hem-left': 'Ruedo L', 'hem-right': 'Ruedo R',
 }
 function pieceLabelFromId(id: string | undefined | null, fallback: string): string {
   if (!id) return fallback
@@ -255,7 +269,14 @@ function pieceLabelFromId(id: string | undefined | null, fallback: string): stri
 function pieceNameOf(obj: fabric.FabricObject, fallback = 'Pieza'): string {
   return ((obj as any)._pieceName as string) || fallback
 }
-const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', hoodie: 'Hoodie', pants: 'Pantalón' }
+const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón' }
+
+// Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
+// La chomba son ~105 porque el archivo trae dos prendas (frente y espalda) una
+// al lado de la otra; el pantalón son ~42, que es lo que mide plancheado.
+// Es lo que fija el tamaño del estampado hasta que estas prendas tengan medidas
+// propias como la remera.
+const ANCHO_NOMINAL_CM: Record<string, number> = { chomba: 105, pants: 42 }
 
 // ── Anchor editing helpers ────────────────────────────────────────────────────
 const ANCHOR_R   = 5
@@ -1540,16 +1561,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       placeTee(measuresRef.current)
       restoreAndWire()
     } else {
-      // Mockups SVG (hoodie, pants)
+      // Mockups SVG (chomba, pants)
       const svgUrl = `/mockups/${project.mockupId}.svg`
       fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
         if (cancelled) return
         const objs = objects.filter(Boolean) as fabric.FabricObject[]
         mockupObjects.current = objs
         objs.forEach((obj, i) => {
+          const id = String((obj as any).id ?? '')
           ;(obj as any)._rawMockup = true
-          ;(obj as any)._pieceName = pieceLabelFromId((obj as any).id, `Pieza ${i + 1}`)
-          obj.set({ selectable: false, evented: true, hoverCursor: 'crosshair' })
+          ;(obj as any)._pieceName = pieceLabelFromId(id, `Pieza ${i + 1}`)
+          // Misma regla que en la remera: lo que es un agujero de la prenda (el
+          // escote de la chomba) muestra el otro lado y no lleva estampado.
+          const esInterior = id.startsWith('inner-')
+          if (esInterior)          (obj as any)._rawInner = true
+          if (id.startsWith('body')) (obj as any)._rawBody = true
+          obj.set({ selectable: false, evented: !esInterior, hoverCursor: 'crosshair' })
         })
         objs.forEach(obj => canvas.add(obj))
 
@@ -1562,9 +1589,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const pad = Math.min(CW, CH) * 0.1
         const sc  = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
         // Estas prendas aun no son parametricas (no tienen medidas en cm), asi
-        // que la escala de las texturas se estima con un ancho nominal de 60 cm.
-        // Sera exacta cuando hoodie y pantalon tengan medidas propias.
-        pxPerCmRef.current = (bw * sc) / 60
+        // que la escala de las texturas se estima con un ancho nominal.
+        // El nominal es de TODO lo que se ve, no de una prenda: el archivo de la
+        // chomba trae frente y espalda una al lado de la otra, y medirlo como si
+        // fuera una sola prenda dejaba el estampado a mitad de tamaño.
+        // Sera exacto cuando chomba y pantalon tengan medidas propias.
+        pxPerCmRef.current = (bw * sc) / (ANCHO_NOMINAL_CM[project.mockupId] ?? 60)
         const ox  = (CW - bw * sc) / 2 - bx * sc
         const oy  = (CH - bh * sc) / 2 - by * sc
         objs.forEach(obj => {
@@ -1574,6 +1604,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           })
           obj.setCoords()  // recalcula oCoords → el hit-test (click) ubica cada pieza
         })
+        syncInnerShade()
 
         const { objects: clipRaw } = await fabric.loadSVGFromURL(svgUrl)
         if (cancelled) return
