@@ -8,3 +8,5 @@ dist
 # Skill tooling (no forma parte de RAW)
 .agents/
 skills-lock.json
+.env.bak-*
+supabase/.temp/

@@ -34,7 +34,7 @@ export default function ProfilePanel({ user, projects, theme, onThemeChange, onC
   const joinedAt   = formatJoinDate(user.created_at)
   const totalGarments = projects.length
 
-  // ── Nickname (tabla profiles, ver supabase/security.sql) ──
+  // ── Nickname (tabla profiles, ver supabase/migrations/0003_profiles_and_rls.sql) ──
   const [nickname, setNickname] = useState<string | null>(null)
   const [nickDraft, setNickDraft] = useState<string | null>(null)  // null = no editando
   const [nickBusy, setNickBusy] = useState(false)
