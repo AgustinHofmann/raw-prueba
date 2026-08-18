@@ -4,6 +4,10 @@ import { Project, TechPackMeasures } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
+import { RAW_TEXTURES, isRawTexture, rawTextureById, loadRawWidths, saveRawWidth,
+         loadRawPalettes, saveRawPalette } from '../utils/rawTextures'
+import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
+         shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -894,8 +898,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
   const [activeTexKind, setActiveTexKind] = useState<TextureKind | null>(null)
   const [activeEffect,  setActiveEffect]  = useState<EffectKind | null>(null)
-  const [userTextures,  setUserTextures]  = useState<UserTexture[]>([])
+  // Las telas de fábrica y las del usuario viven en la MISMA lista: así el
+  // aplicar, la escala real, los efectos y el guardado son un solo camino y no
+  // dos parecidos. Se distinguen por el prefijo 'raw:' del id.
+  const [userTextures,  setUserTextures]  = useState<UserTexture[]>(() => {
+    const saved = loadRawWidths()
+    return RAW_TEXTURES.map(t => ({
+      id: t.id, name: t.name, dataUrl: t.url,
+      widthCm: saved[t.id] ?? t.widthCm,
+      createdAt: 0, builtIn: true,
+    }))
+  })
   const [activeUserTex, setActiveUserTex] = useState<string | null>(null)
+
+  // Recoloreo de las telas de fábrica.
+  // Los colores elegidos viven en un ref y no en estado porque los lee código
+  // asíncrono (bajar el SVG, reteñir la foto): con estado quedaría leyendo el
+  // valor viejo. paletteVersion es lo único que existe para redibujar la UI.
+  const rawPalettes = useRef<Record<string, string[]>>(loadRawPalettes())
+  const rawSource   = useRef(new Map<string, { text?: string; colors: string[] }>())
+  const rawPhotos   = useRef(new Map<string, HTMLImageElement>())
+  const [paletteVersion, setPaletteVersion] = useState(0)
   const [texImporting,  setTexImporting]  = useState(false)
   const [texError,      setTexError]      = useState<string | null>(null)
   const [effectIntensity, setEffectIntensity] = useState(0.6)
@@ -1006,32 +1029,157 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
 
-  // Biblioteca de texturas propias: se carga una vez y se precargan las imágenes,
-  // porque recomposeFill es síncrono y necesita el <img> ya decodificado.
+  // Precarga la imagen de una textura. recomposeFill es síncrono y necesita el
+  // <img> ya decodificado, así que hasta que no carga la pieza queda como está.
+  function preloadTexImage(id: string, src: string) {
+    if (userTexImages.current.has(id)) return
+    const img = new Image()
+    img.onload = () => {
+      userTexImages.current.set(id, img)
+      // Si el diseño guardado ya usaba esta textura, redibujarla ahora.
+      const c = fc.current
+      if (!c) return
+      let touched = false
+      c.getObjects().forEach(o => {
+        if ((o as any)._userTex?.id === id) { recomposeFill(o); touched = true }
+      })
+      if (touched) c.requestRenderAll()
+    }
+    img.src = src
+  }
+
+  // Biblioteca de texturas: las del usuario salen de IndexedDB y se suman a las
+  // de fábrica, que ya están en la lista desde el arranque.
   useEffect(() => {
     let cancelled = false
     listUserTextures().then(list => {
       if (cancelled) return
-      setUserTextures(list)
-      list.forEach(t => {
-        if (userTexImages.current.has(t.id)) return
-        const img = new Image()
-        img.onload = () => {
-          userTexImages.current.set(t.id, img)
-          // Si el diseño guardado ya usaba esta textura, redibujarla ahora.
-          const c = fc.current
-          if (!c) return
-          let touched = false
-          c.getObjects().forEach(o => {
-            if ((o as any)._userTex?.id === t.id) { recomposeFill(o); touched = true }
-          })
-          if (touched) c.requestRenderAll()
-        }
-        img.src = t.dataUrl
-      })
+      setUserTextures(prev => [...prev.filter(t => t.builtIn), ...list])
+      list.forEach(t => preloadTexImage(t.id, t.dataUrl))
     })
     return () => { cancelled = true }
   }, [])
+
+  // ── Recoloreo de las telas de fábrica ──────────────────────────────────────
+  // Lee del archivo los colores que la tela trae de origen. De un SVG salen sus
+  // rellenos, ordenados por cuánta tela ocupa cada uno; de una foto sale un solo
+  // color, el dominante, porque una foto no tiene colores separables.
+  async function rawSourceOf(def: { id: string; url: string; kind: 'svg' | 'photo' }) {
+    const cached = rawSource.current.get(def.id)
+    if (cached) return cached
+
+    let src: { text?: string; colors: string[] }
+    if (def.kind === 'svg') {
+      const text = await fetch(def.url).then(r => r.text())
+      const found = readSvgColors(text).slice(0, 12)
+      src = { text, colors: await sortColorsByArea(def.url, found) }
+    } else {
+      const img = await loadImage(def.url)
+      rawPhotos.current.set(def.id, img)      // el original, para poder reteñir siempre desde él
+      src = { colors: [dominantColor(img)] }
+    }
+    rawSource.current.set(def.id, src)
+    return src
+  }
+
+  // Deja en userTexImages la imagen de esa tela con los colores elegidos.
+  // Sin colores elegidos usa el archivo tal cual, que es más rápido y no pierde
+  // nada de calidad.
+  async function ensureRawImage(id: string): Promise<boolean> {
+    const def = rawTextureById(id)
+    if (!def) return false
+    try {
+      const src = await rawSourceOf(def)
+      const chosen = rawPalettes.current[id]
+      const original = !chosen || sameColors(chosen, src.colors)
+
+      let img: HTMLImageElement
+      if (original) {
+        img = await loadImage(def.url)
+      } else if (def.kind === 'svg') {
+        img = await loadImage(svgToDataUrl(recolorSvg(src.text!, src.colors, chosen)))
+      } else {
+        const base = rawPhotos.current.get(id) ?? await loadImage(def.url)
+        img = await loadImage(tintImage(base, src.colors[0], chosen[0]).toDataURL('image/png'))
+      }
+      userTexImages.current.set(id, img)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // Cambia la paleta de una tela de fábrica y repinta todas las piezas que la usen.
+  function setRawPalette(id: string, colors: string[] | null) {
+    if (colors) rawPalettes.current[id] = colors
+    else delete rawPalettes.current[id]
+    saveRawPalette(id, colors)
+    setPaletteVersion(v => v + 1)
+
+    ensureRawImage(id).then(ok => {
+      if (!ok) return
+      setPaletteVersion(v => v + 1)     // la miniatura sale de la imagen ya recoloreada
+      const c = fc.current
+      if (!c) return
+      c.getObjects().forEach(o => {
+        if ((o as any)._userTex?.id === id) recomposeFill(o)
+      })
+      c.requestRenderAll()
+    })
+  }
+
+  // Le devuelve a la prenda la tela y el color con los que se guardó.
+  // Se empareja por índice, igual que al cambiar una medida: las piezas siempre
+  // se construyen en el mismo orden. Si los números no coinciden es que la
+  // prenda cambió de forma desde que se guardó, y ahí es mejor no adivinar y
+  // dejarla limpia que pintarle la manga con el color del cuerpo.
+  function restoreGarmentPaint(garment: SavedGarment | null | undefined) {
+    const pieces = garment?.pieces
+    const objs = mockupObjects.current
+    if (!pieces || pieces.length !== objs.length) return
+
+    objs.forEach((o, i) => {
+      if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
+      const p = pieces[i]
+      if (!p) return
+      if (p.tex)  (o as any)._texture   = p.tex
+      if (p.eff)  (o as any)._effect    = p.eff
+      if (p.uTex) (o as any)._userTex   = p.uTex
+      if (p.base) (o as any)._baseColor = p.base
+      if (p.tex || p.eff || p.base || p.uTex) recomposeFill(o)
+      else if (p.fill) o.set({ fill: p.fill })
+    })
+    syncInnerShade()
+  }
+
+  // Baja las telas de fábrica que un diseño ya guardado esté usando. No se
+  // precargan todas al abrir el editor: son varios MB y casi siempre no se usa
+  // ninguna. Al terminar de cargar, preloadTexImage rehace el relleno solo.
+  function preloadRawTexturesUsedBy(objs: fabric.FabricObject[]) {
+    const ids = new Set<string>()
+    objs.forEach(o => {
+      const u = (o as any)._userTex as { id: string } | undefined
+      if (u && isRawTexture(u.id) && !userTexImages.current.has(u.id)) ids.add(u.id)
+    })
+    ids.forEach(id => ensureRawImage(id).then(ok => {
+      const c = fc.current
+      if (!ok || !c) return
+      let touched = false
+      c.getObjects().forEach(o => {
+        if ((o as any)._userTex?.id === id) { recomposeFill(o); touched = true }
+      })
+      if (touched) c.requestRenderAll()
+    }))
+  }
+
+  // Al elegir una tela de fábrica hay que leerle los colores del archivo para
+  // poder mostrar la paleta. Se hace una sola vez por tela y queda cacheado.
+  useEffect(() => {
+    if (!activeUserTex || !isRawTexture(activeUserTex)) return
+    if (rawSource.current.has(activeUserTex)) return
+    const def = rawTextureById(activeUserTex)
+    if (def) rawSourceOf(def).then(() => setPaletteVersion(v => v + 1))
+  }, [activeUserTex])
 
   async function handleTextureUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1052,6 +1200,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   async function handleTextureDelete(id: string) {
+    if (isRawTexture(id)) return      // las telas de fábrica no se borran
     await deleteUserTexture(id)
     userTexImages.current.delete(id)
     setUserTextures(prev => prev.filter(t => t.id !== id))
@@ -1349,18 +1498,29 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     ;(canvas as any).uniScaleKey = 'altKey'
     canvas.skipOffscreen = false
 
+    // Lo guardado se lee ANTES de construir la prenda: las medidas tienen que
+    // estar puestas cuando se dibuja, o saldría con el talle por defecto y
+    // después habría que rehacerla entera.
+    const design = project.canvasJson ? parseDesign(project.canvasJson) : null
+    if (design?.garment?.measures) {
+      const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
+      measuresRef.current = m
+      setMeasures(m)
+    }
+
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
-      if (project.canvasJson) {
+      if (design) {
         try {
-          const saved = JSON.parse(project.canvasJson) as object[]
-          const revived = await (fabric.util as any).enlivenObjects(saved) as fabric.FabricObject[]
+          const revived = await (fabric.util as any).enlivenObjects(design.objects) as fabric.FabricObject[]
           if (cancelled) return
           for (const obj of revived) {
             obj.set({ strokeUniform: true })
             if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
             canvas.add(obj)
           }
+          restoreGarmentPaint(design.garment)
+          preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
         } catch (e) {
           console.warn('canvas restore failed', e)
         }
@@ -3294,6 +3454,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function setObjTexture(obj: fabric.FabricObject, kind: TextureKind, colors: string[]) {
     ;(obj as any)._texture = { kind, colors: [...colors] }
     delete (obj as any)._baseColor          // la textura pasa a ser la base
+    // Y reemplaza a la tela importada: recomposeFill atiende _userTex primero,
+    // así que sin esto el estampado quedaba tapado y el clic no hacía nada.
+    delete (obj as any)._userTex
     recomposeFill(obj)
   }
 
@@ -3362,6 +3525,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyUserTexture(t: UserTexture) {
     const img = userTexImages.current.get(t.id)
     if (!img) {                                   // precargar y reintentar
+      // Las de fábrica pasan por ensureRawImage, que además les aplica los
+      // colores elegidos antes de que la tela toque la prenda.
+      if (isRawTexture(t.id)) {
+        ensureRawImage(t.id).then(ok => { if (ok) applyUserTexture(t) })
+        return
+      }
       const el = new Image()
       el.onload = () => { userTexImages.current.set(t.id, el); applyUserTexture(t) }
       el.src = t.dataUrl
@@ -3387,8 +3556,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (u?.id === id) { u.widthCm = widthCm; recomposeFill(o) }
     })
     setUserTextures(prev => prev.map(t => (t.id === id ? { ...t, widthCm } : t)))
-    const t = userTextures.find(x => x.id === id)
-    if (t) updateUserTexture({ ...t, widthCm })
+    // Las de fábrica no viven en IndexedDB: su ancho va a localStorage.
+    if (isRawTexture(id)) {
+      saveRawWidth(id, widthCm)
+    } else {
+      const t = userTextures.find(x => x.id === id)
+      if (t) updateUserTexture({ ...t, widthCm })
+    }
     canvas.requestRenderAll()
   }
 
@@ -3396,9 +3570,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function fillableGarmentPieces(): fabric.FabricObject[] {
     return mockupObjects.current.filter(o => {
       if (o.visible === false) return false
+      if ((o as any)._rawInner) return false   // el hueco del cuello no es una pieza
       const f = (o as any).fill
       return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
     })
+  }
+
+  // El interior sigue al color de la prenda, apagado, para que se lea como el
+  // revés de la tela. Si la prenda tiene estampado no hay color liso del que
+  // salir, y ahí cae en el gris neutro.
+  function syncInnerShade() {
+    const inner = mockupObjects.current.find(o => (o as any)._rawInner)
+    if (!inner) return
+    const body = mockupObjects.current.find(o => (o as any)._rawBody)
+    const base = body ? (body as any)._baseColor as string | undefined : undefined
+    const plain = base && /^#[0-9a-f]{6}$/i.test(base)
+    inner.set({ fill: plain ? adjL(base!, -0.16) : TEE_INNER_FALLBACK, dirty: true })
   }
 
   // ¿A qué se aplica la tela/color? A lo seleccionado si hay algo; si no, a toda la prenda.
@@ -3418,9 +3605,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyFillToTargets(targets: fabric.FabricObject[], mut: (o: fabric.FabricObject) => void, verb: string, label: string) {
     const canvas = fc.current
     if (!canvas) return
+    // El hueco del cuello se filtra acá y no en cada llamador: es el único paso
+    // por el que entra cualquier pintura, así que blindarlo una vez alcanza.
+    targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
     const items = targets.map(o => ({ obj: o, prevFill: o.fill as fabric.TFiller | string | null }))
     targets.forEach(mut)
+    syncInnerShade()
     undoHistory.current.push(items.length === 1
       ? { type: 'fill', obj: items[0].obj, prevFill: items[0].prevFill }
       : { type: 'fillBatch', items })
@@ -3433,6 +3624,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => setObjTexture(o, kind, texColors[kind]), 'Tela aplicada', label)
     setActiveTexKind(kind)
+    setActiveUserTex(null)
   }
 
   // Quita cualquier estampado (interno o importado) y deja el color liso que la
@@ -3992,7 +4184,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
-    const canvasJson = JSON.stringify(userObjs)
+
+    // La prenda se guarda por separado porque no se restaura como objeto: se
+    // vuelve a construir desde las medidas y después se le repone la pintura.
+    const garment: SavedGarment = {
+      measures: measuresRef.current,
+      pieces: mockupObjects.current.map(o => ({
+        fill: typeof o.fill === 'string' ? o.fill : undefined,
+        tex:  (o as any)._texture,
+        eff:  (o as any)._effect,
+        base: (o as any)._baseColor,
+        uTex: (o as any)._userTex,
+      })),
+    }
+    const canvasJson = JSON.stringify({ v: 2, objects: userObjs, garment })
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
     onSave(thumbnail, canvasJson)
     onSaveComplete()
@@ -4050,6 +4255,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       tex:  (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
       eff:  (o as any)._effect  as { kind: EffectKind; intensity: number } | undefined,
       base: (o as any)._baseColor as string | undefined,
+      // Sin esto, tocar una medida borraba la tela importada de la prenda: el
+      // relleno se rehace desde cero y _userTex no viajaba en la copia.
+      uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
     }))
     mockupObjects.current.forEach(o => canvas.remove(o))
 
@@ -4057,23 +4265,31 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const objs = shapes.map(s => {
       const p = new fabric.Path(s.d, {
         fill: s.fill ?? null, stroke: s.stroke, strokeWidth: s.strokeWidth,
-        selectable: false, evented: true, hoverCursor: 'crosshair', strokeUniform: true,
+        selectable: false,
+        // El interior no se pinta, así que tampoco se hace clic: el clic lo
+        // atraviesa y cae en el cuerpo, que es lo que el diseñador quiso tocar.
+        evented: s.role !== 'inner',
+        hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
+      if (s.role === 'inner') { (p as any)._rawInner = true; (p as any)._pieceName = 'Interior del cuello' }
+      if (s.role === 'piece') (p as any)._rawBody  = true
       return p
     })
     // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar medidas)
     if (prevPaint.length === objs.length) {
       objs.forEach((o, i) => {
+        if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
         const pp = prevPaint[i]
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
+        if (pp.uTex) (o as any)._userTex   = pp.uTex
         if (pp.base) (o as any)._baseColor = pp.base
-        else if (!pp.tex && typeof pp.fill === 'string' && pp.fill !== '') {
+        else if (!pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== '') {
           ;(o as any)._baseColor = pp.fill
         }
-        if (pp.tex || pp.eff || pp.base) recomposeFill(o)
+        if (pp.tex || pp.eff || pp.base || pp.uTex) recomposeFill(o)
         else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
       })
     }
@@ -4093,6 +4309,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
+    syncInnerShade()
 
     // Clip = unión de todas las piezas (cuerpo + mangas)
     const clipObjs = shapes.filter(s => s.role === 'piece').map(s => {
@@ -5225,6 +5442,51 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </div>
               )}
 
+              {/* ── Telas RAW (vienen con el programa) ───────────────────────
+                  Fotos y vectores de telas reales. No se recolorean como los
+                  estampados de arriba: se ven como la tela que son. */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+                <div className="label" style={{ marginBottom: 4 }}>Telas RAW</div>
+                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                  Telas reales. Se aplican a escala: ajustá el ancho de la muestra abajo.
+                </p>
+                <div key={paletteVersion} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {userTextures.filter(t => t.builtIn).map(t => {
+                    const on = activeUserTex === t.id
+                    // Si la tela ya se usó, la miniatura sale de la imagen que
+                    // está en memoria, que es la que tiene los colores elegidos.
+                    // Si no, la versión chica: abrir esta pestaña no tiene por
+                    // qué bajar los archivos grandes.
+                    const thumb = userTexImages.current.get(t.id)?.src
+                      ?? rawTextureById(t.id)?.thumb
+                      ?? t.dataUrl
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => applyUserTexture(t)}
+                        title={`${t.name} · muestra de ${t.widthCm} cm`}
+                        style={{
+                          display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                          background: 'none', border: 'none', cursor: 'pointer', width: '100%',
+                        }}
+                      >
+                        <div style={{
+                          width: '100%', aspectRatio: '1', borderRadius: 8,
+                          backgroundImage: `url("${thumb}")`, backgroundSize: 'cover',
+                          border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                          outline: on ? '1px solid var(--accent)' : 'none',
+                        }} />
+                        <span style={{
+                          fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
+                          fontFamily: 'var(--ui)', textAlign: 'center',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>{t.name}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
               {/* ── Mis texturas (subidas por el usuario) ────────────────────
                   El diseñador importa la foto/escaneo de una tela real. Lo
                   importante no es el formato sino la ESCALA: declara cuánto
@@ -5253,9 +5515,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   }}>{texError}</div>
                 )}
 
-                {userTextures.length > 0 && (
+                {userTextures.some(t => !t.builtIn) && (
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    {userTextures.map(t => {
+                    {userTextures.filter(t => !t.builtIn).map(t => {
                       const on = activeUserTex === t.id
                       return (
                         <div key={t.id} style={{ position: 'relative' }}>
@@ -5296,30 +5558,112 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   </div>
                 )}
 
-                {/* Escala real: lo que separa esto de "insertar una imagen". */}
-                {activeUserTex && (() => {
-                  const t = userTextures.find(x => x.id === activeUserTex)
-                  if (!t) return null
-                  return (
-                    <div style={{ marginTop: 12 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="label">Ancho real de la muestra</span>
-                        <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{t.widthCm} cm</span>
-                      </div>
-                      <input
-                        className="raw-range"
-                        type="range" min={2} max={80} value={t.widthCm}
-                        onChange={e => setUserTexScale(t.id, Number(e.target.value))}
-                        style={{ marginTop: 4, ['--fill' as string]: `${((t.widthCm - 2) / 78) * 100}%` }}
-                      />
-                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
-                        Cuánto mide en la realidad el ancho de la foto. Ajustalo para que
-                        el estampado quede del tamaño correcto sobre la prenda.
-                      </p>
-                    </div>
-                  )
-                })()}
               </div>
+
+              {/* ── Color de una tela de fábrica ─────────────────────────────
+                  Un SVG trae los colores adentro, así que se editan uno por
+                  uno. Una foto no: se reteñe entera desde un solo color. */}
+              {activeUserTex && isRawTexture(activeUserTex) && (() => {
+                const def = rawTextureById(activeUserTex)
+                const src = rawSource.current.get(activeUserTex)
+                if (!def || !src) return null
+                const cur = rawPalettes.current[activeUserTex] ?? src.colors
+                const tocada = !sameColors(cur, src.colors)
+                const porColor = def.kind === 'svg' && src.colors.length > 1
+
+                return (
+                  <div key={paletteVersion} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                    <div className="label" style={{ marginBottom: 10 }}>Color · {def.name}</div>
+
+                    {/* Color principal: el que más tela ocupa. Al cambiarlo, el
+                        resto de los hilos lo acompañan, así el tartán sigue
+                        siendo el mismo tartán en otro color. */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <label style={{ position: 'relative', cursor: 'pointer' }}>
+                        <input type="color" value={cur[0]}
+                          onChange={e => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, e.target.value))}
+                          style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                        <div style={{ width: 32, height: 32, borderRadius: 8, background: cur[0], border: '2px solid var(--line)' }} />
+                      </label>
+                      <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[0]}</span>
+                    </div>
+
+                    {porColor && (
+                      <>
+                        <button onClick={() => setTexAdvanced(v => !v)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none',
+                            color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: '6px 0', fontFamily: 'var(--ui)' }}>
+                          <span style={{ display: 'inline-block', transform: texAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
+                          Opciones avanzadas
+                        </button>
+                        {texAdvanced && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
+                            {src.colors.map((_, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <label style={{ position: 'relative', cursor: 'pointer' }}>
+                                  <input type="color" value={cur[i]}
+                                    onChange={e => {
+                                      const next = [...cur]
+                                      next[i] = e.target.value
+                                      setRawPalette(activeUserTex, next)
+                                    }}
+                                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
+                                  <div style={{ width: 26, height: 26, borderRadius: 6, background: cur[i], border: '2px solid var(--line)' }} />
+                                </label>
+                                <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>
+                                  {i === 0 ? 'Color principal' : `Color ${i + 1}`}
+                                </span>
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[i]}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {def.kind === 'photo' && (
+                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '2px 0 0', lineHeight: 1.4 }}>
+                        Es una foto, así que se tiñe entera desde un solo color. Los negros
+                        y los blancos no se mueven.
+                      </p>
+                    )}
+
+                    {tocada && (
+                      <button onClick={() => setRawPalette(activeUserTex, null)}
+                        className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                        Volver al color original
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Escala real: lo que separa esto de "insertar una imagen".
+                  Vale para las dos bibliotecas, las de fábrica y las propias,
+                  por eso vive fuera de ambas. */}
+              {activeUserTex && (() => {
+                const t = userTextures.find(x => x.id === activeUserTex)
+                if (!t) return null
+                return (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span className="label">Ancho real · {t.name}</span>
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{t.widthCm} cm</span>
+                    </div>
+                    <input
+                      className="raw-range"
+                      type="range" min={2} max={80} value={t.widthCm}
+                      onChange={e => setUserTexScale(t.id, Number(e.target.value))}
+                      style={{ marginTop: 4, ['--fill' as string]: `${((t.widthCm - 2) / 78) * 100}%` }}
+                    />
+                    <p style={{ fontSize: 10, color: 'var(--muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
+                      Cuánto mide en la realidad el ancho de la muestra. Ajustalo para que
+                      el estampado quede del tamaño correcto sobre la prenda.
+                    </p>
+                  </div>
+                )
+              })()}
 
               {/* ── Efectos de tela ──────────────────────────────────────────
                   Van ENCIMA del color o del estampado, no lo reemplazan:
@@ -5820,6 +6164,21 @@ const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
 const TEE_BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
+
+// El hueco del cuello: lo que se ve del OTRO lado de la remera al mirarla de frente.
+// No es una pieza más, es un agujero, y por eso nunca lleva el estampado: la tela
+// se ve por el revés. Sin esto el leopardo seguía de largo por el cuello y la
+// prenda dejaba de leerse como una prenda.
+//
+// Se arma con geometría que ya existe, así encaja sin costuras aunque cambien las
+// medidas: la curva del escote (TEE_DETAILS[6], que empieza y termina justo en los
+// extremos del hombro) y la vuelta por el canto de arriba del cuerpo, que es la
+// misma curva de TEE_BODY escrita al revés.
+const TEE_INNER = "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25C228.15,17.99,205.89,1.08,205.89,1.08Z"
+
+// Color del interior cuando el cuerpo tiene estampado (ahí no hay color liso del
+// que derivarlo). Gris apagado: tiene que leerse como sombra, no como una pieza.
+const TEE_INNER_FALLBACK = '#8f8f8f'
 const TEE_DETAILS = [
   "M208.82,15.39s38.5,12.6,80.07,2.15",
   "M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06",
@@ -5894,10 +6253,43 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
 // Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
 // La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
 // y empuja la manga hacia afuera, como una remera real.
-function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
+// ── Qué se guarda de un diseño ───────────────────────────────────────────────
+//
+// La prenda NO se guardaba: canvasJson era un array pelado con lo que el
+// diseñador había puesto ENCIMA (dibujos, textos, imágenes), y la remera se
+// reconstruía gris y con el talle por defecto cada vez que se abría el
+// proyecto. Es decir: pintabas, guardabas, y al volver no había nada.
+//
+// Ahora canvasJson es un objeto que además guarda la prenda: sus medidas y la
+// tela/color de cada pieza. Se sigue leyendo el formato viejo (un array) para
+// no romper los proyectos que ya existen.
+interface SavedPiece {
+  fill?: string
+  tex?:  { kind: TextureKind; colors: string[] }
+  eff?:  { kind: EffectKind; intensity: number }
+  base?: string
+  uTex?: { id: string; widthCm: number }
+}
+interface SavedGarment { measures?: Measures; pieces?: SavedPiece[] }
+interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
+
+function parseDesign(json: string): SavedDesign {
+  try {
+    const parsed = JSON.parse(json)
+    if (Array.isArray(parsed)) return { objects: parsed, garment: null }      // formato viejo
+    return { objects: parsed?.objects ?? [], garment: parsed?.garment ?? null }
+  } catch {
+    return { objects: [], garment: null }
+  }
+}
+
+function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
   const W = teeWarp(m)
-  const shapes: { d: string; role: 'piece' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
+  const shapes: { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
     { d: transformPath(TEE_BODY, W), role: 'piece', fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
+    // Va después del cuerpo y antes de los detalles: tapa el estampado y las
+    // líneas del escote le quedan dibujadas encima.
+    { d: transformPath(TEE_INNER, W), role: 'inner', fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
   ]
   for (const d of TEE_DETAILS) shapes.push({ d: transformPath(d, W), role: 'detail', fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
   return shapes
