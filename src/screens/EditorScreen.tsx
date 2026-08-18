@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project, TechPackMeasures } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
+import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
+         TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -822,6 +824,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
   const fontFileRef   = useRef<HTMLInputElement>(null)
+  const texFileRef    = useRef<HTMLInputElement>(null)
+  const userTexImages = useRef<Map<string, HTMLImageElement>>(new Map())
   const fc            = useRef<fabric.Canvas | null>(null)
   const mockupObjects = useRef<fabric.FabricObject[]>([])
   const clipPath      = useRef<fabric.Group | null>(null)
@@ -890,6 +894,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     Object.fromEntries((Object.keys(TEXTURE_COLORS) as TextureKind[]).map(k => [k, defaultTexPalette(k)])) as Record<TextureKind, string[]>)
   const [activeTexKind, setActiveTexKind] = useState<TextureKind | null>(null)
   const [activeEffect,  setActiveEffect]  = useState<EffectKind | null>(null)
+  const [userTextures,  setUserTextures]  = useState<UserTexture[]>([])
+  const [activeUserTex, setActiveUserTex] = useState<string | null>(null)
+  const [texImporting,  setTexImporting]  = useState(false)
+  const [texError,      setTexError]      = useState<string | null>(null)
   const [effectIntensity, setEffectIntensity] = useState(0.6)
   const [texAdvanced, setTexAdvanced] = useState(false)  // editor por-slot (avanzado) colapsado
   const [layers,       setLayers]       = useState<fabric.FabricObject[]>([])
@@ -997,6 +1005,58 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   useEffect(() => { activeSymbolRef.current = activeSymbol }, [activeSymbol])
   useEffect(() => { fontFamilyRef.current = propFontFamily }, [propFontFamily])
   useEffect(() => { restoreUserFonts().then(names => { if (names.length) setUserFonts(names) }) }, [])
+
+  // Biblioteca de texturas propias: se carga una vez y se precargan las imágenes,
+  // porque recomposeFill es síncrono y necesita el <img> ya decodificado.
+  useEffect(() => {
+    let cancelled = false
+    listUserTextures().then(list => {
+      if (cancelled) return
+      setUserTextures(list)
+      list.forEach(t => {
+        if (userTexImages.current.has(t.id)) return
+        const img = new Image()
+        img.onload = () => {
+          userTexImages.current.set(t.id, img)
+          // Si el diseño guardado ya usaba esta textura, redibujarla ahora.
+          const c = fc.current
+          if (!c) return
+          let touched = false
+          c.getObjects().forEach(o => {
+            if ((o as any)._userTex?.id === t.id) { recomposeFill(o); touched = true }
+          })
+          if (touched) c.requestRenderAll()
+        }
+        img.src = t.dataUrl
+      })
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  async function handleTextureUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''            // permite volver a elegir el mismo archivo
+    if (!file) return
+    setTexImporting(true); setTexError(null)
+    try {
+      const t = await importUserTexture(file)
+      const img = new Image()
+      img.onload = () => { userTexImages.current.set(t.id, img); applyUserTexture(t) }
+      img.src = t.dataUrl
+      setUserTextures(prev => [t, ...prev])
+    } catch (err) {
+      setTexError(err instanceof Error ? err.message : 'No se pudo importar')
+    } finally {
+      setTexImporting(false)
+    }
+  }
+
+  async function handleTextureDelete(id: string) {
+    await deleteUserTexture(id)
+    userTexImages.current.delete(id)
+    setUserTextures(prev => prev.filter(t => t.id !== id))
+    if (activeUserTex === id) setActiveUserTex(null)
+  }
 
   // Register save/export actions for ChromeBar
   useEffect(() => {
@@ -1341,6 +1401,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const bw = Math.max(...allR) - bx, bh = Math.max(...allB) - by
         const pad = Math.min(CW, CH) * 0.1
         const sc  = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+        // Estas prendas aun no son parametricas (no tienen medidas en cm), asi
+        // que la escala de las texturas se estima con un ancho nominal de 60 cm.
+        // Sera exacta cuando hoodie y pantalon tengan medidas propias.
+        pxPerCmRef.current = (bw * sc) / 60
         const ox  = (CW - bw * sc) / 2 - bx * sc
         const oy  = (CH - bh * sc) / 2 - by * sc
         objs.forEach(obj => {
@@ -3242,6 +3306,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const tex    = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
     const eff    = (obj as any)._effect  as { kind: EffectKind; intensity: number } | undefined
     const baseCol = (obj as any)._baseColor as string | undefined
+    const uTex   = (obj as any)._userTex as { id: string; widthCm: number } | undefined
+
+    // ── Textura propia del usuario ──
+    // Se dibuja A ESCALA REAL: el tile mide exactamente los cm que el usuario
+    // declaró que mide la muestra de tela. Así una raya de 1 cm se ve de 1 cm
+    // sobre la prenda, y lo que se manda al taller no miente.
+    if (uTex) {
+      const img = userTexImages.current.get(uTex.id)
+      if (img && img.complete && img.naturalWidth > 0) {
+        const pxPerCm = pxPerCmRef.current || 5
+        const w = Math.max(8, Math.round(uTex.widthCm * pxPerCm))
+        const h = Math.max(8, Math.round(w * (img.naturalHeight / img.naturalWidth)))
+        const c = document.createElement('canvas'); c.width = w; c.height = h
+        const x = c.getContext('2d')!
+        x.drawImage(img, 0, 0, w, h)
+        if (eff) paintEffect(x, eff.kind, Math.max(0, Math.min(1, eff.intensity)), Math.max(w, h))
+        obj.set({ fill: new fabric.Pattern({ source: c, repeat: 'repeat' }) as any, dirty: true })
+        return
+      }
+      // Imagen todavía no cargada: se resuelve sola al terminar la precarga.
+    }
 
     // Sin efecto: patrón simple (o color liso), como antes.
     if (!eff) {
@@ -3271,6 +3356,40 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     paintEffect(x, eff.kind, Math.max(0, Math.min(1, eff.intensity)), s)
     obj.set({ fill: new fabric.Pattern({ source: c, repeat: 'repeat' }) as any, dirty: true })
+  }
+
+  // Aplica una textura propia del usuario a la prenda (o a la pieza seleccionada).
+  function applyUserTexture(t: UserTexture) {
+    const img = userTexImages.current.get(t.id)
+    if (!img) {                                   // precargar y reintentar
+      const el = new Image()
+      el.onload = () => { userTexImages.current.set(t.id, el); applyUserTexture(t) }
+      el.src = t.dataUrl
+      return
+    }
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => {
+      delete (o as any)._texture               // reemplaza al estampado interno
+      delete (o as any)._baseColor
+      ;(o as any)._userTex = { id: t.id, widthCm: t.widthCm }
+      recomposeFill(o)
+    }, `Tela «${t.name}» aplicada`, label)
+    setActiveTexKind(null)
+    setActiveUserTex(t.id)
+  }
+
+  // Cambia la escala (cm) de la textura propia ya aplicada y la redibuja.
+  function setUserTexScale(id: string, widthCm: number) {
+    const canvas = fc.current
+    if (!canvas) return
+    canvas.getObjects().forEach(o => {
+      const u = (o as any)._userTex as { id: string; widthCm: number } | undefined
+      if (u?.id === id) { u.widthCm = widthCm; recomposeFill(o) }
+    })
+    setUserTextures(prev => prev.map(t => (t.id === id ? { ...t, widthCm } : t)))
+    const t = userTextures.find(x => x.id === id)
+    if (t) updateUserTexture({ ...t, widthCm })
+    canvas.requestRenderAll()
   }
 
   // Piezas de la prenda que pueden recibir tela/color (las que tienen área de relleno).
@@ -3316,18 +3435,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     setActiveTexKind(kind)
   }
 
-  // Color sólido de la prenda (o de lo seleccionado): reemplaza el estampado,
-  // pero CONSERVA el efecto de tela (el desgaste sigue encima del color nuevo).
-  function applyGarmentSolid(val: string) {
+  // Quita cualquier estampado (interno o importado) y deja el color liso que la
+  // pieza tenía debajo. El efecto de tela NO se toca: son cosas independientes,
+  // así que "sin textura + desgaste" sigue siendo una combinación válida.
+  function removeTexture() {
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => {
       delete (o as any)._texture
-      ;(o as any)._baseColor = val
-      o.set({ fill: val, dirty: true })
+      delete (o as any)._userTex
+      if (!(o as any)._baseColor) (o as any)._baseColor = '#ffffff'
       recomposeFill(o)
-    }, 'Color aplicado', label)
+    }, 'Textura quitada', label)
     setActiveTexKind(null)
-    setPropFill(val)
+    setActiveUserTex(null)
   }
 
   // ── Efectos de tela ─────────────────────────────────────────────────────────
@@ -3871,7 +3991,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas) return
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
     const canvasJson = JSON.stringify(userObjs)
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
     onSave(thumbnail, canvasJson)
@@ -3982,7 +4102,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     })
     const cg = new fabric.Group(clipObjs); cg.absolutePositioned = true
     clipPath.current = cg
-    pxPerCmRef.current = sc
+    // px reales por cm = unidades del path por cm x escala de encuadre.
+    // (antes se guardaba solo `sc`, y el estampado importado salia ~5x chico)
+    pxPerCmRef.current = sc * TEE_UNITS_PER_CM
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
     if (reassignClip) {
@@ -4778,9 +4900,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   <span className="label">Opacidad</span>
                   <NumberField value={propOpacity} onChange={applyOpacity} step={1} min={0} max={100} suffix="%" />
                 </div>
-                <input type="range" min={0} max={100} step={1} value={propOpacity}
+                <input className="raw-range" type="range" min={0} max={100} step={1} value={propOpacity}
                   onChange={e => applyOpacity(Number(e.target.value))}
-                  style={{ width: '100%', accentColor: 'var(--accent)' }} />
+                  style={{ ['--fill' as string]: `${propOpacity}%` }} />
               </div>
             </div>
           )}
@@ -5007,6 +5129,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
               <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {/* "Ninguna" siempre visible: volver a color liso no debería
+                    depender de que primero haya una textura aplicada. */}
+                <button
+                  onClick={removeTexture}
+                  title="Sin textura (color liso)"
+                  style={{
+                    display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
+                    background: 'none', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  <div style={{
+                    width: '100%', aspectRatio: '1', borderRadius: 8,
+                    display: 'grid', placeItems: 'center',
+                    fontSize: 20, color: 'var(--muted)',
+                    border: '1px solid ' + (!activeTexKind && !activeUserTex ? 'var(--accent)' : 'var(--line)'),
+                    outline: !activeTexKind && !activeUserTex ? '1px solid var(--accent)' : 'none',
+                  }}>⃠</div>
+                  <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>Ninguna</span>
+                </button>
+
                 {TEXTURES.map(t => (
                   <button
                     key={t.id}
@@ -5083,15 +5225,101 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </div>
               )}
 
-              {activeTexKind && (
+              {/* ── Mis texturas (subidas por el usuario) ────────────────────
+                  El diseñador importa la foto/escaneo de una tela real. Lo
+                  importante no es el formato sino la ESCALA: declara cuánto
+                  mide la muestra y se dibuja a esos cm sobre la prenda. */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+                <div className="label" style={{ marginBottom: 4 }}>Mis texturas</div>
+                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                  Importá una foto o escaneo de tela. PNG, JPG, WebP o SVG.
+                </p>
+
                 <button
-                  onClick={() => applyGarmentSolid('#ffffff')}
+                  onClick={() => texFileRef.current?.click()}
+                  disabled={texImporting}
                   className="btn btn-ghost"
-                  style={{ width: '100%', justifyContent: 'center', marginTop: 12, fontSize: 12 }}
+                  style={{ width: '100%', justifyContent: 'center', fontSize: 11.5, marginBottom: 10 }}
                 >
-                  Quitar textura (volver a color liso)
+                  {texImporting ? 'Importando…' : '+  Importar tela'}
                 </button>
-              )}
+
+                {texError && (
+                  <div style={{
+                    fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginBottom: 10,
+                    padding: '7px 9px', borderRadius: 6,
+                    background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
+                    border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
+                  }}>{texError}</div>
+                )}
+
+                {userTextures.length > 0 && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    {userTextures.map(t => {
+                      const on = activeUserTex === t.id
+                      return (
+                        <div key={t.id} style={{ position: 'relative' }}>
+                          <button
+                            onClick={() => applyUserTexture(t)}
+                            title={`${t.name} · muestra de ${t.widthCm} cm`}
+                            style={{
+                              display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                              background: 'none', border: 'none', cursor: 'pointer', width: '100%',
+                            }}
+                          >
+                            <div style={{
+                              width: '100%', aspectRatio: '1', borderRadius: 8,
+                              backgroundImage: `url(${t.dataUrl})`, backgroundSize: 'cover',
+                              border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                              outline: on ? '1px solid var(--accent)' : 'none',
+                            }} />
+                            <span style={{
+                              fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
+                              fontFamily: 'var(--ui)', textAlign: 'center',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>{t.name}</span>
+                          </button>
+                          <span
+                            role="button"
+                            title="Eliminar de mi biblioteca"
+                            onClick={e => { e.stopPropagation(); handleTextureDelete(t.id) }}
+                            style={{
+                              position: 'absolute', top: 4, right: 4, width: 18, height: 18,
+                              borderRadius: '50%', cursor: 'pointer', fontSize: 10,
+                              background: 'rgb(0 0 0 / 0.55)', color: '#fff',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}
+                          >✕</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Escala real: lo que separa esto de "insertar una imagen". */}
+                {activeUserTex && (() => {
+                  const t = userTextures.find(x => x.id === activeUserTex)
+                  if (!t) return null
+                  return (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span className="label">Ancho real de la muestra</span>
+                        <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{t.widthCm} cm</span>
+                      </div>
+                      <input
+                        className="raw-range"
+                        type="range" min={2} max={80} value={t.widthCm}
+                        onChange={e => setUserTexScale(t.id, Number(e.target.value))}
+                        style={{ marginTop: 4, ['--fill' as string]: `${((t.widthCm - 2) / 78) * 100}%` }}
+                      />
+                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
+                        Cuánto mide en la realidad el ancho de la foto. Ajustalo para que
+                        el estampado quede del tamaño correcto sobre la prenda.
+                      </p>
+                    </div>
+                  )
+                })()}
+              </div>
 
               {/* ── Efectos de tela ──────────────────────────────────────────
                   Van ENCIMA del color o del estampado, no lo reemplazan:
@@ -5102,7 +5330,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   Se suman al color o estampado que ya tenga la prenda.
                 </p>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
+                  {/* "Ninguno" siempre visible: quitar el efecto no debería
+                      depender de que primero haya uno aplicado. */}
+                  <button
+                    onClick={removeEffect}
+                    title="Sin efecto de tela"
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+                      padding: '8px 4px', borderRadius: 7, cursor: 'pointer',
+                      background: !activeEffect ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                      border: '1px solid ' + (!activeEffect ? 'var(--accent)' : 'var(--line)'),
+                      color: !activeEffect ? 'var(--accent)' : 'var(--fg-2)',
+                      transition: 'all 0.15s var(--ease)',
+                    }}
+                  >
+                    <span style={{
+                      width: '100%', height: 26, borderRadius: 4,
+                      border: '1px solid var(--line-soft)',
+                      display: 'grid', placeItems: 'center',
+                      fontSize: 13, color: 'var(--muted)',
+                    }}>⃠</span>
+                    <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>Ninguno</span>
+                  </button>
+
                   {EFFECTS.map(e => {
                     const on = activeEffect === e.id
                     return (
@@ -5140,18 +5391,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                       </span>
                     </div>
                     <input
-                      type="range" min={10} max={100} value={Math.round(effectIntensity * 100)}
+                      className="raw-range"
+                      type="range" min={0} max={100} value={Math.round(effectIntensity * 100)}
                       onChange={e => {
                         const v = Number(e.target.value) / 100
                         setEffectIntensity(v)
                         applyEffect(activeEffect, v)
                       }}
-                      style={{ width: '100%', accentColor: 'var(--accent)', marginTop: 4 }}
+                      style={{ marginTop: 4, ['--fill' as string]: `${Math.round(effectIntensity * 100)}%` }}
                     />
-                    <button onClick={removeEffect} className="btn btn-ghost"
-                      style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
-                      Quitar efecto
-                    </button>
                   </>
                 )}
               </div>
@@ -5165,6 +5413,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         accept=".ttf,.otf,.woff,.woff2"
         style={{ display: 'none' }}
         onChange={handleFontUpload}
+      />
+
+      {/* Input oculto para importar texturas propias */}
+      <input
+        ref={texFileRef}
+        type="file"
+        accept={TEXTURE_ACCEPT}
+        style={{ display: 'none' }}
+        onChange={handleTextureUpload}
       />
 
       {/* Menú contextual (click derecho) */}
@@ -5522,6 +5779,9 @@ type Measures = {
   largoTotal: number; anchoPecho: number; anchoCintura: number
   anchoCuello: number; profundidadCuello: number; largoManga: number; anchoManga: number
 }
+// Unidades del path por centimetro real. El dibujo base esta calibrado a esta
+// escala, asi que px_en_pantalla_por_cm = TEE_UNITS_PER_CM * (escala de encuadre).
+export const TEE_UNITS_PER_CM = 5.086
 // Calibradas a una escala unica de 5.086 px/cm (largoTotal 70 = altura total del dibujo),
 // asi todas las medidas son consistentes entre si (la manga no puede quedar mas larga que el cuerpo).
 const DEFAULT_MEASURES: Measures = {
