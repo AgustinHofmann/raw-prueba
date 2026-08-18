@@ -7,3 +7,83 @@
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
 [2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m11:20:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:20:41[22m [31m[1m[vite][22m[39m [31mInternal server error: C:\Users\agush\Documents\GitHub\raw-prueba\src\screens\EditorScreen.tsx: Unexpected reserved word 'await'. (4357:8)
+
+[0m [90m 4355 |[31m     [90m// conteste hacía que el cartel de error y el de éxito salieran juntos, y el[31m
+ [90m 4356 |[31m     [90m// diseñador se iba pensando que su trabajo estaba a salvo.[31m
+[31m[1m>[22m[31m[90m 4357 |[31m     [36mif[31m ([36mawait[31m onSave(thumbnail[33m,[31m canvasJson)) onSaveComplete()
+ [90m      |[31m         [31m[1m^[22m[31m
+ [90m 4358 |[31m   }
+ [90m 4359 |[31m
+ [90m 4360 |[31m   [36mfunction[31m handleExport() {[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mC:/Users/agush/Documents/GitHub/raw-prueba/src/screens/EditorScreen.tsx[39m:4357:8
+[33m  4451|      // una medida el tamaño en pantalla refleja los cm reales (alargar = más largo, no más fino).
+  4452|      if (!teeFitRef.current) {
+  4453|        const dObjs = buildTeeShapes(DEFAULT_MEASURES).map(s => new fabric.Path(s.d))
+     |                            ^
+  4454|        const dL = dObjs.map(o => o.left ?? 0), dT = dObjs.map(o => o.top ?? 0)
+  4455|        const dR = dObjs.map(o => (o.left ?? 0) + (o.width ?? 0)), dB = dObjs.map(o => (o.top ?? 0) + (o.height ?? 0))[39m
+      at constructor (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:6599:19)
+      at TypeScriptParserMixin.checkReservedWord (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12231:12)
+      at TypeScriptParserMixin.checkReservedWord (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9310:13)
+      at TypeScriptParserMixin.parseIdentifierName (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12211:12)
+      at TypeScriptParserMixin.parseIdentifier (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12181:23)
+      at TypeScriptParserMixin.parseExprAtom (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:11416:27)
+      at TypeScriptParserMixin.parseExprAtom (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:4764:20)
+      at TypeScriptParserMixin.parseExprSubscripts (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:11081:23)
+      at TypeScriptParserMixin.parseUpdate (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:11066:21)
+      at TypeScriptParserMixin.parseMaybeUnary (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:11046:23)
+      at TypeScriptParserMixin.parseMaybeUnary (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9837:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10899:61)
+      at TypeScriptParserMixin.parseExprOps (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10904:23)
+      at TypeScriptParserMixin.parseMaybeConditional (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10881:23)
+      at TypeScriptParserMixin.parseMaybeAssign (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10831:21)
+      at TypeScriptParserMixin.parseMaybeAssign (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9786:20)
+      at TypeScriptParserMixin.parseExpressionBase (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10784:23)
+      at C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10780:39
+      at TypeScriptParserMixin.allowInAnd (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12421:16)
+      at TypeScriptParserMixin.parseExpression (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:10780:17)
+      at TypeScriptParserMixin.parseHeaderExpression (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13032:22)
+      at TypeScriptParserMixin.parseIfStatement (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13129:22)
+      at TypeScriptParserMixin.parseStatementContent (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12796:21)
+      at TypeScriptParserMixin.parseStatementContent (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9508:18)
+      at TypeScriptParserMixin.parseStatementLike (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12767:17)
+      at TypeScriptParserMixin.parseStatementListItem (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12747:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13316:61)
+      at TypeScriptParserMixin.parseBlockBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13309:10)
+      at TypeScriptParserMixin.parseBlock (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13297:10)
+      at TypeScriptParserMixin.parseFunctionBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12100:24)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12086:10)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9172:18)
+      at C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13445:12
+      at TypeScriptParserMixin.withSmartMixTopicForbiddingContext (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12403:14)
+      at TypeScriptParserMixin.parseFunction (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13444:10)
+      at TypeScriptParserMixin.parseFunctionStatement (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13125:17)
+      at TypeScriptParserMixin.parseStatementContent (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12791:21)
+      at TypeScriptParserMixin.parseStatementContent (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9508:18)
+      at TypeScriptParserMixin.parseStatementLike (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12767:17)
+      at TypeScriptParserMixin.parseStatementListItem (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12747:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13316:61)
+      at TypeScriptParserMixin.parseBlockBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13309:10)
+      at TypeScriptParserMixin.parseBlock (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13297:10)
+      at TypeScriptParserMixin.parseFunctionBody (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12100:24)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12086:10)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:9172:18)
+      at C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13445:12
+      at TypeScriptParserMixin.withSmartMixTopicForbiddingContext (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:12403:14)
+      at TypeScriptParserMixin.parseFunction (C:\Users\agush\Documents\GitHub\raw-prueba\node_modules\@babel\parser\lib\index.js:13444:10)
+[2m11:20:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:21:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:21:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:21:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:22:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:22:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:23:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:23:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:23:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:23:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:24:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
+[2m11:24:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/screens/EditorScreen.tsx[22m
