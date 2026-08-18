@@ -78,7 +78,10 @@ grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.folders  to authenticated;
 grant select, insert, update, delete on public.projects to authenticated;
 grant select, insert, update         on public.profiles to authenticated;
--- (profiles sin DELETE: un perfil solo desaparece si se borra la cuenta.)
+-- profiles nunca necesito DELETE, pero el GRANT estaba puesto igual (venia de
+-- antes). El RLS lo bloqueaba porque no hay politica de DELETE, pero el permiso
+-- sobraba: misma logica de dos capas que con anon.
+revoke delete on public.profiles from authenticated;
 
 
 -- ────────────────────────────────────────────────────────────────────────────
