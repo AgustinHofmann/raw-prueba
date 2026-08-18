@@ -750,7 +750,11 @@ function ProjectCard({ project: p, folders, delay, selectMode, selected, onClick
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         {p.thumbnail
-          ? <img src={p.thumbnail} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" />
+          ? /* 'contain' y no 'cover': la prenda es alta y la tarjeta es ancha,
+               así que recortar dejaba a la vista una franja del medio y no se
+               entendía qué prenda era. */
+            <img src={p.thumbnail} draggable={false}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 8, boxSizing: 'border-box' }} alt="" />
           : <img src={`/mockups/${p.mockupId}.svg`} draggable={false} style={{ width: 60, height: 60, objectFit: 'contain', filter: 'drop-shadow(0 4px 12px rgb(0 0 0 / 0.3))' }} alt="" />
         }
         {/* Indicador de selección (círculo / check) */}

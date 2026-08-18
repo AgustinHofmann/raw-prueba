@@ -95,15 +95,20 @@ export default function ChromeBar({
           width 199 = ancho del rail izquierdo del Home (aside 200 con borde a 199→200),
           así el divisor de la derecha queda alineado con esa línea. */}
       <div style={{
+        // Sin paddingLeft: el logo se centra contra el borde real de la barra,
+        // que es la línea que sigue el rail izquierdo del Home.
         width: 199, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 14, gap: 0, overflow: 'hidden',
+        gap: 0, overflow: 'hidden',
       }}>
+        {/* El logo se lleva todo el espacio que queda hasta el botón de Inicio y
+            se centra ahí adentro: sin el texto al lado, pegado a la izquierda
+            quedaba descolgado. */}
         <button
           onClick={onHome}
           title="Volver al inicio"
           style={{
-            background: 'none', border: 'none', padding: 0,
-            cursor: 'pointer', display: 'flex', alignItems: 'center',
+            flex: 1, minWidth: 0, background: 'none', border: 'none', padding: 0,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'var(--fg)', transition: 'opacity 0.15s var(--ease)',
           }}
           onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
@@ -111,16 +116,6 @@ export default function ChromeBar({
         >
           <Logo size={24} />
         </button>
-
-        <span style={{
-          flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
-          fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
-          letterSpacing: '0.02em', lineHeight: 1.3,
-          borderLeft: '1px solid var(--line-soft)',
-          overflow: 'hidden',
-        }}>
-          diseño de<br />indumentaria
-        </span>
 
         {/* Home button */}
         <button

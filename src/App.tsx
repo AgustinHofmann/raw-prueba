@@ -216,15 +216,22 @@ export default function App() {
     setProjects(prev => prev.map(p => p.id === projectId ? updated : p))
   }
 
-  async function handleSave(thumbnail: string, canvasJson: string) {
-    if (!activeProject) return
+  // Devuelve si el proyecto llegó realmente a la base. El editor lo usa para no
+  // cantar "Guardado ✓" cuando en verdad falló: antes salían los dos carteles a
+  // la vez y el diseñador se iba creyendo que su trabajo estaba a salvo.
+  async function handleSave(thumbnail: string, canvasJson: string): Promise<boolean> {
+    if (!activeProject) return false
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
     try {
       await upsertProject(updated, user!.id)
       setActive(updated)
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
       setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
-    } catch { showToast('Error al guardar — revisá tu conexión') }
+      return true
+    } catch {
+      showToast('Error al guardar — revisá tu conexión')
+      return false
+    }
   }
 
   function handleSaveComplete() {

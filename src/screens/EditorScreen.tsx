@@ -15,7 +15,9 @@ interface EditorActions { save: () => void; export: () => void; importImage: (f:
 interface Props {
   project: Project
   designer: string
-  onSave: (thumbnail: string, canvasJson: string) => void
+  // Devuelve si el guardado llego a la base. Sin ese dato el editor
+  // cantaba "Guardado" aunque hubiera fallado.
+  onSave: (thumbnail: string, canvasJson: string) => Promise<boolean>
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
@@ -30,11 +32,47 @@ type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' |
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
 
+// Lo que hay que guardar para poder deshacer un cambio de relleno.
+//
+// No alcanza con el color/patrón que se ve: una pieza pintada guarda además la
+// RECETA de cómo se pintó (_texture, _userTex, _baseColor, _effect), y es la
+// receta la que se guarda en el proyecto y la que se vuelve a dibujar cuando
+// cambian las medidas o los colores de la tela.
+//
+// Antes acá solo se guardaba `fill`. Entonces Ctrl+Z devolvía el aspecto pero
+// la pieza seguía "acordándose" de la tela deshecha: al guardar, al cambiar una
+// medida o al tocar un color, la tela volvía sola. Los dos síntomas —el Ctrl+Z
+// que no deshace y el guardado que trae de vuelta lo borrado— eran esto.
+interface PaintSnap {
+  fill: fabric.TFiller | string | null
+  tex?:  { kind: TextureKind; colors: string[] }
+  eff?:  { kind: EffectKind; intensity: number }
+  base?: string
+  uTex?: { id: string; widthCm: number }
+}
+
+function snapshotPaint(obj: fabric.FabricObject): PaintSnap {
+  const o = obj as any
+  return { fill: o.fill ?? null, tex: o._texture, eff: o._effect, base: o._baseColor, uTex: o._userTex }
+}
+
+// Repone la receta EXACTA: lo que el snapshot no tiene, se borra. Si solo se
+// asignara lo presente, deshacer "le puse tela a una pieza que era lisa" dejaría
+// la tela puesta.
+function applyPaint(obj: fabric.FabricObject, s: PaintSnap): void {
+  const o = obj as any
+  if (s.tex)  o._texture   = s.tex;  else delete o._texture
+  if (s.eff)  o._effect    = s.eff;  else delete o._effect
+  if (s.base) o._baseColor = s.base; else delete o._baseColor
+  if (s.uTex) o._userTex   = s.uTex; else delete o._userTex
+  obj.set({ fill: s.fill as string, dirty: true })
+}
+
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
-  | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
-  | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }[] }
+  | { type: 'fill';    obj: fabric.FabricObject; prev: PaintSnap }
+  | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prev: PaintSnap }[] }
   | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
@@ -2822,9 +2860,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // ese item, no la prenda que tiene detrás.
         const target = e.target
         if (!target || (target as any)._locked) return
-        const prevFill = target.fill as fabric.TFiller | string | null
-        target.set({ fill: colorRef.current })
-        undoHistory.current.push({ type: 'fill', obj: target, prevFill })
+        const prev = snapshotPaint(target)
+        // El balde deja la pieza en color liso: hay que BORRAR la tela que
+        // tuviera, o al primer redibujo (cambiar una medida, guardar y abrir)
+        // el estampado volvía por encima del color recién elegido.
+        applyPaint(target, { fill: colorRef.current, base: colorRef.current })
+        syncInnerShade()
+        undoHistory.current.push({ type: 'fill', obj: target, prev })
         redoHistory.current = []
         canvas.requestRenderAll()
       }
@@ -3039,14 +3081,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // Dos paradas: color de relleno → color de trazado (ambos los controlás en el panel).
         const c1 = fillRef.current ?? '#ffffff'
         const c2 = colorRef.current ?? '#000000'
-        const prevFill = target.fill
+        const prev = snapshotPaint(target)
         const grad = new (fabric.Gradient as any)({
           type: 'linear', gradientUnits: 'pixels', coords,
           colorStops: [ { offset: 0, color: c1 }, { offset: 1, color: c2 } ],
         })
-        target.set({ fill: grad })
-        ;(target as any).dirty = true
-        undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
+        // Un degradado no se puede describir con la receta (que solo entiende
+        // color liso o estampado), así que la receta se borra: si quedara,
+        // el próximo redibujo pisaría el degradado.
+        applyPaint(target, { fill: grad })
+        undoHistory.current.push({ type: 'fill', obj: target, prev })
         redoHistory.current = []
         canvas.requestRenderAll()
         target = null; downPt = null
@@ -3640,11 +3684,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // por el que entra cualquier pintura, así que blindarlo una vez alcanza.
     targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
-    const items = targets.map(o => ({ obj: o, prevFill: o.fill as fabric.TFiller | string | null }))
+    const items = targets.map(o => ({ obj: o, prev: snapshotPaint(o) }))
     targets.forEach(mut)
     syncInnerShade()
     undoHistory.current.push(items.length === 1
-      ? { type: 'fill', obj: items[0].obj, prevFill: items[0].prevFill }
+      ? { type: 'fill', obj: items[0].obj, prev: items[0].prev }
       : { type: 'fillBatch', items })
     redoHistory.current = []
     canvas.requestRenderAll()
@@ -4105,13 +4149,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.obj.set(entry.prev as any); entry.obj.setCoords()
           undoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
-          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
-          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          const cur = entry.items.map(it => ({ obj: it.obj, prev: snapshotPaint(it.obj) }))
+          entry.items.forEach(it => applyPaint(it.obj, it.prev))
+          syncInnerShade()
           undoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill = entry.obj.fill
-          entry.obj.set({ fill: entry.prevFill as string })
-          undoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null })
+          const cur = snapshotPaint(entry.obj)
+          applyPaint(entry.obj, entry.prev)
+          syncInnerShade()
+          undoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
         canvas.discardActiveObject()
         canvas.requestRenderAll()
@@ -4160,13 +4206,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.obj.set(entry.prev as any); entry.obj.setCoords()
           redoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
-          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
-          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          const cur = entry.items.map(it => ({ obj: it.obj, prev: snapshotPaint(it.obj) }))
+          entry.items.forEach(it => applyPaint(it.obj, it.prev))
+          syncInnerShade()
           redoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill = entry.obj.fill
-          entry.obj.set({ fill: entry.prevFill as string })
-          redoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null })
+          const cur = snapshotPaint(entry.obj)
+          applyPaint(entry.obj, entry.prev)
+          syncInnerShade()
+          redoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
         canvas.discardActiveObject()
         canvas.requestRenderAll()
@@ -4209,7 +4257,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }, [])
 
-  function handleSave() {
+  // La imagen que se ve en la tarjeta del proyecto.
+  //
+  // Antes se sacaba una foto de la pantalla tal cual estaba: si el diseñador
+  // había hecho zoom o movido el lienzo, la tarjeta quedaba con un pedazo de la
+  // prenda o directamente con el vacío de al lado. Y aunque no tocara el zoom,
+  // la prenda ocupaba una parte chica de un lienzo grande y la tarjeta salía
+  // casi toda fondo.
+  //
+  // Ahora se recorta la PRENDA: se apaga el zoom un instante, se mide dónde
+  // está y se fotografía solo eso. El resultado no depende de cómo el diseñador
+  // dejó la vista.
+  function garmentThumbnail(canvas: fabric.Canvas): string {
+    const objs = mockupObjects.current
+    const vpt = canvas.viewportTransform
+    try {
+      if (objs.length) {
+        canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+        let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+        for (const o of objs) {
+          const r = o.getBoundingRect()
+          x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+          x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+        }
+        if (Number.isFinite(x1) && x2 > x1 && y2 > y1) {
+          const pad = Math.max(x2 - x1, y2 - y1) * 0.04
+          const w = x2 - x1 + pad * 2, h = y2 - y1 + pad * 2
+          // ~320 px de alto: el doble de lo que mide la tarjeta, para que no se
+          // vea borrosa en pantallas retina sin guardar una imagen enorme.
+          return canvas.toDataURL({
+            format: 'png', multiplier: Math.min(2, 320 / h),
+            left: x1 - pad, top: y1 - pad, width: w, height: h,
+          })
+        }
+      }
+      return canvas.toDataURL({ format: 'png', multiplier: 0.3 })
+    } finally {
+      if (vpt) canvas.viewportTransform = vpt
+      canvas.requestRenderAll()
+    }
+  }
+
+  async function handleSave() {
     const canvas = fc.current
     if (!canvas) return
     const userObjs = canvas.getObjects()
@@ -4229,9 +4318,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })),
     }
     const canvasJson = JSON.stringify({ v: 2, objects: userObjs, garment })
-    const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
-    onSave(thumbnail, canvasJson)
-    onSaveComplete()
+    const thumbnail = garmentThumbnail(canvas)
+    // Se espera al guardado de verdad. Avisar "Guardado ✓" antes de que la base
+    // conteste hacía que el cartel de error y el de éxito salieran juntos, y el
+    // diseñador se iba pensando que su trabajo estaba a salvo.
+    if (await onSave(thumbnail, canvasJson)) onSaveComplete()
   }
 
   function handleExport() {
