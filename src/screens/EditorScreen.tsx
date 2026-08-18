@@ -1128,6 +1128,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     })
   }
 
+  // Le devuelve a la prenda la tela y el color con los que se guardó.
+  // Se empareja por índice, igual que al cambiar una medida: las piezas siempre
+  // se construyen en el mismo orden. Si los números no coinciden es que la
+  // prenda cambió de forma desde que se guardó, y ahí es mejor no adivinar y
+  // dejarla limpia que pintarle la manga con el color del cuerpo.
+  function restoreGarmentPaint(garment: SavedGarment | null | undefined) {
+    const pieces = garment?.pieces
+    const objs = mockupObjects.current
+    if (!pieces || pieces.length !== objs.length) return
+
+    objs.forEach((o, i) => {
+      if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
+      const p = pieces[i]
+      if (!p) return
+      if (p.tex)  (o as any)._texture   = p.tex
+      if (p.eff)  (o as any)._effect    = p.eff
+      if (p.uTex) (o as any)._userTex   = p.uTex
+      if (p.base) (o as any)._baseColor = p.base
+      if (p.tex || p.eff || p.base || p.uTex) recomposeFill(o)
+      else if (p.fill) o.set({ fill: p.fill })
+    })
+    syncInnerShade()
+  }
+
   // Baja las telas de fábrica que un diseño ya guardado esté usando. No se
   // precargan todas al abrir el editor: son varios MB y casi siempre no se usa
   // ninguna. Al terminar de cargar, preloadTexImage rehace el relleno solo.
@@ -1474,19 +1498,29 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     ;(canvas as any).uniScaleKey = 'altKey'
     canvas.skipOffscreen = false
 
+    // Lo guardado se lee ANTES de construir la prenda: las medidas tienen que
+    // estar puestas cuando se dibuja, o saldría con el talle por defecto y
+    // después habría que rehacerla entera.
+    const design = project.canvasJson ? parseDesign(project.canvasJson) : null
+    if (design?.garment?.measures) {
+      const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
+      measuresRef.current = m
+      setMeasures(m)
+    }
+
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
-      if (project.canvasJson) {
+      if (design) {
         try {
-          const saved = JSON.parse(project.canvasJson) as object[]
-          const revived = await (fabric.util as any).enlivenObjects(saved) as fabric.FabricObject[]
+          const revived = await (fabric.util as any).enlivenObjects(design.objects) as fabric.FabricObject[]
           if (cancelled) return
           for (const obj of revived) {
             obj.set({ strokeUniform: true })
             if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
             canvas.add(obj)
           }
-          preloadRawTexturesUsedBy(revived)
+          restoreGarmentPaint(design.garment)
+          preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
         } catch (e) {
           console.warn('canvas restore failed', e)
         }
@@ -4150,7 +4184,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
-    const canvasJson = JSON.stringify(userObjs)
+
+    // La prenda se guarda por separado porque no se restaura como objeto: se
+    // vuelve a construir desde las medidas y después se le repone la pintura.
+    const garment: SavedGarment = {
+      measures: measuresRef.current,
+      pieces: mockupObjects.current.map(o => ({
+        fill: typeof o.fill === 'string' ? o.fill : undefined,
+        tex:  (o as any)._texture,
+        eff:  (o as any)._effect,
+        base: (o as any)._baseColor,
+        uTex: (o as any)._userTex,
+      })),
+    }
+    const canvasJson = JSON.stringify({ v: 2, objects: userObjs, garment })
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
     onSave(thumbnail, canvasJson)
     onSaveComplete()
@@ -5406,9 +5453,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 <div key={paletteVersion} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   {userTextures.filter(t => t.builtIn).map(t => {
                     const on = activeUserTex === t.id
-                    // La miniatura sale de la imagen ya cargada, que es la que
-                    // tiene los colores elegidos. Si todavía no cargó, el archivo.
-                    const thumb = userTexImages.current.get(t.id)?.src ?? t.dataUrl
+                    // Si la tela ya se usó, la miniatura sale de la imagen que
+                    // está en memoria, que es la que tiene los colores elegidos.
+                    // Si no, la versión chica: abrir esta pestaña no tiene por
+                    // qué bajar los archivos grandes.
+                    const thumb = userTexImages.current.get(t.id)?.src
+                      ?? rawTextureById(t.id)?.thumb
+                      ?? t.dataUrl
                     return (
                       <button
                         key={t.id}
@@ -6202,6 +6253,36 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
 // Devuelve las figuras de la remera en coordenadas cm (origen x=0 en el centro).
 // La manga se ancla al hombro y a la axila: así el ancho de pecho mueve el costado
 // y empuja la manga hacia afuera, como una remera real.
+// ── Qué se guarda de un diseño ───────────────────────────────────────────────
+//
+// La prenda NO se guardaba: canvasJson era un array pelado con lo que el
+// diseñador había puesto ENCIMA (dibujos, textos, imágenes), y la remera se
+// reconstruía gris y con el talle por defecto cada vez que se abría el
+// proyecto. Es decir: pintabas, guardabas, y al volver no había nada.
+//
+// Ahora canvasJson es un objeto que además guarda la prenda: sus medidas y la
+// tela/color de cada pieza. Se sigue leyendo el formato viejo (un array) para
+// no romper los proyectos que ya existen.
+interface SavedPiece {
+  fill?: string
+  tex?:  { kind: TextureKind; colors: string[] }
+  eff?:  { kind: EffectKind; intensity: number }
+  base?: string
+  uTex?: { id: string; widthCm: number }
+}
+interface SavedGarment { measures?: Measures; pieces?: SavedPiece[] }
+interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
+
+function parseDesign(json: string): SavedDesign {
+  try {
+    const parsed = JSON.parse(json)
+    if (Array.isArray(parsed)) return { objects: parsed, garment: null }      // formato viejo
+    return { objects: parsed?.objects ?? [], garment: parsed?.garment ?? null }
+  } catch {
+    return { objects: [], garment: null }
+  }
+}
+
 function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
   const W = teeWarp(m)
   const shapes: { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [

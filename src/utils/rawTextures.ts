@@ -17,6 +17,10 @@ export interface RawTexture {
   id: string        // siempre con prefijo 'raw:' — es lo que las distingue
   name: string
   url: string
+  // Version chica para la grilla. Existe para que abrir la pestaña de texturas
+  // no baje los archivos grandes: son 136 KB las nueve juntas contra 2,8 MB.
+  // El archivo pesado se baja recien cuando la tela se aplica de verdad.
+  thumb: string
   widthCm: number   // ancho real de la muestra: define la escala del estampado
   // Define cómo se recolorea, y no es un detalle técnico sino lo que el
   // diseñador ve: un vector se edita color por color, una foto se reteñe
@@ -28,15 +32,15 @@ export interface RawTexture {
 // punto de partida; el diseñador lo ajusta con el slider y ese valor sí queda
 // guardado (ver loadRawWidths).
 export const RAW_TEXTURES: RawTexture[] = [
-  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', widthCm: 40, kind: 'photo' },
-  { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       widthCm: 15, kind: 'photo' },
-  { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    widthCm: 50, kind: 'svg' },
-  { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     widthCm: 15, kind: 'svg' },
-  { id: 'raw:tartan-2', name: 'Tartán 2',     url: '/texturas/tartan-2.svg',     widthCm: 15, kind: 'svg' },
-  { id: 'raw:tartan-3', name: 'Tartán 3',     url: '/texturas/tartan-3.svg',     widthCm: 15, kind: 'svg' },
-  { id: 'raw:tartan-4', name: 'Tartán 4',     url: '/texturas/tartan-4.svg',     widthCm: 15, kind: 'svg' },
-  { id: 'raw:tartan-5', name: 'Tartán 5',     url: '/texturas/tartan-5.svg',     widthCm: 15, kind: 'svg' },
-  { id: 'raw:tartan-6', name: 'Tartán 6',     url: '/texturas/tartan-6.svg',     widthCm: 15, kind: 'svg' },
+  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', thumb: '/texturas/thumbs/animal-print.jpg', widthCm: 40, kind: 'photo' },
+  { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       thumb: '/texturas/thumbs/joggin.jpg', widthCm: 15, kind: 'photo' },
+  { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    thumb: '/texturas/thumbs/camuflaje.jpg', widthCm: 50, kind: 'svg' },
+  { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     thumb: '/texturas/thumbs/tartan-1.jpg', widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-2', name: 'Tartán 2',     url: '/texturas/tartan-2.svg',     thumb: '/texturas/thumbs/tartan-2.jpg', widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-3', name: 'Tartán 3',     url: '/texturas/tartan-3.svg',     thumb: '/texturas/thumbs/tartan-3.jpg', widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-4', name: 'Tartán 4',     url: '/texturas/tartan-4.svg',     thumb: '/texturas/thumbs/tartan-4.jpg', widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-5', name: 'Tartán 5',     url: '/texturas/tartan-5.svg',     thumb: '/texturas/thumbs/tartan-5.jpg', widthCm: 15, kind: 'svg' },
+  { id: 'raw:tartan-6', name: 'Tartán 6',     url: '/texturas/tartan-6.svg',     thumb: '/texturas/thumbs/tartan-6.jpg', widthCm: 15, kind: 'svg' },
 ]
 
 export const rawTextureById = (id: string) => RAW_TEXTURES.find(t => t.id === id)
