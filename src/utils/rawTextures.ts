@@ -1,0 +1,59 @@
+// Telas que vienen con el programa.
+//
+// Son fotos y vectores de telas reales, no estampados dibujados por código como
+// los de la pestaña de arriba: por eso NO se recolorean. A cambio se ven como la
+// tela que son.
+//
+// Van por el mismo camino que las telas propias del usuario (_userTex): se
+// dibujan a escala real según el ancho en cm de la muestra, se combinan con los
+// efectos de desgaste y viajan dentro del diseño guardado. La única diferencia
+// es que viven en /public/texturas y no en IndexedDB, así que no ocupan lugar en
+// la biblioteca del usuario ni se pueden borrar.
+//
+// El archivo se descarga recién cuando se usa la tela: son varios MB en total y
+// no tiene sentido pagarlos al abrir el editor.
+
+export interface RawTexture {
+  id: string        // siempre con prefijo 'raw:' — es lo que las distingue
+  name: string
+  url: string
+  widthCm: number   // ancho real de la muestra: define la escala del estampado
+}
+
+// El ancho en cm es una estimación de fábrica, no un dato del archivo. Es el
+// punto de partida; el diseñador lo ajusta con el slider y ese valor sí queda
+// guardado (ver loadRawWidths).
+export const RAW_TEXTURES: RawTexture[] = [
+  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', widthCm: 40 },
+  { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       widthCm: 15 },
+  { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    widthCm: 50 },
+  { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     widthCm: 15 },
+  { id: 'raw:tartan-2', name: 'Tartán 2',     url: '/texturas/tartan-2.svg',     widthCm: 15 },
+  { id: 'raw:tartan-3', name: 'Tartán 3',     url: '/texturas/tartan-3.svg',     widthCm: 15 },
+  { id: 'raw:tartan-4', name: 'Tartán 4',     url: '/texturas/tartan-4.svg',     widthCm: 15 },
+  { id: 'raw:tartan-5', name: 'Tartán 5',     url: '/texturas/tartan-5.svg',     widthCm: 15 },
+  { id: 'raw:tartan-6', name: 'Tartán 6',     url: '/texturas/tartan-6.svg',     widthCm: 15 },
+]
+
+export const isRawTexture = (id: string) => id.startsWith('raw:')
+
+// El ancho que el diseñador le puso a cada tela de fábrica.
+// Va a localStorage y no a IndexedDB porque son nueve números: si alguien decide
+// que su leopardo mide 60 cm, no lo tiene que volver a decidir cada vez que abre
+// el programa.
+const WIDTHS_KEY = 'raw-design:texturas-ancho'
+
+export function loadRawWidths(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(WIDTHS_KEY)
+    return raw ? JSON.parse(raw) as Record<string, number> : {}
+  } catch { return {} }
+}
+
+export function saveRawWidth(id: string, widthCm: number): void {
+  try {
+    const all = loadRawWidths()
+    all[id] = widthCm
+    localStorage.setItem(WIDTHS_KEY, JSON.stringify(all))
+  } catch { /* sin localStorage la app sigue andando, solo no recuerda el ancho */ }
+}

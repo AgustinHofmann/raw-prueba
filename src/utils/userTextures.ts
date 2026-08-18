@@ -11,9 +11,10 @@
 export interface UserTexture {
   id: string
   name: string
-  dataUrl: string      // imagen embebida (png/jpg/webp/svg)
+  dataUrl: string      // imagen embebida (png/jpg/webp/svg) o URL de una tela de fábrica
   widthCm: number      // ancho real de la muestra: define la escala del estampado
   createdAt: number
+  builtIn?: boolean    // tela que viene con el programa: no se borra ni va a IndexedDB
 }
 
 // Formatos que el navegador decodifica de forma nativa. TIFF, PSD y AI quedan
