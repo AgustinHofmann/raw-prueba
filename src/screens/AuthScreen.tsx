@@ -5,7 +5,7 @@ import Magnetic from '../components/Magnetic'
 
 type Mode = 'login' | 'signup'
 
-export default function AuthScreen() {
+export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }) {
   const [mode, setMode]         = useState<Mode>('login')
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
@@ -195,6 +195,27 @@ export default function AuthScreen() {
               {mode === 'login' ? 'Registrate' : 'Ingresá'}
             </button>
           </p>
+        )}
+
+        {/* Entrar sin cuenta.
+            Tener cuenta sirve para guardar en la nube y abrir los proyectos
+            desde otra computadora, pero no debería ser el peaje para poder
+            diseñar. Sin cuenta el programa funciona igual y todo se guarda en
+            esta máquina. */}
+        {onSinCuenta && !sent && (
+          <div className="rise-4" style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--line-soft)', textAlign: 'center' }}>
+            <button
+              onClick={onSinCuenta}
+              className="btn btn-ghost"
+              style={{ width: '100%', justifyContent: 'center', fontSize: 13 }}
+            >
+              Entrar sin cuenta
+            </button>
+            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              Tus proyectos se guardan en esta computadora. Podés crear una cuenta
+              más adelante y se suben solos.
+            </p>
+          </div>
         )}
       </div>
     </div>

@@ -9,6 +9,9 @@ interface Props {
   openTabs: Tab[]
   activeProject: Project | null
   saved: boolean
+  online: boolean
+  syncing: boolean
+  sinCuenta: boolean
   email: string
   avatarUrl?: string
   onHome: () => void
@@ -25,7 +28,7 @@ interface Props {
 }
 
 export default function ChromeBar({
-  route, openTabs, activeProject, saved, email, avatarUrl,
+  route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
   onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
 }: Props) {
@@ -197,6 +200,8 @@ export default function ChromeBar({
       {/* Right: controles editor + avatar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 14, flexShrink: 0 }}>
 
+        <ConnStatus online={online} syncing={syncing} sinCuenta={sinCuenta} />
+
         {isEditor && (
           <>
             {editing ? (
@@ -331,5 +336,45 @@ function MenuItem({ icon, label, hint, onClick }: {
       <span style={{ flex: 1 }}>{label}</span>
       {hint && <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{hint}</span>}
     </button>
+  )
+}
+
+/**
+ * Dónde están guardados los proyectos ahora mismo.
+ *
+ * El diseñador tiene derecho a saberlo sin tener que preguntar: trabajar una
+ * hora creyendo que todo va a la nube y descubrir después que estaba sin
+ * conexión es la peor forma de enterarse.
+ *
+ * No es una alarma: sin conexión el trabajo está guardado igual, solo que en
+ * esta máquina. Por eso el cartel informa y no asusta.
+ */
+function ConnStatus({ online, syncing, sinCuenta }: { online: boolean; syncing: boolean; sinCuenta: boolean }) {
+  const estado = syncing ? 'sync' : (!online || sinCuenta) ? 'local' : 'nube'
+  if (estado === 'nube') return null   // todo normal: no hace falta decir nada
+
+  const texto = estado === 'sync'
+    ? 'Sincronizando…'
+    : sinCuenta ? 'Sin cuenta' : 'Sin conexión'
+  const detalle = estado === 'sync'
+    ? 'Subiendo los cambios a tu cuenta'
+    : 'Se guarda en esta computadora' + (sinCuenta ? '' : '. Se sube al volver la conexión')
+
+  return (
+    <span
+      title={detalle}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
+        fontSize: 11, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+        border: '1px solid var(--line-soft)', background: 'var(--surface)',
+      }}
+    >
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+        background: estado === 'sync' ? 'var(--accent)' : 'var(--muted)',
+      }} />
+      {texto}
+    </span>
   )
 }

@@ -23,44 +23,22 @@ export interface UserTexture {
 export const TEXTURE_ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml'
 export const TEXTURE_MAX_MB = 8
 
-const DB_NAME = 'raw-design'
-const STORE   = 'user-textures'
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror   = () => reject(req.error ?? new Error('No se pudo abrir la base local'))
-  })
-}
-
-function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  return openDb().then(db => new Promise<T>((resolve, reject) => {
-    const t = db.transaction(STORE, mode)
-    const r = run(t.objectStore(STORE))
-    r.onsuccess = () => resolve(r.result)
-    r.onerror   = () => reject(r.error ?? new Error('Error de la base local'))
-    t.oncomplete = () => db.close()
-  }))
-}
+// La base la abre lib/idb.ts, que es el único que sabe su versión: IndexedDB
+// versiona la base entera y dos módulos abriéndola con números distintos se
+// pisan. Ver el comentario de ese archivo.
+import { STORE_TEXTURES, idbGetAll, idbPut, idbDelete } from '../lib/idb'
 
 export async function listUserTextures(): Promise<UserTexture[]> {
-  try {
-    const all = await tx<UserTexture[]>('readonly', s => s.getAll() as IDBRequest<UserTexture[]>)
-    return (all ?? []).sort((a, b) => b.createdAt - a.createdAt)
-  } catch { return [] }   // sin IndexedDB (modo privado) la app sigue andando
+  const all = await idbGetAll<UserTexture>(STORE_TEXTURES)
+  return all.sort((a, b) => b.createdAt - a.createdAt)
 }
 
 export async function deleteUserTexture(id: string): Promise<void> {
-  try { await tx('readwrite', s => s.delete(id) as unknown as IDBRequest<undefined>) } catch { /* noop */ }
+  await idbDelete(STORE_TEXTURES, id)
 }
 
 export async function updateUserTexture(t: UserTexture): Promise<void> {
-  await tx('readwrite', s => s.put(t) as unknown as IDBRequest<IDBValidKey>)
+  await idbPut(STORE_TEXTURES, t)
 }
 
 // Importa un archivo de imagen como textura del usuario.

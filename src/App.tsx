@@ -1,8 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import { Project, Folder, Tab, tabKey, TechPackMeasures, TechPackDoc } from './types/project'
-import { fetchProjects, fetchProjectCanvas, fetchProjectTechpack, upsertProject, saveTechpackJson, deleteProject, fetchFolders, upsertFolder, deleteFolder } from './lib/db'
+// Todo pasa por repo: guarda primero en el navegador y sube a la nube después.
+// Ver lib/repo.ts.
+import { listProjects, listFolders, getCanvas, getTechpack, saveProject, saveTechpack,
+         removeProject, removeFolder, saveFolder, syncWithCloud, isOnline } from './lib/repo'
+import { cloudEnabled } from './lib/supabase'
 import AuthScreen from './screens/AuthScreen'
 import ProfilePanel from './components/ProfilePanel'
 import OnboardingScreen from './screens/OnboardingScreen'
@@ -35,6 +39,11 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
+  const [online, setOnline]         = useState(isOnline())
+  const [syncing, setSyncing]       = useState(false)
+  // "Entrar sin cuenta": el diseñador eligió trabajar solo en esta máquina.
+  // Queda recordado para no volver a preguntárselo en cada arranque.
+  const [sinCuenta, setSinCuenta]   = useState(() => localStorage.getItem('raw.sinCuenta') === '1')
   const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'illustrator')
   const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
 
@@ -45,27 +54,65 @@ export default function App() {
     localStorage.setItem('theme', theme)
   }, [theme])
 
-  // Verifica sesión activa y escucha cambios de auth
+  // Verifica sesión activa y escucha cambios de auth.
+  //
+  // authReady tiene que quedar en true SIEMPRE, pase lo que pase. Mientras es
+  // false la app no dibuja nada, así que cualquier camino que no lo prenda deja
+  // la pantalla en negro. Eso pasaba sin credenciales: la consulta de sesión no
+  // contestaba nunca y la app se quedaba esperando para siempre.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      setAuthReady(true)
-    })
+    if (!cloudEnabled) { setAuthReady(true); return }   // sin nube no hay sesión que buscar
+
+    // Red de seguridad: si la consulta se cuelga (sin internet, servidor caído),
+    // se entra igual a los 3 segundos. Sin sesión, pero se entra.
+    const rescate = setTimeout(() => setAuthReady(true), 3000)
+
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => setUser(session?.user ?? null))
+      .catch(() => { /* sin sesión: se sigue igual */ })
+      .finally(() => { clearTimeout(rescate); setAuthReady(true) })
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
     })
-    return () => subscription.unsubscribe()
+    return () => { clearTimeout(rescate); subscription.unsubscribe() }
   }, [])
 
-  // Carga proyectos y carpetas cuando hay usuario
+  // Carga lo que hay en la máquina. No espera a la red ni a la sesión: los
+  // proyectos ya están acá, así que la app abre igual sin internet.
   useEffect(() => {
-    if (!user) { setProjects([]); setFolders([]); return }
     setLoading(true)
-    Promise.all([fetchProjects(), fetchFolders()])
+    Promise.all([listProjects(), listFolders()])
       .then(([p, f]) => { setProjects(p); setFolders(f) })
-      .catch(() => showToast('Error al cargar los proyectos'))
+      .catch(() => showToast('Error al leer los proyectos guardados'))
       .finally(() => setLoading(false))
+  }, [])
+
+  // Con sesión, pone de acuerdo lo local con la nube: sube lo que hiciste sin
+  // internet y baja lo que hiciste en otra computadora.
+  const sincronizar = useCallback(async () => {
+    if (!user) return
+    setSyncing(true)
+    try {
+      const res = await syncWithCloud(user.id)
+      if (res) { setProjects(res.projects); setFolders(res.folders) }
+    } finally { setSyncing(false) }
   }, [user])
+
+  useEffect(() => { void sincronizar() }, [sincronizar])
+
+  // Al recuperar la conexión se sincroniza solo: es justo cuando hay trabajo
+  // hecho sin internet esperando para subir.
+  useEffect(() => {
+    const onOnline = () => { setOnline(true); void sincronizar() }
+    const onOffline = () => setOnline(false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+    }
+  }, [sincronizar])
 
   const go = (r: Route) => setRoute(r)
   const showToast = (msg: string) => setToast(msg)
@@ -75,17 +122,26 @@ export default function App() {
     const existing = openTabs.find(t => t.kind === 'editor' && t.project.id === p.id)
     if (existing) { setActive(existing.project); go('editor'); return }
 
-    // Carga lazy del canvas_json solo al abrir
+    // Carga lazy del dibujo solo al abrir
     let project = p
     if (!project.canvasJson) {
+      let canvasJson: string | null = null
       try {
-        const canvasJson = await fetchProjectCanvas(p.id)
-        project = { ...p, canvasJson }
-        setProjects(prev => prev.map(x => x.id === p.id ? project : x))
+        canvasJson = await getCanvas(p.id)
       } catch {
         showToast('Error al cargar el proyecto')
         return
       }
+      // Un proyecto YA GUARDADO (tiene miniatura) que no trae su dibujo es un
+      // proyecto que todavía no se descargó de la nube. Abrirlo acá sería abrir
+      // un lienzo vacío, y como el guardado es automático, ese vacío se guardaría
+      // encima del diseño real. Mejor no abrirlo.
+      if (canvasJson == null && p.thumbnail) {
+        showToast('Este proyecto todavía no se descargó. Conectate para abrirlo.')
+        return
+      }
+      project = { ...p, canvasJson }
+      setProjects(prev => prev.map(x => x.id === p.id ? project : x))
     }
     setActive(project)
     setOpenTabs(prev => [...prev, { kind: 'editor', project }])
@@ -101,7 +157,7 @@ export default function App() {
     let project = base
     if (project.techpackJson == null) {
       let techpackJson: string | null = null
-      try { techpackJson = await fetchProjectTechpack(project.id) }
+      try { techpackJson = await getTechpack(project.id) }
       catch { showToast('No se pudo cargar la ficha técnica guardada') }
       if (techpackJson != null) {
         project = { ...project, techpackJson }
@@ -133,7 +189,7 @@ export default function App() {
     setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
     // Un fallo al guardar TIENE que verse: mientras esto se tragaba en silencio,
     // la ficha técnica se perdía al recargar y nadie se enteraba.
-    try { await saveTechpackJson(base.id, json) }
+    try { await saveTechpack(base.id, json, user?.id) }
     catch { showToast('Error al guardar la ficha técnica — revisá tu conexión') }
   }
 
@@ -158,7 +214,7 @@ export default function App() {
 
   async function handleCreate(p: Project) {
     try {
-      await upsertProject(p, user!.id)
+      await saveProject(p, user?.id)
       setProjects(prev => [p, ...prev])
       openProject(p)
       setShowSheet(false)
@@ -167,7 +223,7 @@ export default function App() {
 
   async function handleImport(p: Project) {
     try {
-      await upsertProject(p, user!.id)
+      await saveProject(p, user?.id)
       setProjects(prev => [p, ...prev])
       openProject(p)
     } catch { showToast('Error al importar el proyecto') }
@@ -175,7 +231,7 @@ export default function App() {
 
   async function handleDelete(id: string) {
     try {
-      await deleteProject(id)
+      await removeProject(id)
       setProjects(prev => prev.filter(p => p.id !== id))
       // Purga ambas pestañas (editor + ficha técnica) del proyecto borrado
       setOpenTabs(prev => {
@@ -193,15 +249,15 @@ export default function App() {
 
   async function handleCreateFolder(name: string) {
     const folder: Folder = { id: crypto.randomUUID(), name, createdAt: Date.now() }
-    await upsertFolder(folder, user!.id)
+    await saveFolder(folder, user?.id)
     setFolders(prev => [folder, ...prev])
   }
 
   async function handleDeleteFolder(id: string) {
     const affected = projects.filter(p => p.folderId === id).map(p => ({ ...p, folderId: null }))
     await Promise.all([
-      deleteFolder(id),
-      ...affected.map(p => upsertProject(p, user!.id)),
+      removeFolder(id),
+      ...affected.map(p => saveProject(p, user?.id)),
     ])
     setFolders(prev => prev.filter(f => f.id !== id))
     setProjects(prev => prev.map(p => p.folderId === id ? { ...p, folderId: null } : p))
@@ -212,7 +268,7 @@ export default function App() {
     const p = projects.find(p => p.id === projectId)
     if (!p) return
     const updated = { ...p, folderId }
-    await upsertProject(updated, user!.id)
+    await saveProject(updated, user?.id)
     setProjects(prev => prev.map(p => p.id === projectId ? updated : p))
   }
 
@@ -222,16 +278,18 @@ export default function App() {
   async function handleSave(thumbnail: string, canvasJson: string): Promise<boolean> {
     if (!activeProject) return false
     const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
-    try {
-      await upsertProject(updated, user!.id)
-      setActive(updated)
-      setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
-      setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
-      return true
-    } catch {
-      showToast('Error al guardar — revisá tu conexión')
+    // Lo que decide si el trabajo está a salvo es el guardado LOCAL. Que la nube
+    // falle por falta de internet no es un error: se sube al reconectar. El
+    // único fallo real es que no se pueda escribir en esta máquina.
+    const ok = await saveProject(updated, user?.id)
+    if (!ok) {
+      showToast('No se pudo guardar en este navegador — revisá que no estés en modo incógnito')
       return false
     }
+    setActive(updated)
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
+    setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
+    return true
   }
 
   function handleSaveComplete() {
@@ -243,7 +301,7 @@ export default function App() {
   async function handleRename(name: string) {
     if (!activeProject) return
     const updated = { ...activeProject, name, updatedAt: Date.now() }
-    await upsertProject(updated, user!.id)
+    await saveProject(updated, user?.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
@@ -254,10 +312,15 @@ export default function App() {
   // Espera confirmación de sesión para evitar flash
   if (!authReady) return null
 
-  // Sin sesión → pantalla de login
-  if (!user) return <AuthScreen />
+  // Sin sesión y sin haber elegido trabajar sin cuenta → pantalla de login.
+  // Si no hay credenciales de Supabase no existe login posible, así que se entra
+  // derecho: mandarlo a iniciar sesión contra una nube que no está sería un
+  // callejón sin salida (era, literalmente, la pantalla negra de antes).
+  if (!user && !sinCuenta && cloudEnabled) {
+    return <AuthScreen onSinCuenta={() => { localStorage.setItem('raw.sinCuenta', '1'); setSinCuenta(true) }} />
+  }
 
-  const designerName = user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? 'Diseñador'
+  const designerName = user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? user?.email ?? 'Diseñador'
   // El editor se mantiene montado debajo de la ficha técnica para no perder el
   // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
   const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
@@ -279,8 +342,11 @@ export default function App() {
           openTabs={openTabs}
           activeProject={activeProject}
           saved={saved}
-          email={user.email ?? ''}
-          avatarUrl={user.user_metadata?.avatar_url}
+          online={online}
+          syncing={syncing}
+          sinCuenta={!user}
+          email={user?.email ?? ''}
+          avatarUrl={user?.user_metadata?.avatar_url}
           onHome={() => go('home')}
           onTabClick={activateTab}
           onTabClose={closeTab}
@@ -349,7 +415,7 @@ export default function App() {
         <NewProjectSheet folders={folders} onConfirm={handleCreate} onCancel={() => setShowSheet(false)} />
       )}
 
-      {showProfile && (
+      {showProfile && user && (
         <ProfilePanel user={user} projects={projects} theme={theme} onThemeChange={setTheme} onClose={() => setShowProfile(false)} />
       )}
     </div>
