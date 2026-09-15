@@ -21,17 +21,11 @@ export default function OnboardingScreen({ onEnter }: { onEnter: () => void }) {
         filter: 'blur(50px)', animation: 'rise 1.4s var(--ease) both',
       }} />
       <div style={{ position: 'relative', textAlign: 'center', maxWidth: 720, padding: 32 }}>
-        {/* Slogan de la marca. Va arriba del título y en chico: presenta quién
-            hace el programa, sin competirle al mensaje principal. */}
-        <div className="rise" style={{
-          marginBottom: 18, fontFamily: 'var(--ui)', fontSize: 11,
-          letterSpacing: '0.24em', textTransform: 'uppercase', color: 'var(--accent)',
-        }}>
-          For designers, by designers
-        </div>
+        {/* El slogan ES el lema de la primera pantalla: reemplaza al anterior
+            ("Diseñá prendas, idea y crea sin vueltas"), no convive con él. */}
         <div className="display-i rise-2" style={{ fontSize: 'clamp(44px, 7vw, 100px)', color: 'var(--fg)', letterSpacing: '-0.025em' }}>
-          Diseñá <span style={{ color: 'var(--accent)' }}>prendas</span><br />
-          idea y crea <em>sin vueltas</em>.
+          For <span style={{ color: 'var(--accent)' }}>designers</span>,<br />
+          by <em>designers</em>.
         </div>
         <p className="rise-3" style={{ marginTop: 24, fontSize: 15, lineHeight: 1.6, color: 'var(--muted)', maxWidth: 480, margin: '24px auto 0' }}>
           Mockups 2D, color, trazo libre y exportación lista para producción.

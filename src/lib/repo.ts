@@ -83,15 +83,39 @@ export async function getTechpack(id: string): Promise<string | null> {
  * está a salvo y la respuesta es true aunque la nube haya fallado. Decirle al
  * diseñador que falló porque no hay internet sería mentirle al revés.
  */
+/**
+ * Marca de "esto todavía no llegó a la nube".
+ *
+ * Hace falta porque las fechas de los dos lados NO son comparables: la base
+ * tiene un disparador que reescribe updated_at con el reloj del servidor
+ * (migración 0005), mientras que la fecha local la pone el navegador. Si el
+ * reloj del servidor va adelante, la copia de la nube parece más nueva aunque
+ * tenga contenido viejo, y la sincronización la bajaba encima del trabajo
+ * recién hecho: guardabas, recargabas, y tu cambio no estaba.
+ *
+ * Con esta marca la regla deja de depender de relojes: si acá hay algo sin
+ * subir, acá está lo bueno.
+ */
+type Pendiente = Project & { pendienteDeSubir?: boolean }
+
 export async function saveProject(p: Project, userId?: string): Promise<boolean> {
-  const ok = (await idbPut(STORE_PROJECTS, p)) !== null
+  const conMarca: Pendiente = { ...p, pendienteDeSubir: true }
+  const ok = (await idbPut(STORE_PROJECTS, conMarca)) !== null
   void pushProject(p, userId)
   return ok
 }
 
 async function pushProject(p: Project, userId?: string): Promise<void> {
   if (!(await cloudReady())) return
-  try { await upsertProject(p, userId) } catch { /* queda pendiente para el próximo sync */ }
+  try {
+    await upsertProject(p, userId)
+    // Subió: se limpia la marca, pero solo si nadie volvió a guardar mientras
+    // tanto (si la fecha cambió, hay cambios más nuevos todavía sin subir).
+    const actual = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
+    if (actual && actual.updatedAt === p.updatedAt && actual.pendienteDeSubir) {
+      await idbPut(STORE_PROJECTS, { ...actual, pendienteDeSubir: false })
+    }
+  } catch { /* queda marcado como pendiente para el próximo sync */ }
 }
 
 export async function saveTechpack(id: string, json: string, userId?: string): Promise<boolean> {
@@ -181,7 +205,10 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     for (const p of locales) porId.set(p.id, p)
 
     for (const remoto of nube) {
-      const local = porId.get(remoto.id)
+      const local = porId.get(remoto.id) as Pendiente | undefined
+      // Lo que todavía no subió manda siempre, sin mirar fechas: son cambios que
+      // solo existen acá. Compararlos contra el reloj del servidor los perdía.
+      if (local?.pendienteDeSubir) continue
       if (local && local.updatedAt >= remoto.updatedAt) continue   // manda el local
       const [canvasJson, techpackJson] = await Promise.all([
         fetchProjectCanvas(remoto.id).catch(() => null),
@@ -201,10 +228,12 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
 
     // 4. Lo que acá es más nuevo (o no existe arriba) se sube.
     const idsNube = new Map(nube.map(p => [p.id, p.updatedAt]))
-    for (const local of locales) {
+    for (const local of locales as Pendiente[]) {
       const arriba = idsNube.get(local.id)
-      if (arriba !== undefined && arriba >= local.updatedAt) continue
-      try { await upsertProject(local, userId) } catch { /* se reintenta */ }
+      // Se sube lo pendiente aunque la fecha de arriba parezca más nueva: esa
+      // fecha la puso el servidor y no dice nada sobre el contenido.
+      if (!local.pendienteDeSubir && arriba !== undefined && arriba >= local.updatedAt) continue
+      await pushProject(local, userId)
     }
 
     return {
