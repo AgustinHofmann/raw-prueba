@@ -68,6 +68,26 @@ function applyPaint(obj: fabric.FabricObject, s: PaintSnap): void {
   obj.set({ fill: s.fill as string, dirty: true })
 }
 
+/** Dónde estaba y cómo estaba un objeto, para poder devolverlo ahí. */
+interface GeomSnap {
+  obj: fabric.FabricObject
+  left: number; top: number
+  scaleX: number; scaleY: number
+  angle: number
+}
+
+const snapGeom = (o: fabric.FabricObject): GeomSnap => ({
+  obj: o,
+  left: o.left ?? 0, top: o.top ?? 0,
+  scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1,
+  angle: o.angle ?? 0,
+})
+
+function applyGeom(s: GeomSnap): void {
+  s.obj.set({ left: s.left, top: s.top, scaleX: s.scaleX, scaleY: s.scaleY, angle: s.angle })
+  s.obj.setCoords()
+}
+
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
@@ -78,7 +98,16 @@ type HistoryEntry =
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
   | { type: 'group';   children: fabric.FabricObject[]; group: fabric.Group }
   | { type: 'ungroup'; children: fabric.FabricObject[]; group: fabric.Group }
-  | { type: 'transform'; items: { obj: fabric.FabricObject; left: number; top: number }[] }
+  // Mover, escalar o rotar. Guarda la geometría COMPLETA y no solo la posición:
+  // con left/top sueltos, deshacer un escalado devolvía el objeto a su lugar
+  // pero con el tamaño nuevo.
+  | { type: 'transform'; items: GeomSnap[] }
+  // Arrastre de varios objetos a la vez. Va por separado porque mientras hay una
+  // selección múltiple las coordenadas de cada hijo son relativas al centro de
+  // la selección: recién se vuelven absolutas al soltarla. Guardar un left/top
+  // de ese momento y reponerlo después manda los objetos a cualquier lado.
+  // El desplazamiento, en cambio, vale igual antes y después.
+  | { type: 'moveDelta'; objs: fabric.FabricObject[]; dx: number; dy: number }
   | { type: 'props';  obj: fabric.FabricObject; prev: Record<string, any> }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
@@ -3344,6 +3373,41 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
       }
 
+      // Mover, escalar y rotar NO se anotaban en el historial: las entradas de
+      // tipo 'transform' solo se creaban dentro del propio Ctrl+Z, así que no
+      // había nada que deshacer y el atajo se saltaba el movimiento y borraba lo
+      // anterior. Acá se anota cada transformación cuando termina.
+      const onModified = (e: any) => {
+        const target = e?.target as fabric.FabricObject | undefined
+        if (!target) return
+        // Fabric guarda en la propia transformación cómo estaba el objeto al
+        // empezar a arrastrarlo: es exactamente el "antes" que hace falta.
+        const antes = e?.transform?.original
+        if (!antes) return
+
+        if (target.type === 'activeselection') {
+          const dx = (target.left ?? 0) - (antes.left ?? 0)
+          const dy = (target.top ?? 0) - (antes.top ?? 0)
+          if (dx === 0 && dy === 0) return   // se escaló o rotó el grupo: no se cubre
+          undoHistory.current.push({
+            type: 'moveDelta',
+            objs: (target as fabric.ActiveSelection).getObjects(),
+            dx, dy,
+          })
+        } else {
+          undoHistory.current.push({
+            type: 'transform',
+            items: [{
+              obj: target,
+              left: antes.left ?? 0, top: antes.top ?? 0,
+              scaleX: antes.scaleX ?? 1, scaleY: antes.scaleY ?? 1,
+              angle: antes.angle ?? 0,
+            }],
+          })
+        }
+        redoHistory.current = []
+      }
+
       canvas.on('mouse:down', onDownMockup)
       canvas.on('selection:created', onCreated)
       canvas.on('selection:updated', onUpdated)
@@ -3351,6 +3415,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.on('object:scaling',    onScaled)
       canvas.on('object:moving',    onMoved)
       canvas.on('object:rotating',  onRotated)
+      canvas.on('object:modified',  onModified)
 
       offs.push(() => {
         canvas.off('mouse:down', onDownMockup)
@@ -3360,6 +3425,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('object:scaling',    onScaled)
         canvas.off('object:moving',    onMoved)
         canvas.off('object:rotating',  onRotated)
+        canvas.off('object:modified',  onModified)
         setHasSel(false)
         setIsText(false)
       })
@@ -4159,9 +4225,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           dissolveGroup(entry.group)                // rehacer la disolución
           undoHistory.current.push(entry)
         } else if (entry.type === 'transform') {
-          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
-          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          const cur = entry.items.map(it => snapGeom(it.obj))
+          entry.items.forEach(applyGeom)
           undoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'moveDelta') {
+          const signo = 1    // rehacer: se vuelve a aplicar el desplazamiento
+          entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
+          undoHistory.current.push(entry)
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -4217,9 +4287,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.group = makeGroup(entry.children)   // deshacer: rehacer el grupo
           redoHistory.current.push(entry)
         } else if (entry.type === 'transform') {
-          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
-          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          const cur = entry.items.map(it => snapGeom(it.obj))
+          entry.items.forEach(applyGeom)
           redoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'moveDelta') {
+          const signo = -1   // deshacer: se resta el desplazamiento
+          entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
+          redoHistory.current.push(entry)
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
