@@ -316,6 +316,23 @@ export default function App() {
 
   const exportProject = activeProject ?? projects[0] ?? null
 
+  // El editor se mantiene montado debajo de la ficha técnica para no perder el
+  // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
+  const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
+
+  // Red de seguridad: si la ruta pide editor pero no hay editor que mostrar, no
+  // se dibuja nada y queda la pantalla en blanco. Antes que eso, volver al
+  // inicio: una pantalla en blanco parece que el programa se rompió.
+  //
+  // OJO: este hook va ACÁ, antes de los `return` de abajo. Estaba después, y los
+  // hooks tienen que ejecutarse siempre en el mismo orden: sin sesión la función
+  // salía antes y no lo ejecutaba, con sesión sí, y React cortaba con "Rendered
+  // more hooks than during the previous render". Resultado: pantalla en gris al
+  // iniciar sesión. Ningún hook puede ir debajo de un return condicional.
+  useEffect(() => {
+    if ((route === 'editor' || route === 'techpack') && !hasEditorTab) go('home')
+  }, [route, hasEditorTab])
+
   // Espera confirmación de sesión para evitar flash
   if (!authReady) return null
 
@@ -328,16 +345,6 @@ export default function App() {
   }
 
   const designerName = user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? user?.email ?? 'Diseñador'
-  // El editor se mantiene montado debajo de la ficha técnica para no perder el
-  // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
-  const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
-
-  // Red de seguridad: si la ruta pide editor pero no hay editor que mostrar, no
-  // se dibuja nada y queda la pantalla en blanco. Antes que eso, volver al
-  // inicio: una pantalla en blanco parece que el programa se rompió.
-  useEffect(() => {
-    if ((route === 'editor' || route === 'techpack') && !hasEditorTab) go('home')
-  }, [route, hasEditorTab])
   const techPackTab = activeProject != null
     ? openTabs.find((t): t is Extract<Tab, { kind: 'techpack' }> => t.kind === 'techpack' && t.project.id === activeProject.id)
     : undefined
