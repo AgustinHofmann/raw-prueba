@@ -1,87 +1,42 @@
-// Service worker: lo que hace que la app abra sin internet.
+// SERVICE WORKER DE AUTODESTRUCCIÓN.
 //
-// Antes era un passthrough: dejaba pasar todo a la red. Servía para poder
-// instalar la app, pero abrirla sin conexión daba el dinosaurio del navegador.
+// El anterior guardaba una copia de la app para poder abrirla sin internet, y esa
+// copia terminó ganándole a la versión nueva: la pantalla quedaba en negro o
+// congelada en una versión vieja, y no había forma de salir recargando, porque
+// el propio service worker respondía antes de que la app llegara a ejecutarse.
 //
-// Estrategia, distinta según qué se pide:
+// El navegador SIEMPRE vuelve a pedir este archivo por red (no pasa por la
+// copia guardada), así que este es el único lugar desde el que se puede
+// desactivar sin tocar nada a mano. Se da de baja solo, borra todas las copias
+// y recarga las pestañas abiertas.
 //
-// - El documento HTML: primero la red, y si no hay, la copia guardada. Así una
-//   versión nueva se ve apenas está, y sin internet igual abre.
-// - Todo lo demás del mismo dominio (JS, CSS, telas, mockups, tipografías):
-//   primero la copia guardada. Vite le pone un hash al nombre de cada archivo,
-//   así que si el contenido cambia, cambia el nombre: servir la copia guardada
-//   nunca devuelve algo viejo.
-// - Lo que va a otro dominio (Supabase, Google Fonts): no se toca. Cachear
-//   respuestas de la base sería servir datos viejos como si fueran actuales.
+// No se borra este archivo: si no existiera, el navegador dejaría al viejo
+// funcionando. Tiene que existir y tiene que desactivarse.
+//
+// El modo sin conexión NO depende de esto: los proyectos viven en IndexedDB
+// (ver src/lib/idb.ts). Lo único que se pierde es abrir la app con el navegador
+// cerrado sin internet. Si algún día se quiere de nuevo, hay que rehacerlo
+// dejando SIEMPRE el documento contra la red primero.
 
-// Al subir este número, al activarse se borran las copias viejas (ver 'activate').
-// Hay que subirlo cada vez que cambie la estrategia de guardado.
-const CACHE = 'raw-design-v2'
+self.addEventListener('install', () => self.skipWaiting())
 
-// Lo mínimo para que la app arranque estando sin conexión.
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/favicon.svg']
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    try {
+      const nombres = await caches.keys()
+      await Promise.all(nombres.map(n => caches.delete(n)))
+    } catch { /* si no se puede borrar, igual hay que darse de baja */ }
 
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE)
-      // addAll falla entero si UN archivo falla; acá se agrega de a uno para que
-      // un 404 suelto no deje la app sin nada guardado.
-      .then(c => Promise.all(SHELL.map(u => c.add(u).catch(() => {}))))
-      .then(() => self.skipWaiting()),
-  )
+    try { await self.registration.unregister() } catch { /* ya estaba */ }
+
+    // Recargar lo que esté abierto: esas pestañas todavía están mostrando lo
+    // que servía el service worker viejo.
+    try {
+      const clientes = await self.clients.matchAll({ type: 'window' })
+      for (const c of clientes) c.navigate(c.url)
+    } catch { /* sin permiso para navegar: alcanza con la próxima recarga */ }
+  })())
 })
 
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim()),
-  )
-})
-
-self.addEventListener('fetch', e => {
-  const req = e.request
-  if (req.method !== 'GET') return
-
-  const url = new URL(req.url)
-  if (url.origin !== self.location.origin) return   // Supabase y demás: sin tocar
-
-  // Nada de lo que sirve el servidor de desarrollo se guarda: son archivos que
-  // cambian a cada rato y una copia vieja congela la app en una versión
-  // anterior, que es exactamente lo que no se quiere al estar trabajando.
-  if (url.pathname.startsWith('/@') ||
-      url.pathname.startsWith('/src/') ||
-      url.pathname.startsWith('/node_modules/') ||
-      url.searchParams.has('t') ||
-      url.searchParams.has('v')) return
-
-  // Documento: red primero, copia guardada como red de emergencia.
-  if (req.mode === 'navigate') {
-    e.respondWith(
-      fetch(req)
-        .then(res => {
-          const copia = res.clone()
-          caches.open(CACHE).then(c => c.put('/index.html', copia)).catch(() => {})
-          return res
-        })
-        .catch(() => caches.match('/index.html').then(r => r ?? Response.error())),
-    )
-    return
-  }
-
-  // Recursos: copia guardada primero; si no está, se baja y se guarda.
-  e.respondWith(
-    caches.match(req).then(hit => {
-      if (hit) return hit
-      return fetch(req).then(res => {
-        // Solo se guardan las respuestas buenas: guardar un 404 o una respuesta
-        // parcial dejaría el error congelado para siempre.
-        if (res.ok && res.status === 200) {
-          const copia = res.clone()
-          caches.open(CACHE).then(c => c.put(req, copia)).catch(() => {})
-        }
-        return res
-      })
-    }),
-  )
-})
+// Mientras siga vivo, todo va derecho a la red. Nada se responde desde copias.
+self.addEventListener('fetch', () => { /* sin interceptar */ })
