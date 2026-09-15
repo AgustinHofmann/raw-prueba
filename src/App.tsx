@@ -202,8 +202,15 @@ export default function App() {
   function closeTab(t: Tab) {
     setOpenTabs(prev => {
       const next = prev.filter(x => tabKey(x) !== tabKey(t))
-      const wasActive = activeProject?.id === t.project.id && route === t.kind
-      if (wasActive) {
+      // Se comprueba si queda editor para el proyecto activo, no solo si la
+      // pestaña cerrada era la que se estaba viendo. Cerrar el editor mientras
+      // se miraba la ficha técnica del mismo proyecto dejaba la ruta en
+      // 'techpack' sin editor detrás, y la pantalla no dibujaba NADA: la ficha
+      // se muestra montada sobre el editor, así que sin editor no hay nada.
+      const quedaEditor = activeProject != null &&
+        next.some(x => x.kind === 'editor' && x.project.id === activeProject.id)
+      const mirabaEsteProyecto = activeProject?.id === t.project.id
+      if (mirabaEsteProyecto && !quedaEditor) {
         const last = next[next.length - 1]
         if (last) { setActive(last.project); go(last.kind) }
         else { setActive(null); go('home') }
@@ -324,6 +331,13 @@ export default function App() {
   // El editor se mantiene montado debajo de la ficha técnica para no perder el
   // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
   const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
+
+  // Red de seguridad: si la ruta pide editor pero no hay editor que mostrar, no
+  // se dibuja nada y queda la pantalla en blanco. Antes que eso, volver al
+  // inicio: una pantalla en blanco parece que el programa se rompió.
+  useEffect(() => {
+    if ((route === 'editor' || route === 'techpack') && !hasEditorTab) go('home')
+  }, [route, hasEditorTab])
   const techPackTab = activeProject != null
     ? openTabs.find((t): t is Extract<Tab, { kind: 'techpack' }> => t.kind === 'techpack' && t.project.id === activeProject.id)
     : undefined
