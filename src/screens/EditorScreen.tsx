@@ -1648,19 +1648,34 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
       if (design) {
-        try {
-          const revived = await (fabric.util as any).enlivenObjects(design.objects) as fabric.FabricObject[]
-          if (cancelled) return
-          for (const obj of revived) {
-            obj.set({ strokeUniform: true })
-            if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
-            canvas.add(obj)
+        // Se revive UNO POR UNO a propósito. enlivenObjects falla entero si un
+        // solo objeto falla —por ejemplo una imagen cuyos datos quedaron rotos—,
+        // y el catch de afuera se tragaba el error: el proyecto abría sin NADA
+        // de lo dibujado, aunque la miniatura sí lo mostrara. Ahora un objeto
+        // roto se pierde solo él.
+        const revived: fabric.FabricObject[] = []
+        let fallados = 0
+        for (const raw of design.objects) {
+          try {
+            const [obj] = await (fabric.util as any).enlivenObjects([raw]) as fabric.FabricObject[]
+            if (cancelled) return
+            if (obj) revived.push(obj)
+          } catch (e) {
+            fallados++
+            console.warn('no se pudo restaurar un objeto del diseño', e)
           }
-          restoreGarmentPaint(design.garment)
-          preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
-        } catch (e) {
-          console.warn('canvas restore failed', e)
         }
+        if (cancelled) return
+        for (const obj of revived) {
+          obj.set({ strokeUniform: true })
+          if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
+          canvas.add(obj)
+        }
+        if (fallados > 0) {
+          onToast?.(`No se pudieron recuperar ${fallados} elemento${fallados > 1 ? 's' : ''} del diseño`)
+        }
+        restoreGarmentPaint(design.garment)
+        preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
       }
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current

@@ -84,9 +84,17 @@ export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }
 
       <div style={{ position: 'relative', width: '100%', maxWidth: 400, padding: '0 20px' }}>
 
-        {/* Logo */}
+        {/* Logo + slogan de la marca. Va acá y en el onboarding porque cuál de
+            las dos es "la primera pantalla" depende de si hay sesión: sin
+            cuenta se entra por el login, con cuenta por el onboarding. */}
         <div className="rise" style={{ textAlign: 'center', marginBottom: 28 }}>
           <Logo size={30} />
+          <div style={{
+            marginTop: 10, fontFamily: 'var(--ui)', fontSize: 10,
+            letterSpacing: '0.24em', textTransform: 'uppercase', color: 'var(--muted)',
+          }}>
+            For designers, by designers
+          </div>
         </div>
 
         {/* Título */}

@@ -96,7 +96,11 @@ async function pushProject(p: Project, userId?: string): Promise<void> {
 
 export async function saveTechpack(id: string, json: string, userId?: string): Promise<boolean> {
   const local = await idbGet<Project>(STORE_PROJECTS, id)
-  const updated = { ...(local as Project), id, techpackJson: json, updatedAt: Date.now() }
+  // Sin registro local no se inventa uno: guardar {id, techpackJson} pelado
+  // creaba un proyecto sin dibujo y con fecha nueva, así que al sincronizar le
+  // ganaba al de verdad y se llevaba puesto el diseño.
+  if (!local) return false
+  const updated: Project = { ...local, techpackJson: json, updatedAt: Date.now() }
   const ok = (await idbPut(STORE_PROJECTS, updated)) !== null
   void pushProject(updated, userId)
   return ok
@@ -183,7 +187,14 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
         fetchProjectCanvas(remoto.id).catch(() => null),
         fetchProjectTechpack(remoto.id).catch(() => null),
       ])
-      const completo: Project = { ...remoto, canvasJson, techpackJson }
+      // Si la nube no trae dibujo (falló la descarga, o esa fila nunca llegó a
+      // guardarlo) se conserva el que hay acá. Pisar un diseño con vacío porque
+      // la fila de arriba está más nueva es perder trabajo, y encima en silencio.
+      const completo: Project = {
+        ...remoto,
+        canvasJson:   canvasJson   ?? local?.canvasJson   ?? null,
+        techpackJson: techpackJson ?? local?.techpackJson ?? null,
+      }
       porId.set(remoto.id, completo)
       await idbPut(STORE_PROJECTS, completo)
     }
