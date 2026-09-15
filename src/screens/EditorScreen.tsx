@@ -1666,10 +1666,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           }
         }
         if (cancelled) return
+        // El recorte se recalcula ANTES de repartirlo. Es un grupo posicionado
+        // en absoluto y, si todavía no tiene sus coordenadas hechas, recorta
+        // contra un área vacía: el objeto entra al lienzo pero se dibuja en la
+        // nada. Ese era el trazo que "aparecía recién al tocar una herramienta",
+        // porque tocar una herramienta le cambia propiedades y lo obliga a
+        // redibujarse, ya con el recorte bien calculado.
+        clipPath.current?.setCoords()
         for (const obj of revived) {
           obj.set({ strokeUniform: true })
           if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
           canvas.add(obj)
+          obj.setCoords()
+          obj.dirty = true          // tira el dibujo cacheado y lo rehace
         }
         if (fallados > 0) {
           onToast?.(`No se pudieron recuperar ${fallados} elemento${fallados > 1 ? 's' : ''} del diseño`)
