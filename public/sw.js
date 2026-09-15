@@ -14,7 +14,9 @@
 // - Lo que va a otro dominio (Supabase, Google Fonts): no se toca. Cachear
 //   respuestas de la base sería servir datos viejos como si fueran actuales.
 
-const CACHE = 'raw-design-v1'
+// Al subir este número, al activarse se borran las copias viejas (ver 'activate').
+// Hay que subirlo cada vez que cambie la estrategia de guardado.
+const CACHE = 'raw-design-v2'
 
 // Lo mínimo para que la app arranque estando sin conexión.
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/favicon.svg']
@@ -43,6 +45,15 @@ self.addEventListener('fetch', e => {
 
   const url = new URL(req.url)
   if (url.origin !== self.location.origin) return   // Supabase y demás: sin tocar
+
+  // Nada de lo que sirve el servidor de desarrollo se guarda: son archivos que
+  // cambian a cada rato y una copia vieja congela la app en una versión
+  // anterior, que es exactamente lo que no se quiere al estar trabajando.
+  if (url.pathname.startsWith('/@') ||
+      url.pathname.startsWith('/src/') ||
+      url.pathname.startsWith('/node_modules/') ||
+      url.searchParams.has('t') ||
+      url.searchParams.has('v')) return
 
   // Documento: red primero, copia guardada como red de emergencia.
   if (req.mode === 'navigate') {
