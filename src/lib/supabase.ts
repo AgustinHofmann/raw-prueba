@@ -23,6 +23,27 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
  */
 export const cloudEnabled = Boolean(url && key)
 
+/**
+ * ¿Contesta el servidor de cuentas?
+ *
+ * Se pregunta con un fetch de verdad contra el endpoint de salud. No sirve usar
+ * getSession() para esto: lee la sesión guardada en el navegador y ni siquiera
+ * toca la red, así que dice que todo está bien aunque el servidor no exista.
+ */
+export async function authAlcanzable(timeoutMs = 6000): Promise<boolean> {
+  if (!cloudEnabled) return false
+  const corte = new AbortController()
+  const t = setTimeout(() => corte.abort(), timeoutMs)
+  try {
+    await fetch(`${url}/auth/v1/health`, { signal: corte.signal, headers: { apikey: key! } })
+    return true            // contestó: da igual con qué código, el servidor está
+  } catch {
+    return false           // DNS caído, sin red, proyecto borrado o pausado
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 if (!cloudEnabled) {
   console.warn(
     '[RAW Design] Sin credenciales de Supabase: modo sin conexión.\n' +
