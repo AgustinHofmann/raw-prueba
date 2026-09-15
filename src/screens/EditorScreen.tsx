@@ -4200,6 +4200,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         e.preventDefault()
         const entry = redoHistory.current.pop()
         if (!entry) return
+        // Se suelta la seleccion ANTES de tocar nada. Mientras hay una seleccion
+        // multiple activa, las coordenadas de cada objeto son relativas al centro
+        // de esa seleccion: mover uno ahi adentro lo manda a cualquier lado. Al
+        // soltarla, Fabric vuelve a dejar todo en coordenadas absolutas.
+        canvas.discardActiveObject()
         if (entry.type === 'add') {
           canvas.add(entry.obj)
           undoHistory.current.push(entry)
@@ -4262,6 +4267,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (penDraftRef.current?.hasDraft()) { penDraftRef.current.cancel(); return }
         const entry = undoHistory.current.pop()
         if (!entry) return
+        // Se suelta la seleccion ANTES de tocar nada. Mientras hay una seleccion
+        // multiple activa, las coordenadas de cada objeto son relativas al centro
+        // de esa seleccion: mover uno ahi adentro lo manda a cualquier lado. Al
+        // soltarla, Fabric vuelve a dejar todo en coordenadas absolutas.
+        canvas.discardActiveObject()
         if (entry.type === 'add') {
           canvas.remove(entry.obj)
           redoHistory.current.push(entry)
