@@ -5876,7 +5876,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               )}
 
               <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="swatches">
                 {/* "Ninguna" siempre visible: volver a color liso no debería
                     depender de que primero haya una textura aplicada. */}
                 <button
@@ -5921,7 +5921,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
               {/* Editor de colores de la textura aplicada */}
               {activeTexKind && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                <div className="sec">
                   <div className="label" style={{ marginBottom: 10 }}>
                     Color · {TEXTURES.find(t => t.id === activeTexKind)?.label}
                   </div>
@@ -5967,7 +5967,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   )}
 
                   <button onClick={() => resetTexColors(activeTexKind)}
-                    className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                    className="btn btn-ghost btn-block" style={{ marginTop: 8 }}>
                     Restablecer colores
                   </button>
                 </div>
@@ -5976,12 +5976,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {/* ── Telas RAW (vienen con el programa) ───────────────────────
                   Fotos y vectores de telas reales. No se recolorean como los
                   estampados de arriba: se ven como la tela que son. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+              <div className="sec">
                 <div className="label" style={{ marginBottom: 4 }}>Telas RAW</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                <p className="sec-hint">
                   Telas reales. Se aplican a escala: ajustá el ancho de la muestra abajo.
                 </p>
-                <div key={paletteVersion} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div key={paletteVersion} className="swatches">
                   {userTextures.filter(t => t.builtIn).map(t => {
                     const on = activeUserTex === t.id
                     // Si la tela ya se usó, la miniatura sale de la imagen que
@@ -6022,9 +6022,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   El diseñador importa la foto/escaneo de una tela real. Lo
                   importante no es el formato sino la ESCALA: declara cuánto
                   mide la muestra y se dibuja a esos cm sobre la prenda. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+              <div className="sec">
                 <div className="label" style={{ marginBottom: 4 }}>Mis texturas</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                <p className="sec-hint">
                   Importá una foto o escaneo de tela. PNG, JPG, WebP o SVG.
                 </p>
 
@@ -6047,7 +6047,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 )}
 
                 {userTextures.some(t => !t.builtIn) && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <div className="swatches">
                     {userTextures.filter(t => !t.builtIn).map(t => {
                       const on = activeUserTex === t.id
                       return (
@@ -6103,7 +6103,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 const porColor = def.kind === 'svg' && src.colors.length > 1
 
                 return (
-                  <div key={paletteVersion} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                  <div key={paletteVersion} className="sec">
                     <div className="label" style={{ marginBottom: 10 }}>Color · {def.name}</div>
 
                     {/* Color principal: el que más tela ocupa. Al cambiarlo, el
@@ -6154,7 +6154,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     )}
 
                     {def.kind === 'photo' && (
-                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '2px 0 0', lineHeight: 1.4 }}>
+                      <p className="sec-hint">
                         Es una foto, así que se tiñe entera desde un solo color. Los negros
                         y los blancos no se mueven.
                       </p>
@@ -6162,7 +6162,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
                     {tocada && (
                       <button onClick={() => setRawPalette(activeUserTex, null)}
-                        className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                        className="btn btn-ghost btn-block" style={{ marginTop: 8 }}>
                         Volver al color original
                       </button>
                     )}
@@ -6177,7 +6177,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 const t = userTextures.find(x => x.id === activeUserTex)
                 if (!t) return null
                 return (
-                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                  <div className="sec">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <span className="label">Ancho real · {t.name}</span>
                       <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{t.widthCm} cm</span>
@@ -6188,7 +6188,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                       onChange={e => setUserTexScale(t.id, Number(e.target.value))}
                       style={{ marginTop: 4, ['--fill' as string]: `${((t.widthCm - 2) / 78) * 100}%` }}
                     />
-                    <p style={{ fontSize: 10, color: 'var(--muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
+                    <p className="sec-hint">
                       Cuánto mide en la realidad el ancho de la muestra. Ajustalo para que
                       el estampado quede del tamaño correcto sobre la prenda.
                     </p>
@@ -6199,9 +6199,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {/* ── Efectos de tela ──────────────────────────────────────────
                   Van ENCIMA del color o del estampado, no lo reemplazan:
                   denim + desgaste = jean gastado. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+              <div className="sec">
                 <div className="label" style={{ marginBottom: 4 }}>Efectos de tela</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                <p className="sec-hint">
                   Se suman al color o estampado que ya tenga la prenda.
                 </p>
 
