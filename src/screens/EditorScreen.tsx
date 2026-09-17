@@ -2053,6 +2053,29 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const SNAP_RADIUS  = 14
       const ALIGN_THRESH = 8
 
+      /**
+       * El eje vertical por el centro de la prenda.
+       *
+       * Es el eje de simetría natural de una prenda: lo que está a un lado del
+       * cuello tiene que estar igual del otro. Se calcula en coordenadas del
+       * lienzo (no de la pantalla) para que no dependa del zoom.
+       */
+      const ejeSimetria = (): number | null => {
+        const objs = mockupObjects.current.filter(o => o.visible !== false)
+        if (!objs.length) return null
+        let x1 = Infinity, x2 = -Infinity
+        for (const o of objs) {
+          const l = o.left ?? 0
+          const w = (o.width ?? 0) * Math.abs(o.scaleX ?? 1)
+          x1 = Math.min(x1, l); x2 = Math.max(x2, l + w)
+        }
+        return Number.isFinite(x1) ? (x1 + x2) / 2 : null
+      }
+
+      /** El reflejo de cada punto del otro lado del eje. */
+      const reflejar = (pts: fabric.Point[], eje: number) =>
+        pts.map(p => new fabric.Point(2 * eje - p.x, p.y))
+
       // Point snap (exact node) overrides alignment snap.
       // Alignment snap nudges X/Y independently toward shared axes with other anchors.
       const computeSnap = (raw: fabric.Point, candidates: fabric.Point[]): {
@@ -2064,6 +2087,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           if (Math.hypot(raw.x - p.x, raw.y - p.y) < SNAP_RADIUS)
             return { snapped: new fabric.Point(p.x, p.y), nodeSnap: p, guides: [] }
         }
+
+        // Imantado al ESPEJO de lo ya dibujado.
+        //
+        // Sin esto no se puede hacer una figura simétrica: el imán enganchaba a
+        // los puntos propios en horizontal y vertical, pero nunca al reflejo del
+        // otro lado, que es justo lo que hace falta para que el lado derecho
+        // copie al izquierdo. Ahora, al dibujar la segunda mitad, cada punto cae
+        // exacto en el reflejo del que le corresponde, y se muestra el eje.
+        const eje = ejeSimetria()
+        if (eje != null) {
+          const propios = candidates.filter(p => anchors.some(a => a.pt === p))
+          for (const espejo of reflejar(propios.length ? propios : candidates, eje)) {
+            if (Math.hypot(raw.x - espejo.x, raw.y - espejo.y) < SNAP_RADIUS) {
+              return {
+                snapped: new fabric.Point(espejo.x, espejo.y),
+                nodeSnap: espejo,
+                guides: [{ axis: 'v', val: eje }],   // se ve por qué enganchó
+              }
+            }
+          }
+        }
         let sx = raw.x, sy = raw.y
         const guides: Array<{ axis: 'h' | 'v'; val: number }> = []
         // Include midpoints of all pairs so e.g. the apex of an equilateral triangle
@@ -2072,6 +2116,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         for (let i = 0; i < candidates.length; i++)
           for (let j = i + 1; j < candidates.length; j++)
             alignPts.push({ x: (candidates[i].x + candidates[j].x) / 2, y: (candidates[i].y + candidates[j].y) / 2 })
+        // El eje de la prenda también imanta: es donde hay que apoyar el punto
+        // de arriba y el de abajo de una figura simétrica (la punta y la base).
+        if (eje != null) alignPts.push({ x: eje, y: raw.y })
         let bestDx = ALIGN_THRESH + 1, bestDy = ALIGN_THRESH + 1
         for (const p of alignPts) {
           const dx = Math.abs(raw.x - p.x), dy = Math.abs(raw.y - p.y)
