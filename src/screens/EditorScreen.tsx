@@ -9,6 +9,7 @@ import { RAW_TEXTURES, isRawTexture, rawTextureById, loadRawWidths, saveRawWidth
 import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
          shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
 import { transformPath } from '../utils/pathWarp'
+import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg } from '../utils/prendasParam'
 import './EditorScreen.css'
 
@@ -1113,6 +1114,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // color sin tener que mirar al panel de la derecha.
   const [eyeProbe,       setEyeProbe]       = useState<null | { x: number; y: number; hex: string }>(null)
   // Bordado: hacia dónde corren las puntadas y si está trabajando.
+  // La lupa se dibuja a mano en cada movimiento del mouse: si sus píxeles
+  // pasaran por el estado de React, repintaría el panel entero a 60 por segundo.
+  const loupeRef = useRef<HTMLCanvasElement>(null)
   const [bordadoAngulo,  setBordadoAngulo]  = useState(70)
   const [bordando,       setBordando]       = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
@@ -3098,11 +3102,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.selection     = false
       canvas.defaultCursor = EYEDROPPER_CURSOR
 
-      // Se puede mantener apretado e ir moviendo: el color se va viendo en vivo
-      // (en la muestra que sigue al cursor y en el objeto seleccionado) y recién
-      // al soltar queda fijo. Antes el color se tomaba y se daba por elegido en
-      // el mismo click, así que no había manera de pasear por encima de una tela
-      // buscando el tono justo: había que clickear, mirar, deshacer y probar.
+      // El gotero muestra el color ANTES de tomarlo.
+      //
+      // El problema no era tomar el color: era APUNTAR. Si le errabas al píxel
+      // ya estaba, y había que volver a probar a ciegas. Ahora, con solo pasar
+      // el mouse (sin apretar nada), aparece una lupa con los píxeles agrandados
+      // y el color exacto del centro. Se apunta mirando, se hace clic y listo.
+      //
+      // Además se puede mantener apretado y arrastrar: el color se va aplicando
+      // en vivo al objeto seleccionado y recién al soltar queda fijo.
       let scrubbing  = false
       let snapshot: ImageData | null = null   // el lienzo ANTES de la vista previa
       let snapScale  = 1
@@ -3110,21 +3118,37 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       let prevProps: Record<string, any> | null = null
       let lastPatch: Record<string, any> | null = null
 
-      // Foto del lienzo al apretar. Sirve para dos cosas: muestrear sin que la
-      // vista previa se muerda la cola (si no, al pasar por encima del objeto
-      // que estoy pintando leería el color que le acabo de poner) y no tener que
-      // pedirle los píxeles al lienzo en cada movimiento del mouse.
+      const ctxLienzo = () => (canvas as any).contextContainer as CanvasRenderingContext2D | undefined
+      const elLienzo  = () => (canvas as any).lowerCanvasEl as HTMLCanvasElement | undefined
+
+      // En pantallas retina el lienzo tiene más píxeles reales que los que mide
+      // en la página; sin esta escala se muestrea el color del lugar equivocado.
+      const escala = () => {
+        const el = elLienzo(), w = canvas.getWidth()
+        return (el && w) ? el.width / w : 1
+      }
+
+      // Foto del lienzo al apretar. Sirve para que la vista previa no se muerda
+      // la cola: al pasar por encima del objeto que estoy pintando leería el
+      // color que le acabo de poner en vez del que había abajo.
       const grabSnapshot = () => {
-        const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D | undefined
-        const el  = (canvas as any).lowerCanvasEl as HTMLCanvasElement | undefined
+        const ctx = ctxLienzo(), el = elLienzo()
         if (!ctx || !el) return false
-        // En pantallas retina el lienzo tiene más píxeles reales que los que mide
-        // en la página; sin esta escala se muestrea el color del lugar equivocado.
-        const w = canvas.getWidth()
-        snapScale = w ? el.width / w : 1
+        snapScale = escala()
         try { snapshot = ctx.getImageData(0, 0, el.width, el.height) } catch { return false }
         return true
       }
+
+      /** El punto bajo el cursor, en píxeles reales del lienzo. */
+      const puntoLienzo = (e: fabric.TPointerEventInfo): [number, number] => {
+        const vpt = (canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]) as number[]
+        const p = e.scenePoint
+        const k = scrubbing ? snapScale : escala()
+        return [Math.round((vpt[0] * p.x + vpt[4]) * k), Math.round((vpt[3] * p.y + vpt[5]) * k)]
+      }
+
+      const aHexRgb = (r: number, g: number, b: number) =>
+        '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
 
       // Qué hay bajo el puntero. Si es un objeto dibujado copio TODA su apariencia
       // (relleno + trazo + grosor), como el gotero de Illustrator; si no, el color
@@ -3135,38 +3159,91 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             && typeof over.fill === 'string') {
           return { fill: over.fill, stroke: over.stroke, strokeWidth: over.strokeWidth }
         }
-        if (!snapshot) return null
-        const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
-        const p   = e.scenePoint
-        const px  = Math.round((vpt[0] * p.x + vpt[4]) * snapScale)
-        const py  = Math.round((vpt[3] * p.y + vpt[5]) * snapScale)
-        if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return null
-        const d = snapshot.data
-        const i = (py * snapshot.width + px) * 4
-        if (d[i + 3] < 10) return null   // pixel transparente — ignorar
-        return { fill: '#' + [d[i], d[i+1], d[i+2]].map(v => v.toString(16).padStart(2, '0')).join('') }
+        const [px, py] = puntoLienzo(e)
+        if (scrubbing) {
+          if (!snapshot) return null
+          if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return null
+          const d = snapshot.data, i = (py * snapshot.width + px) * 4
+          if (d[i + 3] < 10) return null
+          return { fill: aHexRgb(d[i], d[i + 1], d[i + 2]) }
+        }
+        const ctx = ctxLienzo()
+        if (!ctx) return null
+        try {
+          const d = ctx.getImageData(px, py, 1, 1).data
+          if (d[3] < 10) return null
+          return { fill: aHexRgb(d[0], d[1], d[2]) }
+        } catch { return null }
       }
 
+      /** Dibuja los píxeles de alrededor agrandados, con el del centro marcado. */
+      const CELDAS = 11
+      const pintarLupa = (e: fabric.TPointerEventInfo) => {
+        const lc = loupeRef.current
+        if (!lc) return
+        const g = lc.getContext('2d')
+        if (!g) return
+        const [px, py] = puntoLienzo(e)
+        const r = (CELDAS - 1) / 2
+        let datos: ImageData | null = null
+        if (scrubbing && snapshot) {
+          // Se recorta del snapshot a mano: pedirle los píxeles al lienzo ya no
+          // sirve, porque encima tiene la vista previa recién aplicada.
+          datos = new ImageData(CELDAS, CELDAS)
+          for (let fy = 0; fy < CELDAS; fy++) {
+            for (let fx = 0; fx < CELDAS; fx++) {
+              const sx = px - r + fx, sy = py - r + fy
+              if (sx < 0 || sy < 0 || sx >= snapshot.width || sy >= snapshot.height) continue
+              const o = (fy * CELDAS + fx) * 4, k = (sy * snapshot.width + sx) * 4
+              datos.data[o]     = snapshot.data[k]
+              datos.data[o + 1] = snapshot.data[k + 1]
+              datos.data[o + 2] = snapshot.data[k + 2]
+              datos.data[o + 3] = snapshot.data[k + 3]
+            }
+          }
+        } else {
+          const ctx = ctxLienzo()
+          if (!ctx) return
+          try { datos = ctx.getImageData(px - r, py - r, CELDAS, CELDAS) } catch { return }
+        }
+        if (!datos) return
+        const chico = document.createElement('canvas')
+        chico.width = CELDAS; chico.height = CELDAS
+        chico.getContext('2d')!.putImageData(datos, 0, 0)
+        g.imageSmoothingEnabled = false
+        g.clearRect(0, 0, lc.width, lc.height)
+        g.drawImage(chico, 0, 0, lc.width, lc.height)
+        // El recuadro del centro marca EXACTAMENTE el píxel que se va a tomar.
+        const z = lc.width / CELDAS
+        g.lineWidth = 2
+        g.strokeStyle = 'rgba(0,0,0,0.85)'
+        g.strokeRect(r * z - 1, r * z - 1, z + 2, z + 2)
+        g.lineWidth = 1
+        g.strokeStyle = 'rgba(255,255,255,0.95)'
+        g.strokeRect(r * z, r * z, z, z)
+      }
+
+      /** Mueve la muestra, dibuja la lupa y —si estoy arrastrando— aplica el color. */
       const preview = (e: fabric.TPointerEventInfo) => {
-        // La muestra sigue al cursor aunque el píxel sea transparente: si no,
-        // al pasar por un hueco parecería que el gotero se colgó.
         const area = canvasAreaRef.current
         const ev   = e.e as MouseEvent
         if (area && ev && typeof ev.clientX === 'number') {
-          const r = area.getBoundingClientRect()
+          const rc = area.getBoundingClientRect()
           setEyeProbe(prev => ({
-            x: ev.clientX - r.left, y: ev.clientY - r.top,
+            x: ev.clientX - rc.left, y: ev.clientY - rc.top,
             hex: prev?.hex ?? fillRef.current ?? '#000000',
           }))
         }
+        pintarLupa(e)
         const patch = sampleAt(e)
         if (!patch) return
-        lastPatch = patch
         const hex = patch.fill as string
+        setEyeProbe(prev => prev && { ...prev, hex })
+        if (!scrubbing) return          // solo mirando: todavía no se toma nada
+        lastPatch = patch
         // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
         fillRef.current = hex
         setPropFill(hex)
-        setEyeProbe(prev => prev && { ...prev, hex })
         if (previewObj) { previewObj.set(patch as any); canvas.requestRenderAll() }
       }
 
@@ -3182,13 +3259,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         preview(e)
       }
 
-      const onMove = (e: fabric.TPointerEventInfo) => { if (scrubbing) preview(e) }
+      const onMove = (e: fabric.TPointerEventInfo) => { preview(e) }
 
       const finish = () => {
         if (!scrubbing) return
         scrubbing = false
         snapshot  = null   // que no quede una copia del lienzo entero en memoria
-        setEyeProbe(null)
         // El registro para deshacer se guarda recién acá: todo el arrastre es UNA
         // sola acción, no una por cada píxel que toqué en el camino.
         if (previewObj && prevProps && lastPatch) {
@@ -3200,16 +3276,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         previewObj = null; prevProps = null; lastPatch = null
       }
 
+      // La muestra se va cuando el mouse SALE del lienzo, no al soltar: el gotero
+      // sigue activo y hay que poder seguir apuntando sin volver a apretar.
+      const salir = () => { if (!scrubbing) setEyeProbe(null) }
+
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:move', onMove)
       canvas.on('mouse:up', finish)
+      canvas.on('mouse:out', salir)
       // Si se suelta el botón fuera del lienzo el canvas no se entera, y el
-      // gotero se quedaba pegado siguiendo al mouse sin estar apretado.
+      // gotero se quedaba aplicando color sin estar apretado.
       window.addEventListener('mouseup', finish)
       offs.push(() => {
         canvas.off('mouse:down', onDown)
         canvas.off('mouse:move', onMove)
         canvas.off('mouse:up', finish)
+        canvas.off('mouse:out', salir)
         window.removeEventListener('mouseup', finish)
         finish()
         setEyeProbe(null)
@@ -3711,7 +3793,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * Entonces primero se mira cuántos colores tiene de verdad la imagen, y si son
    * pocos —un logo, un dibujo plano— se la calca con esa cantidad exacta.
    */
-  function opcionesDeCalco(data: ImageData) {
+  function opcionesDeCalco(data: ImageData, coloresPreparados?: number) {
+    // Si la imagen ya vino limpia (colores planos y borde nítido), se le dice al
+    // calcador cuántos colores hay y se le saca el desenfoque: en una imagen ya
+    // plana, desenfocar solo redondea las esquinas y se come los detalles finos.
+    if (coloresPreparados && coloresPreparados <= 8) {
+      return {
+        numberofcolors: Math.max(2, coloresPreparados),
+        colorsampling: 0,        // paleta fija: no se inventa nada
+        ltres: 0.1, qtres: 0.1,  // pega el contorno lo más posible al original
+        pathomit: 1,             // casi no descarta formas: sobrevive el detalle fino
+        rightangleenhance: true,
+        blurradius: 0,           // la imagen YA está limpia: desenfocar la arruina
+      }
+    }
     const px = data.data
     const total = data.width * data.height
     // Se agrupan los colores en cubos gruesos: los bordes suavizados no son
@@ -3769,21 +3864,38 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
       URL.revokeObjectURL(url)
 
-      const tmp = document.createElement('canvas')
-      tmp.width  = img.width
-      tmp.height = img.height
-      const ctx = tmp.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-      const imageData = ctx.getImageData(0, 0, img.width, img.height)
+      // La imagen se limpia ANTES de calcarla: se aplana la transparencia, se
+      // agranda si es chica y cada píxel se pega al color más cercano de la
+      // paleta real. Calcar el PNG crudo era lo que hacía que un logo simple
+      // saliera hecho un desastre. Ver utils/calco.ts.
+      const preparada = prepararParaCalco(img)
+      const imageData = preparada.data
 
       // Vectorizar con imagetracerjs, con ajustes según qué clase de imagen es.
       const { default: ImageTracer } = await import('imagetracerjs')
-      const svgStr: string = ImageTracer.imagedataToSVG(imageData, opcionesDeCalco(imageData))
+      const svgStr: string = ImageTracer.imagedataToSVG(imageData, opcionesDeCalco(imageData, preparada.paleta.length))
 
       // Cargar el SVG en Fabric
       const { objects } = await fabric.loadSVGFromString(svgStr)
-      const validObjs = objects.filter(Boolean) as fabric.FabricObject[]
+      let validObjs = objects.filter(Boolean) as fabric.FabricObject[]
       if (!validObjs.length) return
+
+      // Fuera el fondo. El calcador devuelve el fondo como relleno, no como
+      // vacío: sin esto el logo venía con un cuadrado atrás tapando la prenda, y
+      // los huecos de adentro (el aire entre el brazo y el cuerpo) salían como
+      // manchas blancas macizas.
+      //
+      // Si el PNG venía con fondo transparente, NADA de ese color es dibujo: se
+      // descarta todo, y los huecos quedan huecos. Si el fondo era un color de
+      // verdad, solo se descarta el rectángulo que tapa todo, porque una pieza
+      // del logo puede ser justo de ese color.
+      const areaTotal = (imageData.width * imageData.height) * 0.92
+      const sinFondo = validObjs.filter(o => {
+        if (!esColorDeFondo(o.fill, preparada.fondo)) return true
+        if (preparada.fondoTransparente) return false
+        return (o.width ?? 0) * (o.height ?? 0) < areaTotal
+      })
+      if (sinFondo.length) validObjs = sinFondo
 
       // Agrupar y escalar para que entre en el canvas
       const group = new fabric.Group(validObjs, { selectable: true, evented: true })
@@ -5624,25 +5736,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
 
-          {/* Gotero: el color que se está tomando, al lado del cursor */}
-          {eyeProbe && (
+          {/* Gotero: lupa con los píxeles de alrededor y el color del centro.
+              Se ve con solo pasar el mouse, antes de tocar nada, así se puede
+              apuntar al píxel exacto en vez de clickear a ciegas. */}
+          <div style={{
+            position: 'absolute',
+            left: (eyeProbe?.x ?? 0) + 20, top: (eyeProbe?.y ?? 0) + 20,
+            zIndex: 45, pointerEvents: 'none',
+            visibility: eyeProbe ? 'visible' : 'hidden',
+            display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
+            borderRadius: 10, overflow: 'hidden',
+            background: 'rgb(0 0 0 / 0.78)', border: '1px solid rgb(255 255 255 / 0.22)',
+            boxShadow: '0 6px 18px rgb(0 0 0 / 0.45)',
+          }}>
+            <canvas ref={loupeRef} width={110} height={110}
+              style={{ display: 'block', width: 110, height: 110 }} />
             <div style={{
-              position: 'absolute', left: eyeProbe.x + 18, top: eyeProbe.y + 18,
-              zIndex: 45, pointerEvents: 'none',
-              display: 'flex', alignItems: 'center', gap: 7,
-              padding: '5px 8px 5px 5px', borderRadius: 8,
-              background: 'rgb(0 0 0 / 0.72)', border: '1px solid rgb(255 255 255 / 0.18)',
-              boxShadow: '0 4px 14px rgb(0 0 0 / 0.35)',
+              display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
+              borderTop: '1px solid rgb(255 255 255 / 0.18)',
             }}>
               <div style={{
-                width: 22, height: 22, borderRadius: 5, background: eyeProbe.hex,
+                width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                background: eyeProbe?.hex ?? '#000',
                 border: '1px solid rgb(255 255 255 / 0.5)',
               }} />
               <span className="mono" style={{ fontSize: 11, color: '#fff', letterSpacing: '.02em' }}>
-                {eyeProbe.hex}
+                {eyeProbe?.hex ?? ''}
               </span>
             </div>
-          )}
+          </div>
 
           {/* Overlay al arrastrar una imagen */}
           {dragActive && (
