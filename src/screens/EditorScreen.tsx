@@ -30,6 +30,11 @@ type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' |
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
 
+// Cada cuanto se guarda solo el diseño. 15 s es corto para que no se pierda casi
+// nada y largo para no golpear la base en cada trazo: ademas solo guarda si el
+// diseño cambio de verdad respecto de lo ultimo guardado.
+const AUTOSAVE_MS = 15_000
+
 // Receta de pintura de una pieza de la prenda. El relleno final se recompone desde
 // aca cada vez que la prenda se regenera (al cambiar una medida), asi que deshacer un
 // color tiene que devolver la receta y no solo el `fill` que quedo dibujado.
@@ -889,6 +894,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
+  // Ultimo diseno serializado que quedo guardado: el autoguardado compara contra
+  // esto para no mandar a la base algo que no cambio.
+  const lastSavedJson = useRef<string | null>(null)
   const snapPoints    = useRef<fabric.Point[]>([])
   // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite que
   // Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo anterior ya guardado.
@@ -901,7 +909,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
+  // El autoguardado corre dentro de un intervalo creado al montar: sin este ref se
+  // quedaria con el onSave de la primera renderizacion y guardaria contra un proyecto
+  // viejo (por ejemplo, con el nombre de antes de renombrarlo).
+  const onSaveRef = useRef(onSave)
+  useEffect(() => { onSaveRef.current = onSave }, [onSave])
+
   const [tool, setTool] = useState<Tool>('select')
+  const [autoSavedAt, setAutoSavedAt] = useState<number | null>(null)
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
@@ -1580,6 +1595,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.renderAll()
       })
       canvas.renderAll()
+      // Lo que quedo en pantalla ES lo ultimo guardado: el autoguardado arranca
+      // desde aca y no manda nada hasta que el diseno cambie de verdad.
+      lastSavedJson.current = buildDesignJson()
     }
 
     if (PARAMETRIC_TEE && project.mockupId === 'tshirt') {
@@ -4293,9 +4311,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }, [])
 
-  function handleSave() {
+  // Serializa el diseño entero (lo dibujado + la prenda). Lo comparten el guardado
+  // manual y el automático, así los dos guardan exactamente lo mismo.
+  function buildDesignJson(): string | null {
     const canvas = fc.current
-    if (!canvas) return
+    if (!canvas) return null
     const userObjs = canvas.getObjects()
       .filter(o => !(o as any)._rawMockup)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
@@ -4312,11 +4332,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         uTex: (o as any)._userTex,
       })),
     }
-    const canvasJson = JSON.stringify({ v: 2, objects: userObjs, garment })
+    return JSON.stringify({ v: 2, objects: userObjs, garment })
+  }
+
+  function handleSave() {
+    const canvas = fc.current
+    const canvasJson = buildDesignJson()
+    if (!canvas || canvasJson == null) return
     const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
-    onSave(thumbnail, canvasJson)
+    lastSavedJson.current = canvasJson
+    onSaveRef.current(thumbnail, canvasJson)
     onSaveComplete()
   }
+
+  // ── Guardado automático ────────────────────────────────────────────
+  // Cada AUTOSAVE_MS compara el diseño con lo último guardado y, si cambió, lo guarda
+  // solo. No dispara el toast de «Guardado ✓»: avisa con el cartelito de abajo a la
+  // izquierda y listo. Ctrl+S sigue funcionando igual que siempre.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const canvas = fc.current
+      if (!canvas) return
+      const json = buildDesignJson()
+      if (json == null || json === lastSavedJson.current) return
+      lastSavedJson.current = json
+      onSaveRef.current(canvas.toDataURL({ format: 'png', multiplier: 0.3 }), json)
+      setAutoSavedAt(Date.now())
+    }, AUTOSAVE_MS)
+    return () => window.clearInterval(id)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // El cartel de «guardado solo» se muestra un rato y se va
+  useEffect(() => {
+    if (autoSavedAt == null) return
+    const id = window.setTimeout(() => setAutoSavedAt(null), 2600)
+    return () => window.clearTimeout(id)
+  }, [autoSavedAt])
 
   function handleExport() {
     const canvas = fc.current
@@ -4922,6 +4973,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <span>{Math.round(zoom * 100)}%</span>
               <span style={{ color: 'var(--muted)', marginLeft: 2 }}>· restablecer</span>
             </button>
+          )}
+          {autoSavedAt !== null && (
+            <div style={{
+              position: 'absolute', bottom: 16, left: 16,
+              display: 'flex', alignItems: 'center', gap: 7,
+              background: 'var(--bg)', border: '1px solid var(--line)',
+              borderRadius: 8, padding: '6px 12px',
+              fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)',
+              boxShadow: 'var(--shadow-lg)', pointerEvents: 'none',
+              animation: 'rise 0.2s var(--ease) both',
+            }}>
+              <span style={{ fontSize: 12, color: 'var(--accent)' }}>✓</span>
+              <span>Guardado automático</span>
+            </div>
           )}
           {(tool === 'pen' || tool === 'curve' || tool === 'text') && (
             <div style={{
