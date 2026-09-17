@@ -8,6 +8,8 @@ import { RAW_TEXTURES, isRawTexture, rawTextureById, loadRawWidths, saveRawWidth
          loadRawPalettes, saveRawPalette } from '../utils/rawTextures'
 import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
          shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
+import { transformPath } from '../utils/pathWarp'
+import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg } from '../utils/prendasParam'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -1114,6 +1116,17 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [bordadoAngulo,  setBordadoAngulo]  = useState(70)
   const [bordando,       setBordando]       = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
+  // Medidas de las OTRAS prendas paramétricas (pantalón y chomba). Van aparte de
+  // las de la remera porque cada prenda tiene sus propias medidas: un pantalón
+  // no tiene ancho de cuello y una remera no tiene ruedo.
+  const prendaParam = PRENDAS_PARAM[project.mockupId]
+  const [medidas,        setMedidas]        = useState<Medidas>(() => ({ ...(prendaParam?.defaults ?? {}) }))
+  const medidasRef  = useRef<Medidas>(medidas)
+  const piezasRef   = useRef<PiezaSvg[]>([])            // el dibujo original, sin deformar
+  const prendaFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
+  // Separación original entre frente y espalda (chomba), medida una sola vez.
+  const huecoMitadesRef = useRef<number | null>(null)
+  useEffect(() => { medidasRef.current = medidas }, [medidas])
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
   const measureEditRef = useRef(false)
@@ -1658,6 +1671,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       measuresRef.current = m
       setMeasures(m)
     }
+    // Ídem para el pantalón y la chomba. Se parte de los valores por defecto de
+    // ESTA prenda, así un proyecto viejo (guardado sin medidas) abre entero en
+    // vez de con medidas en blanco.
+    if (prendaParam) {
+      const md: Medidas = { ...prendaParam.defaults, ...(design?.garment?.medidas ?? {}) }
+      medidasRef.current = md
+      setMedidas(md)
+    }
 
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
@@ -1740,6 +1761,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Remera paramétrica generada por medidas
       placeTee(measuresRef.current)
       restoreAndWire()
+    } else if (prendaParam) {
+      // Pantalón y chomba: también por medidas. Se lee el dibujo una vez y a
+      // partir de ahí la prenda se rehace moviendo sus puntos.
+      leerPiezasSvg(prendaParam.svg).then(async piezas => {
+        if (cancelled) return
+        piezasRef.current = piezas
+        placePrenda(medidasRef.current)
+        await restoreAndWire()
+      })
     } else {
       // Mockups SVG (chomba, pants)
       const svgUrl = `/mockups/${project.mockupId}.svg`
@@ -4805,6 +4835,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // vuelve a construir desde las medidas y después se le repone la pintura.
     const garment: SavedGarment = {
       measures: measuresRef.current,
+      medidas:  medidasRef.current,
       pieces: mockupObjects.current.map(o => ({
         fill: typeof o.fill === 'string' ? o.fill : undefined,
         tex:  (o as any)._texture,
@@ -5027,6 +5058,161 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     canvas.requestRenderAll()
     refreshLayersNow()
+  }
+
+  /**
+   * Arma el pantalón o la chomba con las medidas dadas.
+   *
+   * Mismo criterio que la remera: la prenda se REHACE moviendo los puntos del
+   * dibujo, no se escala. Por eso alargar no ensancha.
+   *
+   * La escala de pantalla se calcula UNA vez, con las medidas por defecto, y
+   * después no se toca: si se recalculara en cada cambio, agrandar una medida
+   * volvería a encuadrar la prenda y se vería del mismo tamaño que antes — o
+   * sea, no se notaría nada.
+   */
+  function placePrenda(m: Medidas, reassignClip = false) {
+    const canvas = fc.current
+    const piezas = piezasRef.current
+    if (!canvas || !prendaParam || !piezas.length) return
+    const CW = canvas.getWidth(), CH = canvas.getHeight()
+
+    // Guardar la tela/color de cada pieza antes de rehacerla (mismo motivo que
+    // en la remera: el relleno se reconstruye de cero y si no se pierde).
+    const prevPaint = mockupObjects.current.map(o => ({
+      fill: (o as any).fill,
+      tex:  (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
+      eff:  (o as any)._effect  as { kind: EffectKind; intensity: number } | undefined,
+      base: (o as any)._baseColor as string | undefined,
+      uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
+    }))
+    mockupObjects.current.forEach(o => canvas.remove(o))
+
+    const construir = (mm: Medidas) => piezas.map(pz => {
+      const d = transformPath(pz.d, prendaParam.warp(mm, pz.id))
+      const esInterior = pz.id.startsWith('inner-')
+      const p = new fabric.Path(d, {
+        fill: pz.fill, stroke: pz.stroke, strokeWidth: pz.strokeWidth,
+        selectable: false, evented: !esInterior,
+        hoverCursor: 'crosshair', strokeUniform: true,
+      })
+      ;(p as any)._rawMockup = true
+      ;(p as any)._pieceName = pieceLabelFromId(pz.id, pz.id)
+      if (esInterior) { (p as any)._rawInner = true }
+      else if (pz.id.startsWith('body')) { (p as any)._rawBody = true }
+      return p
+    })
+
+    // Separación entre frente y espalda: se mide en el dibujo original y se
+    // mantiene siempre. Sin esto, al ensanchar el pecho cada mitad crecía hacia
+    // la otra hasta encimarse (la manga del frente se metía en la espalda).
+    const esB = prendaParam.segundaMitad
+    /** Cuánto hay que correr la segunda mitad para que el hueco no cambie. */
+    const correccion = (lista: fabric.Path[]) => {
+      if (!esB) return 0
+      const a = lista.filter((_, i) => !esB(piezas[i].id))
+      const b = lista.filter((_, i) =>  esB(piezas[i].id))
+      if (!a.length || !b.length) return 0
+      const finA = Math.max(...a.map(o => (o.left ?? 0) + (o.width ?? 0)))
+      const iniB = Math.min(...b.map(o => o.left ?? 0))
+      if (huecoMitadesRef.current === null) { huecoMitadesRef.current = iniB - finA; return 0 }
+      return (finA + huecoMitadesRef.current) - iniB
+    }
+    const aplicarCorreccion = (lista: fabric.Path[], delta: number) => {
+      if (!esB || !delta) return
+      lista.forEach((o, i) => { if (esB(piezas[i].id)) o.set({ left: (o.left ?? 0) + delta }) })
+    }
+
+    // El hueco se calibra una sola vez, con las medidas por defecto.
+    if (huecoMitadesRef.current === null && esB) correccion(construir(prendaParam.defaults))
+
+    const objs = construir(m)
+    const deltaB = correccion(objs)
+    aplicarCorreccion(objs, deltaB)
+
+    if (prevPaint.length === objs.length) {
+      objs.forEach((o, i) => {
+        if ((o as any)._rawInner) return
+        const pp = prevPaint[i]
+        if (!pp) return
+        if (pp.tex)  (o as any)._texture   = pp.tex
+        if (pp.eff)  (o as any)._effect    = pp.eff
+        if (pp.uTex) (o as any)._userTex   = pp.uTex
+        if (pp.base) (o as any)._baseColor = pp.base
+        else if (!pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== '') {
+          ;(o as any)._baseColor = pp.fill
+        }
+        if (pp.tex || pp.eff || pp.base || pp.uTex) recomposeFill(o)
+        else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
+      })
+    }
+
+    if (!prendaFitRef.current) {
+      const base = construir(prendaParam.defaults)
+      aplicarCorreccion(base, correccion(base))
+      const bx = Math.min(...base.map(o => o.left ?? 0))
+      const by = Math.min(...base.map(o => o.top  ?? 0))
+      const bw = Math.max(...base.map(o => (o.left ?? 0) + (o.width  ?? 0))) - bx
+      const bh = Math.max(...base.map(o => (o.top  ?? 0) + (o.height ?? 0))) - by
+      const pad = Math.min(CW, CH) * 0.12
+      const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+      prendaFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
+    }
+    const { sc, ox, oy } = prendaFitRef.current
+    objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
+    objs.forEach(o => canvas.add(o))
+    mockupObjects.current = objs
+    syncInnerShade()
+
+    // El recorte es la unión de las piezas que se pintan (no el cuello ni los
+    // detalles): lo que el diseñador dibuje encima se corta contra la prenda.
+    const clipObjs = piezas
+      .map((pz, i) => ({ pz, obj: objs[i] }))
+      .filter(({ pz }) => pz.fill && !pz.id.startsWith('inner-'))
+      // Se clona del objeto ya construido y ya corrido: si se rehiciera aparte,
+      // el recorte no llevaría la corrección y quedaría movido respecto de la
+      // prenda (lo dibujado encima se cortaría en el lugar equivocado).
+      .map(({ obj }) => {
+        const p = new fabric.Path((obj as any).path, { fill: '#000' })
+        p.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
+        return p
+      })
+    const cg = new fabric.Group(clipObjs); cg.absolutePositioned = true
+    clipPath.current = cg
+    pxPerCmRef.current = sc * prendaParam.unidadesPorCm
+
+    for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    if (reassignClip) {
+      canvas.getObjects().forEach(o => {
+        if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+        o.clipPath = clipEnabledRef.current ? cg : undefined
+        o.dirty = true
+      })
+    }
+    canvas.requestRenderAll()
+    refreshLayersNow()
+  }
+
+  /** Cambiar una medida del pantalón o la chomba: rehace la prenda. */
+  function aplicarMedidas(next: Medidas) {
+    const limpio: Medidas = { ...next }
+    for (const c of prendaParam?.campos ?? []) {
+      const v = limpio[c.key]
+      limpio[c.key] = Math.max(c.min, Math.min(c.max, Number.isFinite(v) ? v : (prendaParam?.defaults[c.key] ?? 0)))
+    }
+    medidasRef.current = limpio
+    setMedidas(limpio)
+    placePrenda(limpio, true)
+  }
+
+  /** Editar un grupo plegado: mueve todas sus medidas a la par. */
+  function aplicarGrupoMedidas(keys: string[], valorPrincipal: number) {
+    const main = keys[0]
+    const anterior = medidasRef.current[main] || 1
+    const razon = valorPrincipal / anterior
+    const next: Medidas = { ...medidasRef.current }
+    for (const k of keys) next[k] = Math.round((k === main ? valorPrincipal : medidasRef.current[k] * razon) * 10) / 10
+    aplicarMedidas(next)
   }
 
   function applyMeasures(next: Measures) {
@@ -5656,6 +5842,66 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
             )
           })()}
+          {/* Medidas del pantalón y de la chomba. Mismo panel que la remera, con
+              las medidas que corresponden a cada prenda. */}
+          {prendaParam && !hasSel && (() => {
+            const cmInput = (val: number, min: number, max: number, onCh: (v: number) => void) => (
+              <div onClick={e => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+                <NumberField value={val} onChange={onCh} min={min} max={max} step={0.5} suffix="cm" width={60} />
+              </div>
+            )
+            const campo = (k: string) => prendaParam.campos.find(c => c.key === k)!
+            return (
+              <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+                <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {prendaParam.grupos.map(g => {
+                    const unica = g.keys.length === 1
+                    const open  = !!openGroups[g.id]
+                    const main  = campo(g.keys[0])
+                    return (
+                      <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+                        <div
+                          onClick={() => { if (!unica) setOpenGroups(p => ({ ...p, [g.id]: !p[g.id] })) }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+                            cursor: unica ? 'default' : 'pointer', background: 'var(--surface)' }}
+                        >
+                          {!unica && <span style={{ fontSize: 9, width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
+                          <span style={{ flex: 1, fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--ui)' }}>{g.label}</span>
+                          {(unica || !open) && cmInput(medidas[g.keys[0]], main.min, main.max,
+                            v => unica ? aplicarMedidas({ ...medidasRef.current, [g.keys[0]]: v })
+                                       : aplicarGrupoMedidas(g.keys, v))}
+                        </div>
+                        {!unica && open && (
+                          <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {g.keys.map(k => {
+                              const f = campo(k)
+                              return (
+                                <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--ui)' }}>{f.label}</span>
+                                  {cmInput(medidas[k], f.min, f.max, v => aplicarMedidas({ ...medidasRef.current, [k]: v }))}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+                <button className="btn btn-ghost" onClick={centrarPrenda}
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                  ⊕  Centrar prenda
+                </button>
+                <button className="btn btn-ghost"
+                  onClick={() => aplicarMedidas({ ...prendaParam.defaults })}
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}>
+                  Restablecer medidas
+                </button>
+              </div>
+            )
+          })()}
+
           {/* Agrupar / Desagrupar — botones con especificación clara */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {selKind === 'multi' && (
@@ -7138,32 +7384,6 @@ const TEE_DETAILS = [
 ]
 
 // Transforma un path SVG aplicando W a cada coordenada (convierte todo a absoluto).
-function transformPath(d: string, W: (x: number, y: number) => [number, number]): string {
-  const toks = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e-?\d+)?/g)
-  if (!toks) return d
-  let i = 0, cur: [number, number] = [0, 0], start: [number, number] = [0, 0], cmd = '', pc: [number, number] | null = null
-  const out: string[] = []
-  const num = () => parseFloat(toks[i++])
-  const isCmd = (t: string) => /[a-zA-Z]/.test(t)
-  const e = (p: [number, number]) => { const q = W(p[0], p[1]); return `${q[0].toFixed(2)} ${q[1].toFixed(2)}` }
-  while (i < toks.length) {
-    if (isCmd(toks[i])) cmd = toks[i++]
-    const rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase()
-    if (C === 'M') {
-      let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; start = [x, y]; out.push('M ' + e(cur)); pc = null
-      while (i < toks.length && !isCmd(toks[i])) { let x2 = num(), y2 = num(); if (rel) { x2 += cur[0]; y2 += cur[1] } cur = [x2, y2]; out.push('L ' + e(cur)) }
-    } else if (C === 'L') { let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'H') { let x = num(); if (rel) x += cur[0]; cur = [x, cur[1]]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'V') { let y = num(); if (rel) y += cur[1]; cur = [cur[0], y]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'C') { while (i < toks.length && !isCmd(toks[i])) { let c1: [number, number] = [num(), num()], c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c1 = [c1[0] + cur[0], c1[1] + cur[1]]; c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
-    else if (C === 'S') { while (i < toks.length && !isCmd(toks[i])) { let c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } const c1: [number, number] = pc ? [2 * cur[0] - pc[0], 2 * cur[1] - pc[1]] : [cur[0], cur[1]]; out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
-    else if (C === 'Q') { while (i < toks.length && !isCmd(toks[i])) { let c: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c = [c[0] + cur[0], c[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('Q ' + e(c) + ' ' + e(en)); pc = c; cur = en } }
-    else if (C === 'Z') { out.push('Z'); cur = [start[0], start[1]]; pc = null }
-    else { i++ }
-  }
-  return out.join(' ')
-}
-
 // W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
 function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
   const cx = 247.3, armY = 173, hemY = 357, slvTop = 50, URx = 400.95, ULx = 92.49
@@ -7216,7 +7436,10 @@ interface SavedPiece {
   base?: string
   uTex?: { id: string; widthCm: number }
 }
-interface SavedGarment { measures?: Measures; pieces?: SavedPiece[] }
+// `measures` son las de la remera y `medidas` las del pantalón o la chomba.
+// Van en campos distintos a propósito: cada prenda tiene medidas propias y
+// mezclarlas haría que abrir un pantalón le pisara el talle a la remera.
+interface SavedGarment { measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[] }
 interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
 
 function parseDesign(json: string): SavedDesign {
