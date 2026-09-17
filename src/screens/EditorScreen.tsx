@@ -890,9 +890,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
-  // Borrador en curso de la pluma (trazo aún no confirmado con Enter): permite que
-  // Ctrl+Z cancele ESE trazo en vez de deshacer lo anterior ya guardado.
-  const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void } | null>(null)
+  // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite que
+  // Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo anterior ya guardado.
+  const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void; undoPoint: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
@@ -2220,7 +2220,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         mouseIsDown = false; draggingHandle = false; isClosing = false
         canvas.requestRenderAll()
       }
-      penDraftRef.current = { hasDraft: () => anchors.length > 0, cancel: cancelDraft }
+      // Ctrl+Z mientras dibujas: se va el ULTIMO punto puesto, no el trazo entero
+      // ni lo ultimo que habias guardado antes de empezar a dibujar. Repetirlo
+      // desarma el trazo punto por punto hasta que no queda nada.
+      const undoPoint = () => {
+        if (anchors.length === 0) return
+        anchors.pop()
+        mouseIsDown = false; draggingHandle = false; isClosing = false
+        if (anchors.length === 0) { cancelDraft(); return }
+        syncLive()
+        redraw(cursorPt)
+      }
+
+      penDraftRef.current = { hasDraft: () => anchors.length > 0, cancel: cancelDraft, undoPoint }
 
       let penCursorCurrent = PEN_CURSOR
       const applyPenCursor = (cur: string) => {
@@ -4190,9 +4202,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Ctrl+Z — undo
       if (!e.shiftKey && e.key === 'z') {
         e.preventDefault()
-        // Si hay un trazo de pluma en curso (no confirmado con Enter), Ctrl+Z cancela
-        // ESE trazo en vez de deshacer lo último ya guardado.
-        if (penDraftRef.current?.hasDraft()) { penDraftRef.current.cancel(); return }
+        // Si hay un trazo de pluma en curso, Ctrl+Z borra el ultimo punto de ESE
+        // trazo. Sin esto deshacia lo anterior ya guardado mientras lo que estabas
+        // dibujando quedaba intacto, que es justo al reves de lo que uno espera.
+        if (penDraftRef.current?.hasDraft()) { penDraftRef.current.undoPoint(); return }
         const entry = undoHistory.current.pop()
         if (!entry) return
         if (entry.type === 'add') {
@@ -4917,7 +4930,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               padding: '6px 14px', borderRadius: 999, backdropFilter: 'blur(8px)',
               pointerEvents: 'none', whiteSpace: 'nowrap', fontFamily: 'var(--mono)',
             }}>
-              {tool === 'pen'   && 'Click · agregar  |  Alt+arrastrar · ángulo libre  |  Click ancla · seleccionar  |  Supr · eliminar  |  Enter · terminar'}
+              {tool === 'pen'   && 'Click · agregar  |  Alt+arrastrar · ángulo libre  |  Ctrl+Z · borrar el último punto  |  Supr · eliminar ancla  |  Enter · terminar'}
               {tool === 'curve' && 'Click ancla · seleccionar  |  Arrastrar · mover  |  Supr · eliminar ancla'}
               {tool === 'text'  && 'Click en el canvas para colocar texto'}
             </div>
