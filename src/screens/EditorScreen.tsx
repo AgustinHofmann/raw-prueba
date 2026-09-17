@@ -1626,12 +1626,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.selectionLineWidth   = 1
     ;(canvas as any).selectionDashArray = []
     ;(canvas as any).uniformScaling     = false
-    // Modificadores al escalar:
-    //  - Shift = escalar SIMÉTRICO desde el centro (los dos lados crecen a la vez en ese eje).
-    //    Si agarrás el tirador del medio de un lado, crece "para los dos lados" de ese eje.
-    //  - Alt   = mantener proporción (lo que por defecto hacía Shift).
-    ;(canvas as any).centeredKey = 'shiftKey'
-    ;(canvas as any).uniScaleKey = 'altKey'
+    // Modificadores al escalar, como en Illustrator:
+    //  - Shift = mantener la proporción (no se deforma).
+    //  - Alt   = escalar desde el centro (los dos lados crecen a la vez).
+    //
+    // Estaban al revés. Shift para mantener proporción es el gesto que tiene
+    // aprendido cualquiera que use un editor gráfico, así que invertirlo se
+    // siente como que la tecla no anda.
+    ;(canvas as any).uniScaleKey = 'shiftKey'
+    ;(canvas as any).centeredKey = 'altKey'
     canvas.skipOffscreen = false
 
     // Lo guardado se lee ANTES de construir la prenda: las medidas tienen que
@@ -1704,6 +1707,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       autosaveListo.current = true
 
       canvas.renderAll()
+
+      // Repintado forzado en el cuadro siguiente.
+      //
+      // Es, exactamente, lo que hacía tocar una herramienta: marcar todo para
+      // redibujar y volver a pintar. Ese era el truco que el diseñador
+      // encontró para que su trazo apareciera, y acá se hace solo.
+      //
+      // Va en el cuadro siguiente a propósito: recién ahí el lienzo tiene su
+      // tamaño definitivo y el recorte de la prenda sus coordenadas hechas.
+      // Pintar antes es pintar contra medidas que todavía no existen.
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        clipPath.current?.setCoords()
+        canvas.getObjects().forEach(o => { o.setCoords(); o.dirty = true })
+        canvas.requestRenderAll()
+      })
     }
 
     if (PARAMETRIC_TEE && project.mockupId === 'tshirt') {
@@ -3500,6 +3519,65 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
 
+  /**
+   * Con qué ajustes calcar cada imagen.
+   *
+   * Antes se usaban los mismos para todo: 8 colores y descartar las formas
+   * chicas. Eso rompe justo los logos con fondo, que es el caso más común.
+   *
+   * Por qué: un logo blanco y negro sobre fondo tiene los bordes suavizados, o
+   * sea una franja de grises entre el negro y el blanco. Repartidos en 8 colores,
+   * esos grises se vuelven bandas propias y el contorno sale carcomido y
+   * manchado. Y descartar las formas chicas se come los detalles finos.
+   *
+   * Sin fondo no pasaba porque el borde suavizado se va en transparencia en vez
+   * de convertirse en grises.
+   *
+   * Entonces primero se mira cuántos colores tiene de verdad la imagen, y si son
+   * pocos —un logo, un dibujo plano— se la calca con esa cantidad exacta.
+   */
+  function opcionesDeCalco(data: ImageData) {
+    const px = data.data
+    const total = data.width * data.height
+    // Se agrupan los colores en cubos gruesos: los bordes suavizados no son
+    // colores de la imagen, son la transición entre dos, y no deben contarse.
+    const cubos = new Map<number, number>()
+    const paso = Math.max(1, Math.floor(total / 40000))   // como mucho 40k muestras
+    let visibles = 0
+    for (let i = 0; i < total; i += paso) {
+      const p = i * 4
+      if (px[p + 3] < 128) continue
+      visibles++
+      const k = (px[p] >> 5 << 10) | (px[p + 1] >> 5 << 5) | (px[p + 2] >> 5)
+      cubos.set(k, (cubos.get(k) ?? 0) + 1)
+    }
+    // Solo cuentan los colores con presencia real; el resto son bordes.
+    const minimo = Math.max(1, visibles * 0.01)
+    const dominantes = [...cubos.values()].filter(n => n >= minimo).length
+
+    if (dominantes <= 6) {
+      // Arte plano: logos, siluetas, dibujos. Se calca con sus colores justos.
+      return {
+        numberofcolors: Math.max(2, dominantes),
+        colorsampling: 0,        // paleta fija, no muestreada: sin bandas inventadas
+        ltres: 0.5, qtres: 0.5,  // sigue el contorno de cerca
+        pathomit: 2,             // casi no descarta formas: los detalles finos sobreviven
+        rightangleenhance: true, // endereza los ángulos rectos, típicos de un logo
+        blurradius: 1,           // funde el borde suavizado antes de decidir el color
+      }
+    }
+    // Fotos e ilustraciones con degradados: hace falta más paleta, y descartar
+    // las formas minúsculas para que no salgan miles de manchitas.
+    return {
+      numberofcolors: 16,
+      colorsampling: 2,
+      ltres: 1, qtres: 1,
+      pathomit: 8,
+      rightangleenhance: false,
+      blurradius: 0,
+    }
+  }
+
   // ── Importar y vectorizar PNG ────────────────────────────────────────────────
   async function handleImportPng(file: File) {
     const canvas = fc.current
@@ -3523,17 +3601,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ctx.drawImage(img, 0, 0)
       const imageData = ctx.getImageData(0, 0, img.width, img.height)
 
-      // Vectorizar con imagetracerjs
+      // Vectorizar con imagetracerjs, con ajustes según qué clase de imagen es.
       const { default: ImageTracer } = await import('imagetracerjs')
-      const svgStr: string = ImageTracer.imagedataToSVG(imageData, {
-        numberofcolors: 8,
-        colorsampling: 2,
-        ltres: 1,
-        qtres: 1,
-        pathomit: 16,
-        rightangleenhance: false,
-        blurradius: 0,
-      })
+      const svgStr: string = ImageTracer.imagedataToSVG(imageData, opcionesDeCalco(imageData))
 
       // Cargar el SVG en Fabric
       const { objects } = await fabric.loadSVGFromString(svgStr)
