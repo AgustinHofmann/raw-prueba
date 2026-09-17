@@ -30,10 +30,36 @@ type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' |
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
 
+// Receta de pintura de una pieza de la prenda. El relleno final se recompone desde
+// aca cada vez que la prenda se regenera (al cambiar una medida), asi que deshacer un
+// color tiene que devolver la receta y no solo el `fill` que quedo dibujado.
+type PaintState = {
+  tex?:  { kind: TextureKind; colors: string[] }
+  eff?:  { kind: EffectKind; intensity: number }
+  base?: string
+  uTex?: { id: string; widthCm: number }
+}
+
+function snapshotPaint(o: fabric.FabricObject): PaintState {
+  return {
+    tex:  (o as any)._texture,
+    eff:  (o as any)._effect,
+    base: (o as any)._baseColor,
+    uTex: (o as any)._userTex,
+  }
+}
+
+function restorePaint(o: fabric.FabricObject, p: PaintState): void {
+  if (p.tex)  (o as any)._texture   = p.tex;  else delete (o as any)._texture
+  if (p.eff)  (o as any)._effect    = p.eff;  else delete (o as any)._effect
+  if (p.base) (o as any)._baseColor = p.base; else delete (o as any)._baseColor
+  if (p.uTex) (o as any)._userTex   = p.uTex; else delete (o as any)._userTex
+}
+
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
-  | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }
+  | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null; prevPaint?: PaintState | null }
   | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }[] }
   | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
@@ -2823,8 +2849,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const target = e.target
         if (!target || (target as any)._locked) return
         const prevFill = target.fill as fabric.TFiller | string | null
-        target.set({ fill: colorRef.current })
-        undoHistory.current.push({ type: 'fill', obj: target, prevFill })
+        const isPiece  = mockupObjects.current.includes(target)
+        // En una pieza de la prenda el color liso pasa a ser su BASE. La prenda se
+        // reconstruye desde las medidas y su relleno se recompone desde esa receta:
+        // sin registrar la base, tocar una medida (achicar/agrandar) devolvia la
+        // prenda al color anterior en vez de dejar el que el disenador acababa de dar.
+        const prevPaint = isPiece ? snapshotPaint(target) : null
+        if (isPiece) {
+          delete (target as any)._texture    // un color liso reemplaza a la tela
+          delete (target as any)._userTex
+          ;(target as any)._baseColor = colorRef.current
+          recomposeFill(target)              // el efecto de tela, si habia, se mantiene encima
+          syncInnerShade()
+        } else {
+          target.set({ fill: colorRef.current })
+        }
+        undoHistory.current.push({ type: 'fill', obj: target, prevFill, prevPaint })
         redoHistory.current = []
         canvas.requestRenderAll()
       }
@@ -4109,9 +4149,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
           undoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill = entry.obj.fill
-          entry.obj.set({ fill: entry.prevFill as string })
-          undoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null })
+          const curFill  = entry.obj.fill
+          const curPaint = entry.prevPaint ? snapshotPaint(entry.obj) : null
+          entry.obj.set({ fill: entry.prevFill as string, dirty: true })
+          if (entry.prevPaint) { restorePaint(entry.obj, entry.prevPaint); syncInnerShade() }
+          undoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null, prevPaint: curPaint })
         }
         canvas.discardActiveObject()
         canvas.requestRenderAll()
@@ -4164,9 +4206,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
           redoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill = entry.obj.fill
-          entry.obj.set({ fill: entry.prevFill as string })
-          redoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null })
+          const curFill  = entry.obj.fill
+          const curPaint = entry.prevPaint ? snapshotPaint(entry.obj) : null
+          entry.obj.set({ fill: entry.prevFill as string, dirty: true })
+          if (entry.prevPaint) { restorePaint(entry.obj, entry.prevPaint); syncInnerShade() }
+          redoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null, prevPaint: curPaint })
         }
         canvas.discardActiveObject()
         canvas.requestRenderAll()
