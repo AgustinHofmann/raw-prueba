@@ -982,6 +982,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Ctrl+Z cancele ESE trazo en vez de deshacer lo anterior ya guardado.
   const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
+  // Cuando se movio por ultima vez con las flechas, para agrupar la rafaga en
+  // un solo paso de deshacer.
+  const ultimaFlecha = useRef(0)
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
   const pxPerCmRef = useRef(0)
@@ -3449,6 +3452,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           })
         }
         redoHistory.current = []
+
+        // Si lo que se movió es parte de la prenda, el recorte tiene que seguirla.
+        // Si no, el diseño se recorta contra el molde viejo y desaparece.
+        const tocoLaPrenda = mockupObjects.current.includes(target) ||
+          (target.type === 'activeselection' &&
+            (target as fabric.ActiveSelection).getObjects().some(o => mockupObjects.current.includes(o))) ||
+          !!(target as any)._garmentGroup
+        if (tocoLaPrenda) void rebuildGarmentClip()
       }
 
       canvas.on('mouse:down', onDownMockup)
@@ -4283,6 +4294,47 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         return
       }
 
+      // Flechas — mover lo seleccionado de a un píxel (10 con Shift).
+      // Es la forma de acomodar algo con precisión: a mano el mouse nunca cae
+      // justo, y con esto se ajusta sin pelear con el pulso.
+      if (!ctrl && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        const activo = canvas.getActiveObject()
+        if (!activo) return
+        e.preventDefault()
+        const paso = e.shiftKey ? 10 : 1
+        const dx = e.key === 'ArrowLeft' ? -paso : e.key === 'ArrowRight' ? paso : 0
+        const dy = e.key === 'ArrowUp'   ? -paso : e.key === 'ArrowDown'  ? paso : 0
+
+        const movidos = activo.type === 'activeselection'
+          ? (activo as fabric.ActiveSelection).getObjects()
+          : [activo]
+
+        activo.set({ left: (activo.left ?? 0) + dx, top: (activo.top ?? 0) + dy })
+        activo.setCoords()
+
+        // Un solo paso de deshacer por rafaga: mantener la flecha apretada
+        // genera decenas de eventos, y tener que deshacer cincuenta veces para
+        // volver atras un ajuste seria peor que no poder deshacerlo.
+        const ultima = undoHistory.current[undoHistory.current.length - 1]
+        const mismaRafaga = ultima?.type === 'moveDelta' &&
+          ultima.objs.length === movidos.length &&
+          ultima.objs.every((o, i) => o === movidos[i]) &&
+          Date.now() - ultimaFlecha.current < 900
+        if (mismaRafaga && ultima.type === 'moveDelta') {
+          ultima.dx += dx; ultima.dy += dy
+        } else {
+          undoHistory.current.push({ type: 'moveDelta', objs: movidos, dx, dy })
+          redoHistory.current = []
+        }
+        ultimaFlecha.current = Date.now()
+
+        if (mockupObjects.current.includes(activo) ||
+            movidos.some(o => mockupObjects.current.includes(o))) void rebuildGarmentClip()
+        markDirty()
+        canvas.requestRenderAll()
+        return
+      }
+
       if (!ctrl) return
 
       // Ignorar el auto-repeat del teclado: mantener apretado Ctrl+Z (o Ctrl+Shift+Z)
@@ -4607,6 +4659,72 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // ── Remera paramétrica: (re)genera el mockup desde las medidas en cm ─────────
+  /**
+   * Rehace el recorte a partir de dónde está la prenda AHORA.
+   *
+   * El recorte es lo que hace que el diseño no se salga de la prenda, y está
+   * anclado a coordenadas absolutas. Al mover la prenda, el recorte se quedaba
+   * donde estaba: el diseño pasaba a recortarse contra un molde que ya no
+   * coincidía con nada y desaparecía. Por eso solo se veía con la prenda en su
+   * posición original.
+   */
+  async function rebuildGarmentClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const piezas = mockupObjects.current.filter(o => {
+      if (o.visible === false) return false
+      if ((o as any)._rawInner) return false    // el hueco del cuello no define la silueta
+      const f = (o as any).fill
+      return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
+    })
+    if (!piezas.length) return
+
+    const copias = await Promise.all(piezas.map(p => p.clone()))
+    const cg = new fabric.Group(copias)
+    cg.absolutePositioned = true
+    clipPath.current = cg
+
+    canvas.getObjects().forEach(o => {
+      if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+      o.clipPath = clipEnabledRef.current ? cg : undefined
+      o.dirty = true
+    })
+    canvas.requestRenderAll()
+  }
+
+  /** Devuelve la prenda al centro del lienzo. */
+  function centrarPrenda() {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = mockupObjects.current
+    if (!objs.length) return
+
+    // Se mide con el zoom apagado: si no, "el centro" sería el centro de lo que
+    // se ve ahora y la prenda quedaría centrada en otro lado al alejar.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const o of objs) {
+      const r = o.getBoundingRect()
+      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+    }
+    const dx = canvas.getWidth() / 2 - (x1 + x2) / 2
+    const dy = canvas.getHeight() / 2 - (y1 + y2) / 2
+    if (vpt) canvas.viewportTransform = vpt
+
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) { onToast?.('La prenda ya está centrada'); return }
+
+    const antes = objs.map(snapGeom)
+    objs.forEach(o => { o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy }); o.setCoords() })
+    undoHistory.current.push({ type: 'transform', items: antes })
+    redoHistory.current = []
+    void rebuildGarmentClip()
+    markDirty()
+    canvas.requestRenderAll()
+    onToast?.('Prenda centrada')
+  }
+
   function placeTee(m: Measures, reassignClip = false) {
     const canvas = fc.current
     if (!canvas) return
@@ -5289,8 +5407,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </div>
               <button
                 className="btn btn-ghost"
-                onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
+                onClick={centrarPrenda}
                 style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}
+              >
+                ⊕  Centrar prenda
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}
               >
                 Restablecer medidas
               </button>
