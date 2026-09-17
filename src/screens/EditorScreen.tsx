@@ -1898,6 +1898,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Cada ancla tiene: posición, handle de entrada (cp1) y handle de salida (cp2)
       type PAnchor = { pt: fabric.Point; cp1: fabric.Point; cp2: fabric.Point }
       const anchors: PAnchor[] = []
+      // El trazo en curso vive en el lienzo como un objeto REAL, no como preview.
+      // Asi lo que ya clickeaste existe (y entra en el guardado, manual o automatico)
+      // sin tener que confirmarlo con Enter.
+      let liveObj: fabric.Path | null = null
       let mouseIsDown    = false
       let draggingHandle = false
       let cursorPt       = new fabric.Point(0, 0)
@@ -2143,8 +2147,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
 
+      // Quita del lienzo el objeto del trazo en curso (si lo hay).
+      const dropLive = () => {
+        if (!liveObj) return
+        canvas.remove(liveObj)
+        liveObj = null
+      }
+
+      // Rehace el objeto del trazo en curso con los anclas puestas hasta ahora.
+      // Se dibuja siempre como trazo normal: los estilos especiales (bordado,
+      // cierre) se calculan una sola vez al confirmar, que es cuando importan.
+      const syncLive = () => {
+        dropLive()
+        if (anchors.length < 2) return
+        const d = buildPenPath(anchors)
+        const obj = new fabric.Path(d, {
+          stroke: colorRef.current, strokeWidth: brushSizeRef.current,
+          strokeLineCap: d.includes(' C ') ? 'round' : 'butt',
+          strokeLineJoin: 'round',
+          fill: fillRef.current, selectable: false, evented: false,
+          strokeUniform: true,
+        })
+        ;(obj as any).hoverCursor = PEN_CURSOR
+        if (clipPath.current) obj.clipPath = clipPath.current
+        canvas.add(obj)
+        liveObj = obj
+      }
+
       const commit = (closed = false) => {
         clearTemp()
+        dropLive()
         if (anchors.length >= 2) {
           snapPoints.current.push(new fabric.Point(anchors[0].pt.x, anchors[0].pt.y))
           const lastPt = anchors[anchors.length - 1].pt
@@ -2183,7 +2215,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       // Cancela el trazo en curso (sin guardarlo) — lo usa Ctrl+Z mientras dibujás.
       const cancelDraft = () => {
-        clearTemp(); clearEdit()
+        clearTemp(); clearEdit(); dropLive()
         anchors.length = 0
         mouseIsDown = false; draggingHandle = false; isClosing = false
         canvas.requestRenderAll()
@@ -2296,6 +2328,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           cp1: new fabric.Point(pt.x, pt.y),
           cp2: new fabric.Point(pt.x, pt.y),
         })
+        syncLive()
         redraw(cursorPt)
       }
 
@@ -2356,7 +2389,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         redraw(snappedPt, liveCp2, guides, nodeSnap)
       }
 
-      const onUp = () => { mouseIsDown = false; draggingHandle = false; redraw(cursorPt) }
+      const onUp = () => {
+        const wasDragging = draggingHandle
+        mouseIsDown = false; draggingHandle = false
+        if (wasDragging) syncLive()   // la curva quedo definida al soltar el handle
+        redraw(cursorPt)
+      }
 
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === 'Escape') commit()
@@ -2379,6 +2417,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('mouse:up',   onUp)
         window.removeEventListener('keydown', onKey)
         canvas.defaultCursor = 'default'
+        // Cambiar de herramienta con un trazo a medias lo confirma en vez de tirarlo:
+        // lo dibujado es del disenador, no del estado interno de la pluma.
+        if (anchors.length >= 2) commit()
+        else cancelDraft()
         clearTemp()
         clearEdit()
         hideSizeCursor()
