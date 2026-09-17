@@ -98,7 +98,20 @@ export async function getTechpack(id: string): Promise<string | null> {
  */
 type Pendiente = Project & { pendienteDeSubir?: boolean }
 
-export async function saveProject(p: Project, userId?: string): Promise<boolean> {
+/**
+ * `revivir` es para cuando el usuario trae de vuelta a propósito un proyecto con
+ * un id ya borrado (importar el archivo otra vez). Sin eso, guardar NO resucita:
+ * un proyecto borrado se queda borrado.
+ *
+ * Hace falta porque el editor autoguarda con retraso. Si borrabas el proyecto
+ * que tenías abierto, el autoguardado saltaba un segundo después y lo volvía a
+ * escribir en la base local — borrado y de vuelta en pantalla al recargar.
+ */
+export async function saveProject(
+  p: Project, userId?: string, opts?: { revivir?: boolean },
+): Promise<boolean> {
+  if (opts?.revivir) await idbDelete(STORE_DELETED, p.id)
+  else if (await idbGet<Tombstone>(STORE_DELETED, p.id)) return false   // ya estaba borrado
   const conMarca: Pendiente = { ...p, pendienteDeSubir: true }
   const ok = (await idbPut(STORE_PROJECTS, conMarca)) !== null
   void pushProject(p, userId)
@@ -132,6 +145,7 @@ export async function saveTechpack(id: string, json: string, userId?: string): P
 
 export async function saveFolder(f: Folder, userId?: string): Promise<void> {
   await idbPut(STORE_FOLDERS, f)
+  await idbDelete(STORE_DELETED, f.id)   // crear/renombrar una carpeta sí la revive
   if (await cloudReady()) { try { await upsertFolder(f, userId) } catch { /* pendiente */ } }
 }
 
@@ -145,20 +159,23 @@ export async function removeFolder(id: string): Promise<void> {
   await applyRemoteDelete(id, 'folder')
 }
 
-// Un borrado sin conexión no se puede perder: si solo se borrara local, el
-// próximo sync lo bajaría de vuelta de la nube y reaparecería como un fantasma.
-// Por eso queda anotado hasta poder aplicarlo arriba.
+// Un borrado no se puede perder: si solo se borrara local, el próximo sync lo
+// bajaría de vuelta de la nube y reaparecería como un fantasma.
+//
+// El anotado va SIEMPRE y va PRIMERO, no solo cuando no hay internet. Antes se
+// anotaba únicamente si el borrado de la nube tiraba error, y el caso que rompía
+// era justo el que no tira error: la base contesta OK habiendo borrado cero
+// filas. Como nadie anotaba nada, el proyecto seguía arriba y volvía al recargar.
+//
+// La anotación se levanta recién cuando la nube CONFIRMA el borrado.
 async function applyRemoteDelete(id: string, kind: 'project' | 'folder'): Promise<void> {
-  if (!(await cloudReady())) {
-    await idbPut<Tombstone>(STORE_DELETED, { id, kind, at: Date.now() })
-    return
-  }
+  await idbPut<Tombstone>(STORE_DELETED, { id, kind, at: Date.now() })
+  if (!(await cloudReady())) return
   try {
     if (kind === 'project') await deleteProject(id)
     else await deleteFolder(id)
-  } catch {
-    await idbPut<Tombstone>(STORE_DELETED, { id, kind, at: Date.now() })
-  }
+    await idbDelete(STORE_DELETED, id)
+  } catch { /* queda anotado y se reintenta en el próximo sync */ }
 }
 
 // ─── Sincronización ──────────────────────────────────────────────────────────
@@ -188,11 +205,18 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
         await idbDelete(STORE_DELETED, t.id)
       } catch { /* se reintenta el próximo sync */ }
     }
+    // Lo borrado acá NO vuelve, aunque la nube se haya negado a borrarlo. Sin
+    // esta lista, una fila que la base no deja borrar (por ejemplo porque quedó
+    // sin dueño) reaparecía en CADA arranque: el usuario la borraba una y otra
+    // vez y siempre volvía. Mientras la anotación siga puesta, se la ignora.
+    const borrados = new Set(
+      (await idbGetAll<Tombstone>(STORE_DELETED)).map(t => t.id),
+    )
 
     // 2. Carpetas: son livianas, se resuelven de una.
     const [nubeCarpetas, localesCarpetas] = await Promise.all([fetchFolders(), listFolders()])
     const carpetas = new Map<string, Folder>()
-    for (const f of nubeCarpetas) carpetas.set(f.id, f)
+    for (const f of nubeCarpetas) { if (!borrados.has(f.id)) carpetas.set(f.id, f) }
     for (const f of localesCarpetas) {
       if (!carpetas.has(f.id)) { carpetas.set(f.id, f); try { await upsertFolder(f, userId) } catch { /* luego */ } }
     }
@@ -205,6 +229,7 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     for (const p of locales) porId.set(p.id, p)
 
     for (const remoto of nube) {
+      if (borrados.has(remoto.id)) continue   // borrado acá: no vuelve
       const local = porId.get(remoto.id) as Pendiente | undefined
       // Lo que todavía no subió manda siempre, sin mirar fechas: son cambios que
       // solo existen acá. Compararlos contra el reloj del servidor los perdía.

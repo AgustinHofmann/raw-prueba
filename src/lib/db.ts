@@ -52,9 +52,20 @@ export async function saveTechpackJson(id: string, json: string): Promise<void> 
   if (error) throw error
 }
 
+// Borrar de verdad, no "pedir por favor".
+//
+// `delete()` a secas devuelve OK aunque no haya borrado NADA: si la regla de
+// seguridad de la fila no coincide (por ejemplo la fila quedó sin dueño), la
+// base descarta el borrado sin avisar. El proyecto seguía arriba y al recargar
+// la sincronización lo volvía a bajar: lo borrabas y reaparecía.
+//
+// Con `.select()` la base devuelve las filas que realmente borró. Si no volvió
+// ninguna, esto FALLA a propósito, para que el borrado quede anotado como
+// pendiente y se reintente en vez de darse por hecho.
 export async function deleteProject(id: string): Promise<void> {
-  const { error } = await supabase.from('projects').delete().eq('id', id)
+  const { data, error } = await supabase.from('projects').delete().eq('id', id).select('id')
   if (error) throw error
+  if (!data || data.length === 0) throw new Error(`La base no borró el proyecto ${id}`)
 }
 
 // ─── Folders ─────────────────────────────────────────────────────────────────
@@ -76,9 +87,11 @@ export async function upsertFolder(f: Folder, userId?: string): Promise<void> {
   if (error) throw error
 }
 
+// Mismo criterio que deleteProject: si no volvió ninguna fila, no se borró.
 export async function deleteFolder(id: string): Promise<void> {
-  const { error } = await supabase.from('folders').delete().eq('id', id)
+  const { data, error } = await supabase.from('folders').delete().eq('id', id).select('id')
   if (error) throw error
+  if (!data || data.length === 0) throw new Error(`La base no borró la carpeta ${id}`)
 }
 
 // ─── Profile (nickname) ──────────────────────────────────────────────────────

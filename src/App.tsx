@@ -230,7 +230,9 @@ export default function App() {
 
   async function handleImport(p: Project) {
     try {
-      await saveProject(p, user?.id)
+      // Importar es traerlo de vuelta a propósito: si ese id se había borrado
+      // antes, esto levanta la anotación de borrado en vez de chocar con ella.
+      await saveProject(p, user?.id, { revivir: true })
       setProjects(prev => [p, ...prev])
       openProject(p)
     } catch { showToast('Error al importar el proyecto') }
