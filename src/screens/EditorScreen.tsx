@@ -1110,6 +1110,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
   // color sin tener que mirar al panel de la derecha.
   const [eyeProbe,       setEyeProbe]       = useState<null | { x: number; y: number; hex: string }>(null)
+  // Bordado: hacia dónde corren las puntadas y si está trabajando.
+  const [bordadoAngulo,  setBordadoAngulo]  = useState(70)
+  const [bordando,       setBordando]       = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
@@ -3843,6 +3846,82 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }
 
+  // ── Bordado ────────────────────────────────────────────────────────────────
+  /**
+   * Pasa lo seleccionado (un vector, una forma o un texto) a bordado.
+   *
+   * Queda como imagen y no como vector a propósito: el bordado es hilo, y el
+   * hilo no tiene "relleno" ni "trazo" que se puedan seguir editando. Deshacer
+   * devuelve el original de una sola vez.
+   */
+  async function convertirEnBordado() {
+    const canvas = fc.current
+    if (!canvas) return
+    const activos = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
+    if (!activos.length) return
+
+    setBordando(true)
+    try {
+      const nuevos: fabric.FabricObject[] = []
+      for (const obj of activos) {
+        // El hilo saca el color del objeto: primero el relleno, y si no tiene
+        // (una figura que es solo contorno) el trazo.
+        const f = obj.fill, st = obj.stroke
+        const hilo = (typeof f === 'string' && f) ? f
+                   : (typeof st === 'string' && st) ? st
+                   : '#c8402f'
+
+        // Se dibuja SIN rotación y el ángulo se le devuelve después a la imagen:
+        // si no, el hilo sale escalonado en vez de derecho.
+        const angulo = obj.angle ?? 0
+        const centro = obj.getCenterPoint()
+        // El recorte a la remera está en coordenadas del lienzo. Al dibujar el
+        // objeto solo, ese recorte cae fuera y se lo come entero: la silueta
+        // salía vacía y el bordado invisible. Se saca y se devuelve después.
+        const recorte = obj.clipPath
+        obj.clipPath = undefined
+        obj.set({ angle: 0 }); obj.setCoords()
+        let silueta: HTMLCanvasElement
+        try {
+          // Techo de resolución: un objeto muy grande haría un canvas enorme y
+          // el bordado tardaría de más sin verse mejor.
+          const lado = Math.max(obj.getScaledWidth(), obj.getScaledHeight()) || 1
+          const mult = Math.min(BORDADO_MULT, Math.max(1, 1400 / lado))
+          silueta = obj.toCanvasElement({ multiplier: mult })
+          ;(silueta as any)._mult = mult
+        } finally {
+          obj.set({ angle: angulo }); obj.clipPath = recorte; obj.setCoords()
+        }
+
+        const mult = (silueta as any)._mult as number
+        const bordado = renderBordado(silueta, hilo, bordadoAngulo)
+        const img = await fabric.FabricImage.fromURL(bordado.toDataURL())
+        img.set({
+          originX: 'center', originY: 'center',
+          left: centro.x, top: centro.y, angle: angulo,
+          scaleX: 1 / mult, scaleY: 1 / mult,
+          opacity: obj.opacity ?? 1, selectable: true, evented: true,
+        })
+        ;(img as any)._bordado = true
+        if (clipEnabledRef.current && clipPath.current) img.clipPath = clipPath.current
+        img.setCoords()
+        canvas.remove(obj)
+        canvas.add(img)
+        nuevos.push(img)
+      }
+      canvas.discardActiveObject()
+      if (nuevos.length === 1) { canvas.setActiveObject(nuevos[0]); setSelectedObj(nuevos[0]) }
+      undoHistory.current.push({ type: 'erase', removed: activos, added: nuevos })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      refreshLayersNow()
+    } catch (err) {
+      console.error('No se pudo bordar:', err)
+    } finally {
+      setBordando(false)
+    }
+  }
+
   // ── Texturas ─────────────────────────────────────────────────────────────────
   // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
   // recolorearla después sin perder la textura.
@@ -5923,6 +6002,31 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
           </div>
 
+          {/* Pasar a bordado: un dibujo, una figura o un texto → hilo de verdad */}
+          <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+            <div className="label" style={{ marginBottom: 6 }}>Bordado</div>
+            <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
+              Convierte lo seleccionado en bordado. Toma el color del objeto como
+              color del hilo. Queda como imagen: el hilo ya no se edita como vector.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }}>
+              <span className="label">Dirección del hilo</span>
+              <NumberField value={bordadoAngulo} onChange={v => setBordadoAngulo(Math.max(0, Math.min(180, Math.round(v))))}
+                min={0} max={180} step={5} suffix="°" />
+            </div>
+            <button className="btn btn-primary btn-block"
+              disabled={!hasSel || bordando}
+              onClick={convertirEnBordado}
+              style={{ opacity: (!hasSel || bordando) ? 0.5 : 1, cursor: (!hasSel || bordando) ? 'default' : 'pointer' }}>
+              {bordando ? 'Bordando…' : 'Convertir en bordado'}
+            </button>
+            {!hasSel && (
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7 }}>
+                Seleccioná primero un dibujo, una figura o un texto.
+              </p>
+            )}
+          </div>
+
           {hasSel && (
             <div className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>· objeto seleccionado</div>
           )}
@@ -6687,6 +6791,208 @@ function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: numb
 
   x.restore()
 }
+
+// ── Bordado ──────────────────────────────────────────────────────────────────
+// Convierte la silueta de un vector o un texto en bordado de verdad: hilo sobre
+// hilo, no un filtro encima del dibujo.
+//
+// Lo que hace que se lea como bordado y no como "relleno con rayitas":
+//   · las puntadas son CORTAS y van todas en la misma dirección (como sale de
+//     una máquina), no un degradé ni un ruido;
+//   · cada puntada tiene brillo arriba y sombra abajo, porque el hilo es un
+//     cilindro y la luz le pega de un lado;
+//   · las uniones entre puntadas van trabadas fila a fila (si quedaran
+//     alineadas se verían canaletas, que es el error clásico);
+//   · el conjunto está levantado de la tela: sombra abajo y borde propio.
+//
+// La separación está elegida para que se VEA. A escala real una puntada mide
+// menos de medio milímetro: en pantalla no existiría.
+
+/** Resolución interna del bordado (el doble, para que el hilo no salga dentado). */
+const BORDADO_MULT = 2
+const BORDADO_MARGEN = 10    // lugar para la sombra y el relieve
+// La separación y el largo de puntada NO son fijos: se calculan según el tamaño
+// del objeto, adentro de renderBordado. Ver ahí el porqué.
+
+/**
+ * `silueta` es el objeto ya dibujado (con su color) sobre un canvas.
+ * Devuelve un canvas más grande (por el margen) con el bordado.
+ */
+/**
+ * Cualquier color de CSS → `#rrggbb`.
+ *
+ * Los objetos del lienzo no guardan el color en un formato solo: un texto llega
+ * como `rgb(0,0,0)` y una figura como `#ff0000`. Las cuentas de color trabajan
+ * con hex, y al pasarles `rgb(...)` devolvían NaN: el bordado salía invisible.
+ */
+function aHex(color: string): string {
+  const c = document.createElement('canvas'); c.width = c.height = 1
+  const x = c.getContext('2d')
+  if (!x) return '#000000'
+  x.fillStyle = '#000000'
+  try { x.fillStyle = color } catch { /* color inválido: queda el negro */ }
+  const v = String(x.fillStyle)
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v
+  const n = v.match(/[\d.]+/g)
+  if (n && n.length >= 3) {
+    return '#' + n.slice(0, 3)
+      .map(t => Math.max(0, Math.min(255, Math.round(Number(t)))).toString(16).padStart(2, '0'))
+      .join('')
+  }
+  return '#000000'
+}
+
+function renderBordado(silueta: HTMLCanvasElement, hiloCrudo: string, anguloGrados: number): HTMLCanvasElement {
+  const hilo = aHex(hiloCrudo)
+  const w = silueta.width, h = silueta.height
+  const M = BORDADO_MARGEN
+  const out = document.createElement('canvas')
+  out.width = w + M * 2; out.height = h + M * 2
+  const o = out.getContext('2d')!
+
+  // Máscara: qué píxeles son parte del dibujo.
+  const sctx = silueta.getContext('2d')!
+  let datos: Uint8ClampedArray
+  try { datos = sctx.getImageData(0, 0, w, h).data } catch { return out }
+  const dentro = (px: number, py: number) => {
+    const ix = Math.round(px), iy = Math.round(py)
+    if (ix < 0 || iy < 0 || ix >= w || iy >= h) return false
+    return datos[(iy * w + ix) * 4 + 3] > 70
+  }
+
+  // El brillo y la sombra del hilo se calculan CONTRA el color, no con una
+  // cantidad fija: con hilo negro, restarle luz no hace nada y el bordado
+  // quedaba un manchón plano. Con hilo blanco pasa lo mismo al revés.
+  const [hh, ss, ll] = hexToHsl(hilo)
+  const claro  = hslToHex(hh, ss * 0.85, clamp01(ll + (ll > 0.55 ? 0.13 : 0.28)))
+  const oscuro = hslToHex(hh, Math.min(1, ss * 1.15), clamp01(ll - (ll < 0.30 ? 0.09 : 0.22)))
+  const fondo  = hslToHex(hh, ss, clamp01(ll - (ll < 0.25 ? 0.03 : 0.12)))
+
+  // Tamaño de puntada. Se adapta al objeto: en algo chico una puntada fija
+  // quedaba por debajo del píxel y no se veía nada; en algo grande quedaba
+  // ridículamente fina. El techo y el piso evitan los dos extremos.
+  const escala = ((silueta as any)._mult as number) || 1
+  const PASO  = Math.max(3 * escala, Math.min(9 * escala, Math.min(w, h) / 16))
+  const LARGO = PASO * 3.5
+  const rnd = (n: number) => { const v = Math.sin(n * 91.7 + 13.3) * 43758.5453; return v - Math.floor(v) }
+
+  // 1) Sombra: el bordado tiene espesor y se despega de la tela.
+  o.save()
+  o.globalAlpha = 0.34
+  o.filter = 'blur(3px)'
+  o.drawImage(silueta, M + 1.5, M + 3)
+  o.restore()
+
+  // 2) Base: sin esto se vería la tela entre hilo e hilo y el bordado quedaría
+  //    transparente. Va más oscura que el hilo para que las puntadas resalten.
+  const capa = document.createElement('canvas')
+  capa.width = out.width; capa.height = out.height
+  const c = capa.getContext('2d')!
+  c.drawImage(silueta, M, M)
+  c.globalCompositeOperation = 'source-in'
+  c.fillStyle = fondo
+  c.fillRect(0, 0, capa.width, capa.height)
+  c.globalCompositeOperation = 'source-over'
+
+  // 3) Las puntadas. Se recorre la silueta en un sistema girado: `u` avanza a lo
+  //    largo del hilo y `v` salta de una pasada a la siguiente.
+  const th = anguloGrados * Math.PI / 180
+  const cos = Math.cos(th), sin = Math.sin(th)
+  const aXY = (u: number, v: number): [number, number] => [u * cos - v * sin, u * sin + v * cos]
+  // Caja que cubre todo el dibujo ya girado.
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity
+  for (const [ex, ey] of [[0, 0], [w, 0], [0, h], [w, h]]) {
+    const u =  ex * cos + ey * sin
+    const v = -ex * sin + ey * cos
+    if (u < uMin) uMin = u; if (u > uMax) uMax = u
+    if (v < vMin) vMin = v; if (v > vMax) vMax = v
+  }
+
+  c.lineCap = 'butt'
+  let fila = 0
+  for (let v = vMin; v <= vMax; v += PASO, fila++) {
+    // Las uniones se traban: media puntada de corrimiento en las filas impares.
+    const salto = (fila % 2) * (LARGO / 2)
+    let u = uMin
+    while (u <= uMax) {
+      // Buscar dónde empieza el hilo (primer píxel del dibujo).
+      let [px, py] = aXY(u, v)
+      if (!dentro(px, py)) { u += 1; continue }
+      // Y hasta dónde llega, sin pasarse del largo máximo.
+      const tope = u + LARGO - (u === uMin ? salto : 0)
+      let fin = u
+      while (fin + 1 <= uMax && fin + 1 <= tope) {
+        const [qx, qy] = aXY(fin + 1, v)
+        if (!dentro(qx, qy)) break
+        fin += 1
+      }
+      if (fin - u < 1.5) { u = fin + 1; continue }
+
+      const [x0, y0] = aXY(u, v)
+      const [x1, y1] = aXY(fin, v)
+      const n = rnd(fila * 131 + u)
+      // Perpendicular al hilo: por ahí se corren el brillo y la sombra.
+      const nx = -sin, ny = cos
+
+      c.lineWidth = PASO * 0.92
+      c.strokeStyle = hslToHex(hh, ss, clamp01(ll + (n - 0.5) * 0.07))
+      c.beginPath(); c.moveTo(M + x0, M + y0); c.lineTo(M + x1, M + y1); c.stroke()
+
+      // El hilo es redondo: brillo de un lado, sombra del otro.
+      c.lineWidth = PASO * 0.30
+      c.strokeStyle = claro
+      c.globalAlpha = 0.55
+      c.beginPath()
+      c.moveTo(M + x0 - nx * PASO * 0.26, M + y0 - ny * PASO * 0.26)
+      c.lineTo(M + x1 - nx * PASO * 0.26, M + y1 - ny * PASO * 0.26)
+      c.stroke()
+      c.strokeStyle = oscuro
+      c.globalAlpha = 0.5
+      c.beginPath()
+      c.moveTo(M + x0 + nx * PASO * 0.34, M + y0 + ny * PASO * 0.34)
+      c.lineTo(M + x1 + nx * PASO * 0.34, M + y1 + ny * PASO * 0.34)
+      c.stroke()
+      c.globalAlpha = 1
+
+      u = fin + 1
+    }
+  }
+
+  // 4) Recortar a la silueta: las puntadas se pasaron del borde a propósito,
+  //    porque un hilo cortado al ras da el canto parejo del bordado real.
+  c.globalCompositeOperation = 'destination-in'
+  c.drawImage(silueta, M, M)
+  c.globalCompositeOperation = 'source-over'
+
+  // 5) Canto: un borde apenas más oscuro, para que el bordado tenga filo propio
+  //    y no parezca recortado con tijera. Es la silueta MENOS la misma silueta
+  //    encogida un píxel, o sea el anillo del borde.
+  const encogida = document.createElement('canvas')
+  encogida.width = out.width; encogida.height = out.height
+  const e = encogida.getContext('2d')!
+  e.drawImage(silueta, M, M)
+  e.globalCompositeOperation = 'destination-in'
+  for (const [dx, dy] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) e.drawImage(silueta, M + dx, M + dy)
+
+  const canto = document.createElement('canvas')
+  canto.width = out.width; canto.height = out.height
+  const k = canto.getContext('2d')!
+  k.drawImage(silueta, M, M)
+  k.globalCompositeOperation = 'destination-out'
+  k.drawImage(encogida, 0, 0)          // silueta − encogida = anillo del borde
+  k.globalCompositeOperation = 'source-in'
+  k.fillStyle = oscuro
+  k.fillRect(0, 0, canto.width, canto.height)
+
+  c.save()
+  c.globalAlpha = 0.55
+  c.drawImage(canto, 0, 0)
+  c.restore()
+
+  o.drawImage(capa, 0, 0)
+  return out
+}
+
 // ── Color principal: ajusta el resto de la paleta automáticamente (manipulación HSL) ──
 function hexToHsl(hex: string): [number, number, number] {
   const h0 = hex.replace('#', '')
