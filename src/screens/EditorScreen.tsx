@@ -971,8 +971,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const undoHistory   = useRef<HistoryEntry[]>([])
   const redoHistory   = useRef<HistoryEntry[]>([])
   const clipboardBuf  = useRef<fabric.FabricObject | null>(null)
-  const colorRef      = useRef('#ff6b00')
-  const brushSizeRef  = useRef(8)
+  // Por defecto se dibuja en negro y fino: es lo que se espera de una ficha
+  // tecnica, que es linea sobre la prenda y no ilustracion.
+  const colorRef      = useRef('#000000')
+  const brushSizeRef  = useRef(1)
   const strokeStyleRef = useRef<StrokeStyle>('normal')
   const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
@@ -1082,8 +1084,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [exactW, setExactW] = useState(100)
   const [exactH, setExactH] = useState(100)
   const [propFill,      setPropFill]      = useState<string | null>(null)
-  const [propStroke,    setPropStroke]    = useState('#ff6b00')
-  const [propSWidth,    setPropSWidth]    = useState(8)
+  const [propStroke,    setPropStroke]    = useState('#000000')
+  const [propSWidth,    setPropSWidth]    = useState(1)
   const [propSWidthMixed, setPropSWidthMixed] = useState(false)  // selección múltiple con grosores distintos
   const [strokeStyle,   setStrokeStyle]   = useState<StrokeStyle>('normal')  // trazado especial para lápiz/pluma
   const [propX,         setPropX]         = useState(0)
@@ -3142,7 +3144,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         moved = false
         const stroke = colorRef.current
         const sw     = brushSizeRef.current
-        const fill   = fillRef.current ?? colorRef.current
+        // Sin relleno es SIN relleno. Antes caia en el color del trazo, asi que
+        // una figura nueva salia maciza en vez de ser solo contorno.
+        const fill   = fillRef.current
         const common = { strokeWidth: sw, strokeUniform: true, selectable: false, evented: false } as const
         if (tool === 'line') {
           shape = new fabric.Line([start.x, start.y, start.x, start.y],
@@ -4995,7 +4999,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas || !d) return
     const stroke = colorRef.current
     const sw     = brushSizeRef.current
-    const fill   = fillRef.current ?? colorRef.current
+    // Sin relleno es SIN relleno (ver el mismo criterio al dibujar a mano).
+    const fill   = fillRef.current
     const common = { strokeWidth: sw, strokeUniform: true } as const
     const w = Math.max(1, exactW), h = Math.max(1, exactH)
     let shape: fabric.FabricObject
