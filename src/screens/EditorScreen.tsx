@@ -899,6 +899,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Ultimo diseno serializado que quedo guardado: el autoguardado compara contra
   // esto para no mandar a la base algo que no cambio.
   const lastSavedJson = useRef<string | null>(null)
+  // false desde que el lienzo se destruye: al desmontar, la limpieza de la
+  // herramienta corre DESPUES del dispose() y no puede seguir tocando el lienzo.
+  const canvasAlive   = useRef(true)
   const snapPoints    = useRef<fabric.Point[]>([])
   // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite que
   // Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo anterior ya guardado.
@@ -1665,7 +1668,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
 
-    return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
+    return () => { cancelled = true; canvasAlive.current = false; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
   }, [project.mockupId])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
@@ -2234,7 +2237,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
 
-      // Cancela el trazo en curso (sin guardarlo) — lo usa Ctrl+Z mientras dibujás.
+      // Tira el trazo en curso entero. Lo usa Ctrl+Z cuando se va el ultimo punto
+      // que quedaba, y el cambio de herramienta con un solo ancla puesta.
       const cancelDraft = () => {
         clearTemp(); clearEdit(); dropLive()
         anchors.length = 0
@@ -2451,9 +2455,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         window.removeEventListener('keydown', onKey)
         canvas.defaultCursor = 'default'
         // Cambiar de herramienta con un trazo a medias lo confirma en vez de tirarlo:
-        // lo dibujado es del disenador, no del estado interno de la pluma.
-        if (anchors.length >= 2) commit()
-        else cancelDraft()
+        // lo dibujado es del disenador, no del estado interno de la pluma. Si el
+        // lienzo ya se destruyo (cerraron el editor) no hay nada que confirmar.
+        if (canvasAlive.current) {
+          if (anchors.length >= 2) commit()
+          else cancelDraft()
+        }
         clearTemp()
         clearEdit()
         hideSizeCursor()
