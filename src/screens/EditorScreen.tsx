@@ -1107,6 +1107,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
+  // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
+  // color sin tener que mirar al panel de la derecha.
+  const [eyeProbe,       setEyeProbe]       = useState<null | { x: number; y: number; hex: string }>(null)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
@@ -3062,47 +3065,121 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.selection     = false
       canvas.defaultCursor = EYEDROPPER_CURSOR
 
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        const active  = canvas.getActiveObject()
-        const clicked = e.target
-        let pickedFill: string | null = null
-        let copied: Record<string, any> | null = null
-        // 1) Si clickeo sobre un objeto dibujado, copio TODA su apariencia
-        //    (relleno + trazo + grosor), como hace el gotero de Illustrator.
-        if (clicked && !mockupObjects.current.includes(clicked) && typeof clicked.fill === 'string') {
-          pickedFill = clicked.fill as string
-          copied = { fill: clicked.fill, stroke: clicked.stroke, strokeWidth: clicked.strokeWidth }
-        } else {
-          // 2) Si no, muestreo el pixel pintado (prenda, imagen, textura…)
-          const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
-          const p   = e.scenePoint
-          const px  = Math.round(vpt[0] * p.x + vpt[4])
-          const py  = Math.round(vpt[3] * p.y + vpt[5])
-          const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
-          if (!ctx) return
-          const [r, g, b, a] = ctx.getImageData(px, py, 1, 1).data
-          if (a < 10) return   // pixel transparente — ignorar
-          pickedFill = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+      // Se puede mantener apretado e ir moviendo: el color se va viendo en vivo
+      // (en la muestra que sigue al cursor y en el objeto seleccionado) y recién
+      // al soltar queda fijo. Antes el color se tomaba y se daba por elegido en
+      // el mismo click, así que no había manera de pasear por encima de una tela
+      // buscando el tono justo: había que clickear, mirar, deshacer y probar.
+      let scrubbing  = false
+      let snapshot: ImageData | null = null   // el lienzo ANTES de la vista previa
+      let snapScale  = 1
+      let previewObj: fabric.FabricObject | null = null
+      let prevProps: Record<string, any> | null = null
+      let lastPatch: Record<string, any> | null = null
+
+      // Foto del lienzo al apretar. Sirve para dos cosas: muestrear sin que la
+      // vista previa se muerda la cola (si no, al pasar por encima del objeto
+      // que estoy pintando leería el color que le acabo de poner) y no tener que
+      // pedirle los píxeles al lienzo en cada movimiento del mouse.
+      const grabSnapshot = () => {
+        const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D | undefined
+        const el  = (canvas as any).lowerCanvasEl as HTMLCanvasElement | undefined
+        if (!ctx || !el) return false
+        // En pantallas retina el lienzo tiene más píxeles reales que los que mide
+        // en la página; sin esta escala se muestrea el color del lugar equivocado.
+        const w = canvas.getWidth()
+        snapScale = w ? el.width / w : 1
+        try { snapshot = ctx.getImageData(0, 0, el.width, el.height) } catch { return false }
+        return true
+      }
+
+      // Qué hay bajo el puntero. Si es un objeto dibujado copio TODA su apariencia
+      // (relleno + trazo + grosor), como el gotero de Illustrator; si no, el color
+      // del píxel pintado (prenda, imagen, textura…).
+      const sampleAt = (e: fabric.TPointerEventInfo): Record<string, any> | null => {
+        const over = e.target
+        if (over && over !== previewObj && !mockupObjects.current.includes(over)
+            && typeof over.fill === 'string') {
+          return { fill: over.fill, stroke: over.stroke, strokeWidth: over.strokeWidth }
         }
-        if (!pickedFill) return
+        if (!snapshot) return null
+        const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
+        const p   = e.scenePoint
+        const px  = Math.round((vpt[0] * p.x + vpt[4]) * snapScale)
+        const py  = Math.round((vpt[3] * p.y + vpt[5]) * snapScale)
+        if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return null
+        const d = snapshot.data
+        const i = (py * snapshot.width + px) * 4
+        if (d[i + 3] < 10) return null   // pixel transparente — ignorar
+        return { fill: '#' + [d[i], d[i+1], d[i+2]].map(v => v.toString(16).padStart(2, '0')).join('') }
+      }
+
+      const preview = (e: fabric.TPointerEventInfo) => {
+        // La muestra sigue al cursor aunque el píxel sea transparente: si no,
+        // al pasar por un hueco parecería que el gotero se colgó.
+        const area = canvasAreaRef.current
+        const ev   = e.e as MouseEvent
+        if (area && ev && typeof ev.clientX === 'number') {
+          const r = area.getBoundingClientRect()
+          setEyeProbe(prev => ({
+            x: ev.clientX - r.left, y: ev.clientY - r.top,
+            hex: prev?.hex ?? fillRef.current ?? '#000000',
+          }))
+        }
+        const patch = sampleAt(e)
+        if (!patch) return
+        lastPatch = patch
+        const hex = patch.fill as string
         // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
-        fillRef.current = pickedFill
-        setPropFill(pickedFill)
-        // Si hay un objeto dibujado seleccionado, le aplico la apariencia tomada
-        if (active && !mockupObjects.current.includes(active)) {
-          const patch = copied ?? { fill: pickedFill }
+        fillRef.current = hex
+        setPropFill(hex)
+        setEyeProbe(prev => prev && { ...prev, hex })
+        if (previewObj) { previewObj.set(patch as any); canvas.requestRenderAll() }
+      }
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        if (!grabSnapshot()) return
+        const active = canvas.getActiveObject()
+        previewObj = active && !mockupObjects.current.includes(active) ? active : null
+        prevProps  = previewObj
+          ? { fill: previewObj.fill, stroke: previewObj.stroke, strokeWidth: previewObj.strokeWidth }
+          : null
+        scrubbing = true
+        lastPatch = null
+        preview(e)
+      }
+
+      const onMove = (e: fabric.TPointerEventInfo) => { if (scrubbing) preview(e) }
+
+      const finish = () => {
+        if (!scrubbing) return
+        scrubbing = false
+        snapshot  = null   // que no quede una copia del lienzo entero en memoria
+        setEyeProbe(null)
+        // El registro para deshacer se guarda recién acá: todo el arrastre es UNA
+        // sola acción, no una por cada píxel que toqué en el camino.
+        if (previewObj && prevProps && lastPatch) {
           const prev: Record<string, any> = {}
-          for (const k of Object.keys(patch)) prev[k] = (active as any).get(k)
-          active.set(patch as any)
-          undoHistory.current.push({ type: 'props', obj: active, prev })
+          for (const k of Object.keys(lastPatch)) prev[k] = prevProps[k]
+          undoHistory.current.push({ type: 'props', obj: previewObj, prev })
           redoHistory.current = []
-          canvas.requestRenderAll()
         }
+        previewObj = null; prevProps = null; lastPatch = null
       }
 
       canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up', finish)
+      // Si se suelta el botón fuera del lienzo el canvas no se entera, y el
+      // gotero se quedaba pegado siguiendo al mouse sin estar apretado.
+      window.addEventListener('mouseup', finish)
       offs.push(() => {
         canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up', finish)
+        window.removeEventListener('mouseup', finish)
+        finish()
+        setEyeProbe(null)
         canvas.defaultCursor = 'default'
       })
     }
@@ -5275,6 +5352,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
+
+          {/* Gotero: el color que se está tomando, al lado del cursor */}
+          {eyeProbe && (
+            <div style={{
+              position: 'absolute', left: eyeProbe.x + 18, top: eyeProbe.y + 18,
+              zIndex: 45, pointerEvents: 'none',
+              display: 'flex', alignItems: 'center', gap: 7,
+              padding: '5px 8px 5px 5px', borderRadius: 8,
+              background: 'rgb(0 0 0 / 0.72)', border: '1px solid rgb(255 255 255 / 0.18)',
+              boxShadow: '0 4px 14px rgb(0 0 0 / 0.35)',
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: 5, background: eyeProbe.hex,
+                border: '1px solid rgb(255 255 255 / 0.5)',
+              }} />
+              <span className="mono" style={{ fontSize: 11, color: '#fff', letterSpacing: '.02em' }}>
+                {eyeProbe.hex}
+              </span>
+            </div>
+          )}
 
           {/* Overlay al arrastrar una imagen */}
           {dragActive && (
