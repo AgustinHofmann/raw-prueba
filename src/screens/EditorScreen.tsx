@@ -6450,15 +6450,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </button>
               )}
 
-              <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
-              <div className="swatches">
+              {/* ── Telas, todas juntas ───────────────────────────────────────
+                  Antes estaban repartidas en tres listas (los estampados que
+                  genera el programa, las telas que vienen con él y las que
+                  importa el diseñador). Eran tres grillas separadas para lo
+                  mismo: elegir con qué está hecha la prenda. Ahora es una sola,
+                  en el orden en que se usan. Lo que cambia de cada clase —los
+                  colores del estampado, el ancho de la muestra— aparece abajo
+                  cuando hay una elegida. */}
+              <div className="label" style={{ marginBottom: 4 }}>Telas</div>
+              <p className="sec-hint">
+                Las telas con foto se aplican a escala real; los estampados se
+                pueden recolorear.
+              </p>
+              <div key={paletteVersion} className="swatches">
                 {/* "Ninguna" siempre visible: volver a color liso no debería
                     depender de que primero haya una textura aplicada. */}
                 <button
                   onClick={removeTexture}
-                  title="Sin textura (color liso)"
+                  title="Sin tela (color liso)"
                   style={{
-                    display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
+                    display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
                     background: 'none', border: 'none', cursor: 'pointer',
                   }}
                 >
@@ -6469,31 +6481,106 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     border: '1px solid ' + (!activeTexKind && !activeUserTex ? 'var(--accent)' : 'var(--line)'),
                     outline: !activeTexKind && !activeUserTex ? '1px solid var(--accent)' : 'none',
                   }}>⃠</div>
-                  <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>Ninguna</span>
+                  <span style={{ fontSize: 10, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>Ninguna</span>
                 </button>
 
-                {TEXTURES.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => applyTexture(t.id)}
-                    title={`Aplicar ${t.label}`}
-                    style={{
-                      display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
-                      background: 'none', border: 'none', cursor: 'pointer',
-                    }}
-                  >
-                    <div style={{
-                      width: '100%', aspectRatio: '1', borderRadius: 8,
-                      backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
-                      backgroundSize: '56px 56px',
-                      border: '1px solid ' + (activeTexKind === t.id ? 'var(--accent)' : 'var(--line)'),
-                      outline: activeTexKind === t.id ? '1px solid var(--accent)' : 'none',
-                    }} />
-                    <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>{t.label}</span>
-                  </button>
-                ))}
+                {/* Estampados que dibuja el programa: se recolorean */}
+                {TEXTURES.map(t => {
+                  const on = activeTexKind === t.id
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => applyTexture(t.id)}
+                      title={`${t.label} · se puede cambiar de color`}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                        background: 'none', border: 'none', cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{
+                        width: '100%', aspectRatio: '1', borderRadius: 8,
+                        backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
+                        backgroundSize: '56px 56px',
+                        border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                        outline: on ? '1px solid var(--accent)' : 'none',
+                      }} />
+                      <span style={{
+                        fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
+                        fontFamily: 'var(--ui)', textAlign: 'center',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{t.label}</span>
+                    </button>
+                  )
+                })}
+
+                {/* Telas de verdad: las que vienen con el programa primero y las
+                    importadas después, que es el orden en que se buscan. Solo
+                    las importadas se pueden borrar. */}
+                {[...userTextures.filter(t => t.builtIn), ...userTextures.filter(t => !t.builtIn)].map(t => {
+                  const on = activeUserTex === t.id
+                  // Si la tela ya se usó, la miniatura sale de la imagen que está
+                  // en memoria, que es la que tiene los colores elegidos. Si no,
+                  // la versión chica: abrir esta pestaña no tiene por qué bajar
+                  // los archivos grandes.
+                  const thumb = userTexImages.current.get(t.id)?.src
+                    ?? (t.builtIn ? rawTextureById(t.id)?.thumb : undefined)
+                    ?? t.dataUrl
+                  return (
+                    <div key={t.id} style={{ position: 'relative' }}>
+                      <button
+                        onClick={() => applyUserTexture(t)}
+                        title={`${t.name} · muestra de ${t.widthCm} cm`}
+                        style={{
+                          display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                          background: 'none', border: 'none', cursor: 'pointer', width: '100%',
+                        }}
+                      >
+                        <div style={{
+                          width: '100%', aspectRatio: '1', borderRadius: 8,
+                          backgroundImage: `url("${thumb}")`, backgroundSize: 'cover',
+                          border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                          outline: on ? '1px solid var(--accent)' : 'none',
+                        }} />
+                        <span style={{
+                          fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
+                          fontFamily: 'var(--ui)', textAlign: 'center',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>{t.name}</span>
+                      </button>
+                      {!t.builtIn && (
+                        <span
+                          role="button"
+                          title="Eliminar de mi biblioteca"
+                          onClick={e => { e.stopPropagation(); handleTextureDelete(t.id) }}
+                          style={{
+                            position: 'absolute', top: 4, right: 4, width: 18, height: 18,
+                            borderRadius: '50%', cursor: 'pointer', fontSize: 10,
+                            background: 'rgb(0 0 0 / 0.55)', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}
+                        >✕</span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
+              <button
+                onClick={() => texFileRef.current?.click()}
+                disabled={texImporting}
+                className="btn btn-ghost"
+                style={{ width: '100%', justifyContent: 'center', fontSize: 11.5, margin: '10px 0 2px' }}
+              >
+                {texImporting ? 'Importando…' : '+  Importar mi tela'}
+              </button>
+              {texError && (
+                <div style={{
+                  fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginTop: 8,
+                  padding: '7px 9px', borderRadius: 6,
+                  background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
+                  border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
+                }}>{texError}</div>
+              )}
               {/* Editor de colores de la textura aplicada */}
               {activeTexKind && (
                 <div className="sec">
@@ -6547,124 +6634,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   </button>
                 </div>
               )}
-
-              {/* ── Telas RAW (vienen con el programa) ───────────────────────
-                  Fotos y vectores de telas reales. No se recolorean como los
-                  estampados de arriba: se ven como la tela que son. */}
-              <div className="sec">
-                <div className="label" style={{ marginBottom: 4 }}>Telas RAW</div>
-                <p className="sec-hint">
-                  Telas reales. Se aplican a escala: ajustá el ancho de la muestra abajo.
-                </p>
-                <div key={paletteVersion} className="swatches">
-                  {userTextures.filter(t => t.builtIn).map(t => {
-                    const on = activeUserTex === t.id
-                    // Si la tela ya se usó, la miniatura sale de la imagen que
-                    // está en memoria, que es la que tiene los colores elegidos.
-                    // Si no, la versión chica: abrir esta pestaña no tiene por
-                    // qué bajar los archivos grandes.
-                    const thumb = userTexImages.current.get(t.id)?.src
-                      ?? rawTextureById(t.id)?.thumb
-                      ?? t.dataUrl
-                    return (
-                      <button
-                        key={t.id}
-                        onClick={() => applyUserTexture(t)}
-                        title={`${t.name} · muestra de ${t.widthCm} cm`}
-                        style={{
-                          display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
-                          background: 'none', border: 'none', cursor: 'pointer', width: '100%',
-                        }}
-                      >
-                        <div style={{
-                          width: '100%', aspectRatio: '1', borderRadius: 8,
-                          backgroundImage: `url("${thumb}")`, backgroundSize: 'cover',
-                          border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
-                          outline: on ? '1px solid var(--accent)' : 'none',
-                        }} />
-                        <span style={{
-                          fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
-                          fontFamily: 'var(--ui)', textAlign: 'center',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>{t.name}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* ── Mis texturas (subidas por el usuario) ────────────────────
-                  El diseñador importa la foto/escaneo de una tela real. Lo
-                  importante no es el formato sino la ESCALA: declara cuánto
-                  mide la muestra y se dibuja a esos cm sobre la prenda. */}
-              <div className="sec">
-                <div className="label" style={{ marginBottom: 4 }}>Mis texturas</div>
-                <p className="sec-hint">
-                  Importá una foto o escaneo de tela. PNG, JPG, WebP o SVG.
-                </p>
-
-                <button
-                  onClick={() => texFileRef.current?.click()}
-                  disabled={texImporting}
-                  className="btn btn-ghost"
-                  style={{ width: '100%', justifyContent: 'center', fontSize: 11.5, marginBottom: 10 }}
-                >
-                  {texImporting ? 'Importando…' : '+  Importar tela'}
-                </button>
-
-                {texError && (
-                  <div style={{
-                    fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginBottom: 10,
-                    padding: '7px 9px', borderRadius: 6,
-                    background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
-                    border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
-                  }}>{texError}</div>
-                )}
-
-                {userTextures.some(t => !t.builtIn) && (
-                  <div className="swatches">
-                    {userTextures.filter(t => !t.builtIn).map(t => {
-                      const on = activeUserTex === t.id
-                      return (
-                        <div key={t.id} style={{ position: 'relative' }}>
-                          <button
-                            onClick={() => applyUserTexture(t)}
-                            title={`${t.name} · muestra de ${t.widthCm} cm`}
-                            style={{
-                              display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
-                              background: 'none', border: 'none', cursor: 'pointer', width: '100%',
-                            }}
-                          >
-                            <div style={{
-                              width: '100%', aspectRatio: '1', borderRadius: 8,
-                              backgroundImage: `url(${t.dataUrl})`, backgroundSize: 'cover',
-                              border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
-                              outline: on ? '1px solid var(--accent)' : 'none',
-                            }} />
-                            <span style={{
-                              fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
-                              fontFamily: 'var(--ui)', textAlign: 'center',
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>{t.name}</span>
-                          </button>
-                          <span
-                            role="button"
-                            title="Eliminar de mi biblioteca"
-                            onClick={e => { e.stopPropagation(); handleTextureDelete(t.id) }}
-                            style={{
-                              position: 'absolute', top: 4, right: 4, width: 18, height: 18,
-                              borderRadius: '50%', cursor: 'pointer', fontSize: 10,
-                              background: 'rgb(0 0 0 / 0.55)', color: '#fff',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}
-                          >✕</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-
-              </div>
 
               {/* ── Color de una tela de fábrica ─────────────────────────────
                   Un SVG trae los colores adentro, así que se editan uno por
