@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import Magnetic from '../components/Magnetic'
-import CountUp from '../components/CountUp'
 
 export default function OnboardingScreen({ onEnter }: { onEnter: () => void }) {
   const [step, setStep] = useState(0)
@@ -37,13 +36,27 @@ export default function OnboardingScreen({ onEnter }: { onEnter: () => void }) {
             </button>
           </Magnetic>
         </div>
+        {/* Los tres pasos del programa, en orden. Reemplazan a los contadores de
+            mockups/proyectos/exports: eran números inventados que no decían nada
+            de lo que la herramienta hace.
+            Entran uno detrás del otro para que se lean como una secuencia y no
+            como tres etiquetas sueltas. */}
         <div className="rise-5" style={{
-          marginTop: 44, display: 'flex', justifyContent: 'center', gap: 56,
-          color: 'var(--muted)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase',
+          marginTop: 44, display: 'flex', justifyContent: 'center', alignItems: 'center',
+          gap: 18, flexWrap: 'wrap',
+          color: 'var(--muted)', fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase',
         }}>
-          <div><CountUp to={step >= 2 ? 12 : 0} /> mockups</div>
-          <div><CountUp to={step >= 2 ? 248 : 0} /> proyectos</div>
-          <div><CountUp to={step >= 2 ? 36 : 0} suffix="k" /> exports</div>
+          {['Pensá', 'Diseñá', 'Exportá'].map((paso, i) => (
+            <span key={paso} style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+              {i > 0 && <span style={{ opacity: 0.45 }}>→</span>}
+              <span style={{
+                color: step >= 2 ? 'var(--fg-2)' : 'var(--muted)',
+                opacity: step >= 1 ? 1 : 0,
+                transform: step >= 1 ? 'none' : 'translateY(6px)',
+                transition: `opacity .5s var(--ease) ${i * 0.14}s, transform .5s var(--ease) ${i * 0.14}s, color .5s var(--ease)`,
+              }}>{paso}</span>
+            </span>
+          ))}
         </div>
       </div>
     </div>
