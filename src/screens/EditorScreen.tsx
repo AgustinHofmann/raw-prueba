@@ -3500,9 +3500,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
         // Si el objeto ya tiene una textura, abrir su editor de colores con su paleta
+        // Si la textura guardada ya no existe (proyecto viejo), no se abre su
+        // editor: pedirle la paleta a una textura borrada rompía el panel.
         const tex = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
-        if (tex) { setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors })) }
-        else setActiveTexKind(null)
+        if (tex && esTexturaValida(tex.kind)) {
+          setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
+        } else setActiveTexKind(null)
         setPropX(Math.round(obj.left ?? 0))
         setPropY(Math.round(obj.top  ?? 0))
         setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
@@ -3858,7 +3861,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   //   efecto → desgaste/grunge/vintage (_effect), dibujado ENCIMA
   // Se rehace desde cero cada vez, así cambiar uno no pisa al otro.
   function recomposeFill(obj: fabric.FabricObject) {
-    const tex    = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+    const texGuardada = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+    // Una textura que ya no existe (proyecto viejo con cuadrillé, lunares,
+    // camuflado o animal) se descarta: la pieza queda con su color liso.
+    const tex    = texGuardada && esTexturaValida(texGuardada.kind) ? texGuardada : undefined
     const eff    = (obj as any)._effect  as { kind: EffectKind; intensity: number } | undefined
     const baseCol = (obj as any)._baseColor as string | undefined
     const uTex   = (obj as any)._userTex as { id: string; widthCm: number } | undefined
@@ -6501,27 +6507,28 @@ function CtxDivider() {
 // ── Layers panel ─────────────────────────────────────────────────────────────
 
 // ── Texturas de tela ─────────────────────────────────────────────────────────
-type TextureKind = 'rayas' | 'cuadrille' | 'lunares' | 'denim' | 'camuflado' | 'animal'
+// Quedaron las dos que valen como tela: rayas y denim. Cuadrillé, lunares,
+// camuflado y animal print eran dibujitos planos que no leían como género y
+// ensuciaban el panel. Las telas de verdad van por "Telas RAW" (fotos).
+type TextureKind = 'rayas' | 'denim'
 
 const TEXTURES: { id: TextureKind; label: string }[] = [
-  { id: 'rayas',     label: 'Rayas' },
-  { id: 'cuadrille', label: 'Cuadrillé' },
-  { id: 'lunares',   label: 'Lunares' },
-  { id: 'denim',     label: 'Denim' },
-  { id: 'camuflado', label: 'Camuflado' },
-  { id: 'animal',    label: 'Animal print' },
+  { id: 'rayas', label: 'Rayas' },
+  { id: 'denim', label: 'Denim' },
 ]
 
 // Slots de color editables por textura (color principal = primero, secundario = segundo, etc.)
 const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
-  rayas:     [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
-  cuadrille: [{ label: 'Fondo', def: '#ffffff' }, { label: 'Cuadros', def: '#c41e3a' }],
-  lunares:   [{ label: 'Fondo', def: '#e8c5d0' }, { label: 'Lunares', def: '#7a2a45' }],
-  denim:     [{ label: 'Base', def: '#3b5b8c' }],
-  camuflado: [{ label: 'Color 1', def: '#4b5320' }, { label: 'Color 2', def: '#6b6b3a' }, { label: 'Color 3', def: '#3a3f24' }, { label: 'Color 4', def: '#8a8559' }],
-  animal:    [{ label: 'Fondo', def: '#d9a441' }, { label: 'Manchas', def: '#3a2410' }],
+  rayas: [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
+  denim: [{ label: 'Base', def: '#3b5b8c' }],
 }
 const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
+
+// Un diseño guardado puede traer una textura que ya no existe (cuadrillé,
+// lunares, camuflado, animal). Se ignora y la pieza queda con su color liso,
+// en vez de abrir el proyecto roto o pintado de cualquier cosa.
+const esTexturaValida = (k: unknown): k is TextureKind =>
+  k === 'rayas' || k === 'denim'
 
 // ── Efectos de tela (grunge / vintage / desgaste) ────────────────────────────
 // A diferencia de los estampados, un efecto NO reemplaza el relleno: se dibuja
@@ -6563,39 +6570,84 @@ function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: numb
   x.save()
 
   if (kind === 'desgaste') {
-    // Abrasión real: la fibra se afina (zonas MÁS claras) pero además quedan
-    // sombras y suciedad en el roce (zonas MÁS oscuras). Se usan las dos capas
-    // para que el efecto se lea tanto en telas oscuras como en telas claras
-    // (si fuera solo aclarado, sobre una prenda blanca no se vería nada).
-    x.globalCompositeOperation = 'multiply'
-    for (let i = 0; i < Math.round(70 * amount); i++) {
-      const px = rnd(i + 500) * s, py = rnd(i + 531) * s
-      const len = 8 + rnd(i + 505) * 30, ang = -1.0 + rnd(i + 509) * 2.0
-      x.strokeStyle = `rgba(120,115,110,${0.05 + rnd(i + 502) * 0.14 * amount})`
-      x.lineWidth = 0.5 + rnd(i + 503) * 1.4
-      x.beginPath(); x.moveTo(px, py)
-      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
+    // Una tela NO se gasta en rayas cruzadas al azar. Eso era lo que estaba
+    // antes —trazos claros y oscuros en diagonales random, más ruido de un
+    // píxel— y leía como plástico arrugado, tipo bolsa ziploc, no como género.
+    //
+    // El desgaste de verdad tiene dos cosas, y las dos siguen al TEJIDO:
+    //   1. el color se va de a manchones suaves, sin bordes;
+    //   2. donde el hilo se pela aparece el alma clara, en trazos cortos
+    //      alineados a la trama y la urdimbre (horizontales y verticales).
+
+    // 1) Pérdida de color: manchones suaves. Se hace pixel a pixel con ondas de
+    //    período entero sobre el tile, así el degradé CIERRA al repetirse y no
+    //    aparece la cuadrícula de la unión.
+    // Cuánto está rozada la tela en cada punto, de 0 (intacta) a 1 (pelada).
+    // Es UNA sola función para las dos capas: así los hilos pelados caen donde
+    // la tela ya perdió color, que es lo que pasa de verdad. Repartidos parejo
+    // por toda la prenda se leían como ruido tirado encima.
+    //
+    // Las ondas tienen período entero sobre el tile, así el degradé CIERRA al
+    // repetirse y no aparece la cuadrícula de la unión.
+    const TAU = Math.PI * 2
+    const roce = (u: number, v: number) => Math.max(0, (
+      Math.sin(TAU * (u + 0.13)) * Math.cos(TAU * (v + 0.41)) +
+      0.6 * Math.sin(TAU * (2 * u - v + 0.27)) +
+      0.4 * Math.cos(TAU * (3 * u + 2 * v + 0.66))
+    ) / 2)
+
+    // 1) Pérdida de color: manchones suaves, sin bordes.
+    // Leer los píxeles puede fallar si la tela vino de una imagen de otro
+    // dominio (el navegador lo prohíbe). En ese caso se saltea el manchado y
+    // quedan los hilos pelados, en vez de romperse y dejar la prenda sin pintar.
+    const lado = Math.max(1, Math.round(s))
+    let img: ImageData | null = null
+    try { img = x.getImageData(0, 0, lado, lado) } catch { img = null }
+    if (img) {
+      const d = img.data
+      for (let py = 0; py < lado; py++) {
+        const v = py / lado
+        for (let px = 0; px < lado; px++) {
+          const gasto = roce(px / lado, v) * amount * 0.55
+          if (gasto <= 0.001) continue
+          const i = (py * lado + px) * 4
+          // Perder tinte lleva al gris del hilo crudo, no al blanco puro: por
+          // eso se ve igual sobre una prenda negra que sobre una clara.
+          d[i]     += (214 - d[i])     * gasto
+          d[i + 1] += (210 - d[i + 1]) * gasto
+          d[i + 2] += (203 - d[i + 2]) * gasto
+        }
+      }
+      x.putImageData(img, 0, 0)
     }
-    x.globalCompositeOperation = 'screen'
-    for (let i = 0; i < Math.round(110 * amount); i++) {
-      const px = rnd(i) * s, py = rnd(i + 31) * s
-      const len = 6 + rnd(i + 5) * 26, ang = -1.0 + rnd(i + 9) * 2.0
-      x.strokeStyle = `rgba(255,255,255,${0.07 + rnd(i + 2) * 0.22 * amount})`
-      x.lineWidth = 0.5 + rnd(i + 3) * 1.3
-      x.beginPath(); x.moveTo(px, py)
-      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
-    }
-    // Nota: el desgaste se dibuja SOLO con detalle fino (rayas + grano).
-    // Las manchas grandes se leían como wallpaper al repetirse el tile; el
-    // desgaste localizado (rodilla, codo) es otra cosa y va por zonas, no acá.
+
+    // 2) Hilos pelados, siguiendo la trama. Cada trazo se dibuja también
+    //    corrido un tile hacia atrás, para que el que se pasa del borde entre
+    //    por el otro lado y la repetición no se note.
     x.globalCompositeOperation = 'source-over'
-    for (let i = 0; i < Math.round(2600 * amount); i++) {
-      const px = rnd(i + 900) * s, py = rnd(i + 950) * s
-      const light = rnd(i + 17) > 0.45
-      x.fillStyle = light
-        ? `rgba(255,255,255,${0.06 + rnd(i + 21) * 0.16 * amount})`
-        : `rgba(110,105,100,${0.04 + rnd(i + 23) * 0.11 * amount})`
-      x.fillRect(px, py, 1, 1)
+    x.lineCap = 'round'
+    for (let i = 0; i < Math.round(420 * amount); i++) {
+      const px = rnd(i + 11) * s, py = rnd(i + 29) * s
+      // Solo donde ya hay roce, y con más densidad cuanto más gastado está.
+      const z = roce(px / s, py / s)
+      if (z < 0.15 || rnd(i + 97) > z) continue
+      // Se pela sobre todo la trama (horizontal). Antes salía mitad y mitad y
+      // los cruces formaban crucecitas que no existen en una tela gastada.
+      const horizontal = rnd(i + 71) > 0.22
+      const len = 3 + rnd(i + 5) * 13
+      const claro = rnd(i + 43) > 0.25
+      x.strokeStyle = claro
+        ? `rgba(228,224,216,${(0.10 + rnd(i + 2) * 0.24) * amount * z})`
+        : `rgba(118,111,102,${(0.04 + rnd(i + 3) * 0.10) * amount * z})`
+      x.lineWidth = 0.6 + rnd(i + 13) * 0.7
+      const dx = horizontal ? len : 0
+      const dy = horizontal ? 0   : len
+      for (const [ox, oy] of [[0, 0], [-s, 0], [0, -s]]) {
+        x.beginPath()
+        x.moveTo(px + ox, py + oy)
+        x.lineTo(px + ox + dx, py + oy + dy)
+        x.stroke()
+      }
     }
 
   } else if (kind === 'grunge') {
@@ -6635,13 +6687,6 @@ function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: numb
 
   x.restore()
 }
-// Convierte #rrggbb + alpha → rgba() (para el efecto translúcido del cuadrillé)
-function hexA(hex: string, a: number): string {
-  const h = hex.replace('#', '')
-  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
-  return `rgba(${r},${g},${b},${a})`
-}
-
 // ── Color principal: ajusta el resto de la paleta automáticamente (manipulación HSL) ──
 function hexToHsl(hex: string): [number, number, number] {
   const h0 = hex.replace('#', '')
@@ -6679,16 +6724,12 @@ const withL = (hex: string, l: number, sMul = 1) => { const [h, s] = hexToHsl(he
 const adjL   = (hex: string, d: number)          => { const [h, s, l] = hexToHsl(hex); return hslToHex(h, s, clamp01(l + d)) }
 
 // Índice del slot que actúa como "color principal" en cada textura
-const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, cuadrille: 1, lunares: 1, denim: 0, camuflado: 0, animal: 0 }
+const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, denim: 0 }
 // Dada la elección de color principal, deriva toda la paleta de la textura
 function deriveTexPalette(kind: TextureKind, p: string): string[] {
   switch (kind) {
-    case 'rayas':     return [withL(p, 0.92, 0.5), p]
-    case 'cuadrille': return [withL(p, 0.97, 0.35), p]
-    case 'lunares':   return [withL(p, 0.85, 0.6), p]
-    case 'denim':     return [p]
-    case 'camuflado': return [p, adjL(p, 0.10), adjL(p, -0.13), adjL(p, -0.26)]
-    case 'animal':    return [p, adjL(p, -0.45)]
+    case 'rayas': return [withL(p, 0.92, 0.5), p]
+    case 'denim': return [p]
   }
 }
 
@@ -6704,18 +6745,7 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
     x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     x.fillStyle = col[1]
     for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
-  } else if (kind === 'cuadrille') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = hexA(col[1], 0.55)
-    x.fillRect(0, 0, s / 2, s); x.fillRect(0, 0, s, s / 2)
-    x.fillStyle = hexA(col[1], 0.55)
-    x.fillRect(0, 0, s / 2, s / 2); x.fillRect(s / 2, s / 2, s / 2, s / 2)
-  } else if (kind === 'lunares') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = col[1]
-    const dot = (cx: number, cy: number) => { x.beginPath(); x.arc(cx, cy, 5, 0, Math.PI * 2); x.fill() }
-    dot(s * 0.25, s * 0.25); dot(s * 0.75, s * 0.75); dot(s * 0.75, s * 0.25); dot(s * 0.25, s * 0.75); dot(s * 0.5, s * 0.5)
-  } else if (kind === 'denim') {
+  } else {   // denim
     x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     for (let i = 0; i < 1400; i++) {
       const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
@@ -6724,24 +6754,6 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
     }
     x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
     for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
-  } else if (kind === 'camuflado') {
-    const cols = [col[0], col[1], col[2], col[3]]
-    x.fillStyle = cols[0]; x.fillRect(0, 0, s, s)
-    for (let i = 0; i < 22; i++) {
-      x.fillStyle = cols[Math.floor(rnd(i) * cols.length)]
-      const cx = rnd(i + 1) * s, cy = rnd(i + 2) * s, r = 6 + rnd(i + 3) * 10
-      x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill()
-    }
-  } else { // animal (leopardo)
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    const spot = (cx: number, cy: number) => {
-      x.strokeStyle = col[1]; x.lineWidth = 2.5
-      for (let a = 0; a < 3; a++) {
-        x.beginPath()
-        x.arc(cx + (a - 1) * 5, cy + (a - 1) * 3, 4 + a, a, a + 2.4); x.stroke()
-      }
-    }
-    spot(s * 0.25, s * 0.3); spot(s * 0.7, s * 0.6); spot(s * 0.5, s * 0.85); spot(s * 0.85, s * 0.2)
   }
   return c
 }
