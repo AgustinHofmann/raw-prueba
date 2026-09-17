@@ -350,6 +350,7 @@ function buildAnchorHandles(obj: fabric.FabricObject, canvas: fabric.Canvas): An
         radius: ANCHOR_R, fill: '#fff', stroke: '#1D77E0', strokeWidth: 2,
         selectable: false, evented: false, originX: 'left', originY: 'top',
       })
+      ;(circle as any)._rawTemp = true
       canvas.add(circle)
       out.push({ circle, kind: 'line', cmdIdx: -1, coordsIdx: -1, endpoint })
     })
@@ -367,6 +368,7 @@ function buildAnchorHandles(obj: fabric.FabricObject, canvas: fabric.Canvas): An
         radius: ANCHOR_R, fill: '#fff', stroke: '#1D77E0', strokeWidth: 2,
         selectable: false, evented: false, originX: 'left', originY: 'top',
       })
+      ;(circle as any)._rawTemp = true
       canvas.add(circle)
       out.push({ circle, kind: 'path', cmdIdx, coordsIdx })
     })
@@ -1826,6 +1828,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           opacity: 0.45,
           selectable: false, evented: false,
         })
+        ;(previewPath as any)._rawTemp = true
         canvas.add(previewPath)
         canvas.requestRenderAll()
       }
@@ -1962,7 +1965,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Todos los objetos temporales de visualización
       let tempObjs: fabric.FabricObject[] = []
       const clearTemp = () => { tempObjs.forEach(o => canvas.remove(o)); tempObjs = [] }
-      const addTemp   = (o: fabric.FabricObject) => { tempObjs.push(o); canvas.add(o) }
+      const addTemp   = (o: fabric.FabricObject) => { (o as any)._rawTemp = true; tempObjs.push(o); canvas.add(o) }
 
       // Construye el SVG path desde los anclas bezier
       const buildPenPath = (ancs: PAnchor[], closeIt = false): string => {
@@ -3185,6 +3188,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           stroke: '#ff3b3b', strokeWidth: 1, strokeDashArray: [4, 4],
           selectable: false, evented: false, strokeUniform: true,
         })
+        ;(guide as any)._rawTemp = true
         canvas.add(guide)
       }
       const onMove = (e: fabric.TPointerEventInfo) => {
@@ -4317,7 +4321,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     if (!canvas) return null
     const userObjs = canvas.getObjects()
-      .filter(o => !(o as any)._rawMockup)
+      // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
+      // tiradores, guias y previews del dibujo en curso no son parte del diseno,
+      // y con el autoguardado corriendo cada 15 s tarde o temprano caian adentro.
+      .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
