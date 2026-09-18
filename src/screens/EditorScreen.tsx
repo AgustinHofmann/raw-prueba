@@ -1314,8 +1314,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (p.tex)  (o as any)._texture   = p.tex
       if (p.eff)  (o as any)._effect    = p.eff
       if (p.uTex) (o as any)._userTex   = p.uTex
-      if (p.base) (o as any)._baseColor = p.base
-      if (p.tex || p.eff || p.base || p.uTex) recomposeFill(o)
+      // Misma regla que al regenerar la prenda: sin tela, el color liso que quedo
+      // dibujado es la base, aunque venga una base vieja desincronizada.
+      const colorLiso = !p.tex && !p.uTex && typeof p.fill === 'string' && p.fill !== ''
+      if (colorLiso)   (o as any)._baseColor = p.fill
+      else if (p.base) (o as any)._baseColor = p.base
+      if ((o as any)._baseColor || p.tex || p.eff || p.uTex) recomposeFill(o)
       else if (p.fill) o.set({ fill: p.fill })
     })
     syncInnerShade()
@@ -5135,11 +5139,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
         if (pp.uTex) (o as any)._userTex   = pp.uTex
-        if (pp.base) (o as any)._baseColor = pp.base
-        else if (!pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== '') {
-          ;(o as any)._baseColor = pp.fill
-        }
-        if (pp.tex || pp.eff || pp.base || pp.uTex) recomposeFill(o)
+        // Sin tela, el color liso que estaba dibujado MANDA sobre la base: los
+        // disenos guardados antes de que el balde registrara la base traen las
+        // dos cosas desincronizadas, y tocar una medida los devolvia al color
+        // viejo en vez de dejar el que se veia en pantalla.
+        const colorLiso = !pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== ''
+        if (colorLiso)    (o as any)._baseColor = pp.fill
+        else if (pp.base) (o as any)._baseColor = pp.base
+        if ((o as any)._baseColor || pp.tex || pp.eff || pp.uTex) recomposeFill(o)
         else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
       })
     }
@@ -5263,11 +5270,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
         if (pp.uTex) (o as any)._userTex   = pp.uTex
-        if (pp.base) (o as any)._baseColor = pp.base
-        else if (!pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== '') {
-          ;(o as any)._baseColor = pp.fill
-        }
-        if (pp.tex || pp.eff || pp.base || pp.uTex) recomposeFill(o)
+        // Sin tela, el color liso que estaba dibujado MANDA sobre la base: los
+        // disenos guardados antes de que el balde registrara la base traen las
+        // dos cosas desincronizadas, y tocar una medida los devolvia al color
+        // viejo en vez de dejar el que se veia en pantalla.
+        const colorLiso = !pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== ''
+        if (colorLiso)    (o as any)._baseColor = pp.fill
+        else if (pp.base) (o as any)._baseColor = pp.base
+        if ((o as any)._baseColor || pp.tex || pp.eff || pp.uTex) recomposeFill(o)
         else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
       })
     }
