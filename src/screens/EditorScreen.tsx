@@ -4770,9 +4770,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Ctrl+Z — undo
       if (!e.shiftKey && e.key === 'z') {
         e.preventDefault()
-        // Si hay un trazo de pluma en curso (no confirmado con Enter), Ctrl+Z cancela
-        // ESE trazo en vez de deshacer lo último ya guardado.
-        if (penDraftRef.current?.hasDraft()) { penDraftRef.current.cancel(); return }
+        // Si hay un trazo de pluma en curso, Ctrl+Z borra el ultimo punto de ESE
+        // trazo. Sin esto deshacia lo anterior ya guardado mientras lo que estabas
+        // dibujando quedaba intacto, que es justo al reves de lo que uno espera.
+        if (penDraftRef.current?.hasDraft()) { penDraftRef.current.undoPoint(); return }
         const entry = undoHistory.current.pop()
         if (!entry) return
         // Se suelta la seleccion ANTES de tocar nada. Mientras hay una seleccion
@@ -5849,7 +5850,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               padding: '6px 14px', borderRadius: 999, backdropFilter: 'blur(8px)',
               pointerEvents: 'none', whiteSpace: 'nowrap', fontFamily: 'var(--mono)',
             }}>
-              {tool === 'pen'   && 'Click · agregar  |  Alt+arrastrar · ángulo libre  |  Click ancla · seleccionar  |  Supr · eliminar  |  Enter · terminar'}
+              {tool === 'pen'   && 'Click · agregar  |  Alt+arrastrar · ángulo libre  |  Ctrl+Z · borrar el último punto  |  Supr · eliminar ancla  |  Enter · terminar'}
               {tool === 'curve' && 'Click ancla · seleccionar  |  Arrastrar · mover  |  Supr · eliminar ancla'}
               {tool === 'text'  && 'Click en el canvas para colocar texto'}
             </div>
