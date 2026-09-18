@@ -439,7 +439,7 @@ export default function App() {
       )}
 
       {showProfile && user && (
-        <ProfilePanel user={user} projects={projects} theme={theme} onThemeChange={setTheme} onClose={() => setShowProfile(false)} />
+        <ProfilePanel user={user} projects={projects} folders={folders} theme={theme} onThemeChange={setTheme} onClose={() => setShowProfile(false)} />
       )}
     </div>
   )
