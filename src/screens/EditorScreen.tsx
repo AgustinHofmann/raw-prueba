@@ -436,6 +436,7 @@ function buildAnchorHandles(obj: fabric.FabricObject, canvas: fabric.Canvas): An
         radius: ANCHOR_R, fill: '#fff', stroke: '#1D77E0', strokeWidth: 2,
         selectable: false, evented: false, originX: 'left', originY: 'top',
       })
+      ;(circle as any)._rawTemp = true
       canvas.add(circle)
       out.push({ circle, kind: 'line', cmdIdx: -1, coordsIdx: -1, endpoint })
     })
@@ -453,6 +454,7 @@ function buildAnchorHandles(obj: fabric.FabricObject, canvas: fabric.Canvas): An
         radius: ANCHOR_R, fill: '#fff', stroke: '#1D77E0', strokeWidth: 2,
         selectable: false, evented: false, originX: 'left', originY: 'top',
       })
+      ;(circle as any)._rawTemp = true
       canvas.add(circle)
       out.push({ circle, kind: 'path', cmdIdx, coordsIdx })
     })
@@ -1781,9 +1783,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Antes no: agregar la prenda y restaurar lo guardado también son cambios,
       // y guardarlos apenas se abre el proyecto sería guardar lo mismo que se
       // acaba de leer.
-      canvas.on('object:added',    markDirty)
-      canvas.on('object:removed',  markDirty)
-      canvas.on('object:modified', markDirty)
+      // Lo temporal no cuenta como cambio del diseno: los previews de la pluma se
+      // agregan y se sacan en cada movimiento del mouse, y marcaban sucio decenas
+      // de veces por segundo para terminar guardando siempre lo mismo.
+      const markDirtyReal = (e: any) => { if (!(e?.target as any)?._rawTemp) markDirty() }
+      canvas.on('object:added',    markDirtyReal)
+      canvas.on('object:removed',  markDirtyReal)
+      canvas.on('object:modified', markDirtyReal)
       autosaveListo.current = true
 
       canvas.renderAll()
@@ -2040,6 +2046,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           opacity: 0.45,
           selectable: false, evented: false,
         })
+        ;(previewPath as any)._rawTemp = true
         canvas.add(previewPath)
         canvas.requestRenderAll()
       }
@@ -2219,7 +2226,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Todos los objetos temporales de visualización
       let tempObjs: fabric.FabricObject[] = []
       const clearTemp = () => { tempObjs.forEach(o => canvas.remove(o)); tempObjs = [] }
-      const addTemp   = (o: fabric.FabricObject) => { tempObjs.push(o); canvas.add(o) }
+      const addTemp   = (o: fabric.FabricObject) => { (o as any)._rawTemp = true; tempObjs.push(o); canvas.add(o) }
 
       // Construye el SVG path desde los anclas bezier
       const buildPenPath = (ancs: PAnchor[], closeIt = false): string => {
@@ -4878,7 +4885,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     if (!canvas) return null
     const userObjs = canvas.getObjects()
-      .filter(o => !(o as any)._rawMockup)
+      // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
+      // los tiradores de anclaje y los previews del lapiz y de la pluma son
+      // objetos reales del lienzo, y el guardado automatico saltaba a los 2 s de
+      // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
+      // circulitos azules y lineas punteadas como si fueran parte del diseno.
+      .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
