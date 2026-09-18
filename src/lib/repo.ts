@@ -96,7 +96,26 @@ export async function getTechpack(id: string): Promise<string | null> {
  * Con esta marca la regla deja de depender de relojes: si acá hay algo sin
  * subir, acá está lo bueno.
  */
-type Pendiente = Project & { pendienteDeSubir?: boolean }
+type Pendiente = Project & {
+  pendienteDeSubir?: boolean
+  /**
+   * La fecha que tenía la copia de la NUBE la última vez que este dispositivo la
+   * vio (subiéndola o bajándola). La pone el servidor.
+   *
+   * Es la pieza que faltaba para sincronizar bien entre dos dispositivos. No se
+   * usa para saber cuál es más nueva —los relojes no son comparables— sino para
+   * una pregunta que sí tiene respuesta exacta: **¿la nube cambió desde la
+   * última vez que la vi?** Si es igual, no cambió. Si es distinta, alguien la
+   * tocó en otro lado.
+   *
+   * Con eso alcanza para decidir sin adivinar:
+   *   · cambió solo acá        → sube lo de acá
+   *   · cambió solo en la nube → baja lo de la nube
+   *   · cambiaron los dos      → CONFLICTO: no se pisa nada, se guardan ambos
+   *   · no está en la nube y antes sí estaba → lo borraron en otro dispositivo
+   */
+  nubeVistaEn?: number
+}
 
 /**
  * `revivir` es para cuando el usuario trae de vuelta a propósito un proyecto con
@@ -112,21 +131,32 @@ export async function saveProject(
 ): Promise<boolean> {
   if (opts?.revivir) await idbDelete(STORE_DELETED, p.id)
   else if (await idbGet<Tombstone>(STORE_DELETED, p.id)) return false   // ya estaba borrado
-  const conMarca: Pendiente = { ...p, pendienteDeSubir: true }
+  // Se conserva `nubeVistaEn` del registro que ya estaba: es lo que este
+  // dispositivo sabe de la nube, y guardar un cambio local no lo invalida.
+  // Perderlo haría que el próximo sync no distinga "cambió solo acá" de
+  // "cambiaron los dos", que es justo lo que hay que distinguir.
+  const previo = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
+  const conMarca: Pendiente = { ...p, pendienteDeSubir: true, nubeVistaEn: previo?.nubeVistaEn }
   const ok = (await idbPut(STORE_PROJECTS, conMarca)) !== null
-  void pushProject(p, userId)
+  void pushProject(conMarca, userId)
   return ok
 }
 
-async function pushProject(p: Project, userId?: string): Promise<void> {
+async function pushProject(p: Pendiente, userId?: string): Promise<void> {
   if (!(await cloudReady())) return
   try {
-    await upsertProject(p, userId)
+    const fechaServidor = await upsertProject(p, userId)
     // Subió: se limpia la marca, pero solo si nadie volvió a guardar mientras
     // tanto (si la fecha cambió, hay cambios más nuevos todavía sin subir).
     const actual = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
     if (actual && actual.updatedAt === p.updatedAt && actual.pendienteDeSubir) {
-      await idbPut(STORE_PROJECTS, { ...actual, pendienteDeSubir: false })
+      await idbPut(STORE_PROJECTS, {
+        ...actual,
+        pendienteDeSubir: false,
+        // Ahora la nube tiene EXACTAMENTE lo que hay acá, y se anota con qué
+        // fecha quedó: así el próximo sync sabe que nadie más la tocó.
+        nubeVistaEn: fechaServidor ?? actual.nubeVistaEn,
+      })
     }
   } catch { /* queda marcado como pendiente para el próximo sync */ }
 }
@@ -228,13 +258,8 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     const porId = new Map<string, Project>()
     for (const p of locales) porId.set(p.id, p)
 
-    for (const remoto of nube) {
-      if (borrados.has(remoto.id)) continue   // borrado acá: no vuelve
-      const local = porId.get(remoto.id) as Pendiente | undefined
-      // Lo que todavía no subió manda siempre, sin mirar fechas: son cambios que
-      // solo existen acá. Compararlos contra el reloj del servidor los perdía.
-      if (local?.pendienteDeSubir) continue
-      if (local && local.updatedAt >= remoto.updatedAt) continue   // manda el local
+    /** Trae el contenido de la nube y lo deja guardado acá. */
+    const bajar = async (remoto: Project, local?: Pendiente) => {
       const [canvasJson, techpackJson] = await Promise.all([
         fetchProjectCanvas(remoto.id).catch(() => null),
         fetchProjectTechpack(remoto.id).catch(() => null),
@@ -242,23 +267,103 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
       // Si la nube no trae dibujo (falló la descarga, o esa fila nunca llegó a
       // guardarlo) se conserva el que hay acá. Pisar un diseño con vacío porque
       // la fila de arriba está más nueva es perder trabajo, y encima en silencio.
-      const completo: Project = {
+      const completo: Pendiente = {
         ...remoto,
         canvasJson:   canvasJson   ?? local?.canvasJson   ?? null,
         techpackJson: techpackJson ?? local?.techpackJson ?? null,
+        pendienteDeSubir: false,
+        nubeVistaEn: remoto.updatedAt,
       }
       porId.set(remoto.id, completo)
       await idbPut(STORE_PROJECTS, completo)
+      return completo
     }
 
-    // 4. Lo que acá es más nuevo (o no existe arriba) se sube.
-    const idsNube = new Map(nube.map(p => [p.id, p.updatedAt]))
+    const enNube = new Map(nube.map(p => [p.id, p]))
+    const conflictos: string[] = []
+
+    for (const remoto of nube) {
+      if (borrados.has(remoto.id)) continue   // borrado acá: no vuelve
+      const local = porId.get(remoto.id) as Pendiente | undefined
+      if (!local) { await bajar(remoto); continue }
+
+      // La única comparación que tiene sentido entre dos dispositivos: ¿la copia
+      // de la nube es la MISMA que vi la última vez? Las fechas de los dos lados
+      // salen de relojes distintos, así que no se pueden ordenar; pero preguntar
+      // si son iguales sí vale.
+      const nubeCambio = local.nubeVistaEn === undefined || local.nubeVistaEn !== remoto.updatedAt
+
+      if (!local.pendienteDeSubir) {
+        // Acá no hay nada sin subir: si la nube cambió, manda la nube.
+        if (nubeCambio) await bajar(remoto, local)
+        continue
+      }
+
+      // Acá hay cambios sin subir.
+      if (!nubeCambio) continue      // la nube sigue igual → lo de acá es lo nuevo → se sube abajo
+
+      // Cambiaron LOS DOS lados. Antes ganaba siempre el local y el trabajo del
+      // otro dispositivo se perdía sin avisar. Ahora no se pisa nada: queda la
+      // versión de la nube como el proyecto, y la de acá se guarda aparte como
+      // una copia. Es feo tener dos, pero es lo único que no pierde trabajo.
+      const mio: Pendiente = { ...local }
+      const bajado = await bajar(remoto, local)
+
+      // Salvo que las dos versiones digan lo mismo, que es lo más común: el
+      // proyecto se subió desde otro dispositivo sin cambiar nada, o el dibujo
+      // quedó igual. Duplicarlo ahí sería llenar el archivo de copias iguales.
+      const igual =
+        (mio.canvasJson   ?? '') === (bajado.canvasJson   ?? '') &&
+        (mio.techpackJson ?? '') === (bajado.techpackJson ?? '') &&
+        mio.name === bajado.name
+      if (igual) continue
+      const copia: Pendiente = {
+        ...mio,
+        id: crypto.randomUUID(),
+        name: `${mio.name} (copia de este equipo)`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        pendienteDeSubir: true,
+        nubeVistaEn: undefined,
+      }
+      await idbPut(STORE_PROJECTS, copia)
+      porId.set(copia.id, copia)
+      await pushProject(copia, userId)
+      conflictos.push(mio.name)
+    }
+
+    // 4. Lo de acá que la nube todavía no tiene.
     for (const local of locales as Pendiente[]) {
-      const arriba = idsNube.get(local.id)
-      // Se sube lo pendiente aunque la fecha de arriba parezca más nueva: esa
-      // fecha la puso el servidor y no dice nada sobre el contenido.
-      if (!local.pendienteDeSubir && arriba !== undefined && arriba >= local.updatedAt) continue
-      await pushProject(local, userId)
+      if (borrados.has(local.id)) continue
+      const arriba = enNube.get(local.id)
+
+      if (!arriba) {
+        // No está en la nube. Si ANTES lo habíamos sincronizado, es que lo
+        // borraron desde otro dispositivo: hay que borrarlo acá también. Sin
+        // esto, el dispositivo que no se enteró lo volvía a subir y el proyecto
+        // resucitaba una y otra vez — el "lo borré y no se borró".
+        if (local.nubeVistaEn !== undefined) {
+          await idbDelete(STORE_PROJECTS, local.id)
+          porId.delete(local.id)
+          continue
+        }
+        await pushProject(local, userId)   // nunca estuvo arriba: es nuevo de acá
+        continue
+      }
+
+      // Está en los dos lados: solo se sube si acá hay algo sin subir Y la nube
+      // no cambió por su cuenta (si cambió, ya se resolvió arriba como conflicto).
+      if (local.pendienteDeSubir && local.nubeVistaEn === arriba.updatedAt) {
+        await pushProject(local, userId)
+      }
+    }
+
+    if (conflictos.length) {
+      console.warn(
+        '[RAW Design] Estos proyectos se editaron en dos dispositivos a la vez:\n' +
+        conflictos.map(n => '  · ' + n).join('\n') +
+        '\nSe conservó la versión de la nube y la de este equipo quedó guardada aparte como "(copia de este equipo)".',
+      )
     }
 
     return {

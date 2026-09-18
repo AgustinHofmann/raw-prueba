@@ -1379,6 +1379,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Deja listas las tipografías que usa un diseño y devuelve las que no están.
+   *
+   * Las de Google se bajan; las propias del diseñador viven en ESTE navegador
+   * (no viajan con el proyecto), así que en otro dispositivo no van a estar y
+   * hay que decirlo en vez de cambiar la fuente en silencio.
+   */
+  async function cargarFuentesDelDiseno(objs: fabric.FabricObject[]): Promise<string[]> {
+    const familias = new Set<string>()
+    for (const o of objs) {
+      const f = (o as any).fontFamily
+      if (typeof f === 'string' && f) familias.add(f)
+    }
+    if (!familias.size) return []
+    const propias = await restoreUserFonts().catch(() => [] as string[])
+    if (propias.length) setUserFonts(propias)
+    const faltan: string[] = []
+    for (const f of familias) {
+      if ((GOOGLE_FONTS as readonly string[]).includes(f)) { await loadGoogleFont(f); continue }
+      if ((SYSTEM_FONTS as readonly string[]).includes(f)) continue
+      if (propias.includes(f)) continue
+      faltan.push(f)
+    }
+    return faltan
+  }
+
   // ── Font picker handlers ─────────────────────────────────────────────────────
   async function handleFontSelect(family: string) {
     if ((GOOGLE_FONTS as readonly string[]).includes(family)) {
@@ -1724,6 +1750,24 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
         restoreGarmentPaint(design.garment)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
+
+        // Las tipografías del diseño hay que CARGARLAS al abrirlo.
+        //
+        // Antes solo se cargaban al elegirlas del menú, así que al abrir un
+        // diseño ya hecho —y sobre todo en otro dispositivo, que nunca las
+        // pidió— el texto se dibujaba con la fuente de reemplazo del navegador.
+        // El diseño estaba bien guardado; se veía mal.
+        const faltantes = await cargarFuentesDelDiseno(revived)
+        if (cancelled) return
+        // Ya con la fuente de verdad, el texto se vuelve a medir y a dibujar.
+        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.dirty = true }
+        canvas.requestRenderAll()
+        if (faltantes.length) {
+          onToast?.(
+            `No están en este dispositivo: ${faltantes.join(', ')}. ` +
+            'Son tipografías propias y viven en la computadora donde las importaste.',
+          )
+        }
       }
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current

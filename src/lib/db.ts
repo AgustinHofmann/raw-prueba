@@ -35,12 +35,23 @@ export async function fetchProjectTechpack(id: string): Promise<string | null> {
   return ((data as Record<string, unknown>)?.techpack_json as string | null) ?? null
 }
 
-export async function upsertProject(p: Project, userId?: string): Promise<void> {
-  const { error } = await supabase.from('projects').upsert({
+/**
+ * Sube un proyecto y devuelve la fecha que le puso EL SERVIDOR.
+ *
+ * Esa fecha es la única referencia común entre dos dispositivos: la base tiene
+ * un disparador que reescribe `updated_at` con su propio reloj (migración 0005),
+ * así que la fecha del navegador no sirve para comparar. Guardándola se puede
+ * saber después si la copia de la nube cambió desde la última vez que este
+ * dispositivo la vio, que es lo que hace falta para no pisar el trabajo de otro.
+ */
+export async function upsertProject(p: Project, userId?: string): Promise<number | null> {
+  const { data, error } = await supabase.from('projects').upsert({
     ...projectToRow(p),
     ...(userId ? { user_id: userId } : {}),
-  })
+  }).select('updated_at')
   if (error) throw error
+  const fila = data?.[0] as { updated_at?: number } | undefined
+  return fila?.updated_at ?? null
 }
 
 // Guarda solo el techpack_json, sin tocar el resto del proyecto.
