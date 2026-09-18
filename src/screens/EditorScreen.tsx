@@ -985,10 +985,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
   const snapPoints    = useRef<fabric.Point[]>([])
-  // Borrador en curso de la pluma (trazo aún no confirmado con Enter): permite que
-  // Ctrl+Z cancele ESE trazo en vez de deshacer lo anterior ya guardado.
-  const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void } | null>(null)
+  // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite
+  // que Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo ya guardado.
+  const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void; undoPoint: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
+  // false desde que el lienzo se destruye: al cerrar el editor, la limpieza de la
+  // herramienta corre DESPUES del dispose() y no puede seguir tocandolo.
+  const canvasAlive   = useRef(true)
   // Cuando se movio por ultima vez con las flechas, para agrupar la rafaga en
   // un solo paso de deshacer.
   const ultimaFlecha = useRef(0)
@@ -1883,7 +1886,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
 
-    return () => { cancelled = true; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
+    return () => { cancelled = true; canvasAlive.current = false; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
   }, [project.mockupId])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
@@ -2137,6 +2140,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Cada ancla tiene: posición, handle de entrada (cp1) y handle de salida (cp2)
       type PAnchor = { pt: fabric.Point; cp1: fabric.Point; cp2: fabric.Point }
       const anchors: PAnchor[] = []
+      // El trazo en curso vive en el lienzo como un objeto REAL, no como preview.
+      // Asi lo que ya clickeaste existe (y entra en el guardado) sin tener que
+      // confirmarlo con Enter.
+      let liveObj: fabric.Path | null = null
       let mouseIsDown    = false
       let draggingHandle = false
       let cursorPt       = new fabric.Point(0, 0)
@@ -2429,8 +2436,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
 
+      // Saca del lienzo el objeto del trazo en curso (si lo hay).
+      const dropLive = () => {
+        if (!liveObj) return
+        canvas.remove(liveObj)
+        liveObj = null
+      }
+
+      // Rehace el objeto del trazo en curso con los anclas puestas hasta ahora.
+      // Se dibuja siempre como trazo normal: los estilos especiales (bordado,
+      // cierre) se calculan una sola vez al confirmar, que es cuando importan.
+      const syncLive = () => {
+        dropLive()
+        if (anchors.length < 2) return
+        const d = buildPenPath(anchors)
+        const obj = new fabric.Path(d, {
+          stroke: colorRef.current, strokeWidth: brushSizeRef.current,
+          strokeLineCap: d.includes(' C ') ? 'round' : 'butt',
+          strokeLineJoin: 'round',
+          fill: fillRef.current, selectable: false, evented: false,
+          strokeUniform: true,
+        })
+        ;(obj as any).hoverCursor = PEN_CURSOR
+        if (clipPath.current) obj.clipPath = clipPath.current
+        canvas.add(obj)
+        liveObj = obj
+      }
+
       const commit = (closed = false) => {
         clearTemp()
+        dropLive()
         if (anchors.length >= 2) {
           snapPoints.current.push(new fabric.Point(anchors[0].pt.x, anchors[0].pt.y))
           const lastPt = anchors[anchors.length - 1].pt
@@ -2467,14 +2502,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
 
-      // Cancela el trazo en curso (sin guardarlo) — lo usa Ctrl+Z mientras dibujás.
+      // Tira el trazo en curso entero. Lo usa Ctrl+Z cuando se va el ultimo punto
+      // que quedaba, y el cambio de herramienta con un solo ancla puesta.
       const cancelDraft = () => {
-        clearTemp(); clearEdit()
+        clearTemp(); clearEdit(); dropLive()
         anchors.length = 0
         mouseIsDown = false; draggingHandle = false; isClosing = false
         canvas.requestRenderAll()
       }
-      penDraftRef.current = { hasDraft: () => anchors.length > 0, cancel: cancelDraft }
+      // Ctrl+Z mientras dibujas: se va el ULTIMO punto puesto, no el trazo entero
+      // ni lo ultimo que habias guardado antes de empezar. Repetirlo desarma el
+      // trazo punto por punto hasta que no queda nada.
+      const undoPoint = () => {
+        if (anchors.length === 0) return
+        anchors.pop()
+        mouseIsDown = false; draggingHandle = false; isClosing = false
+        if (anchors.length === 0) { cancelDraft(); return }
+        syncLive()
+        redraw(cursorPt)
+      }
+
+      penDraftRef.current = { hasDraft: () => anchors.length > 0, cancel: cancelDraft, undoPoint }
 
       let penCursorCurrent = PEN_CURSOR
       const applyPenCursor = (cur: string) => {
@@ -2582,6 +2630,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           cp1: new fabric.Point(pt.x, pt.y),
           cp2: new fabric.Point(pt.x, pt.y),
         })
+        syncLive()
         redraw(cursorPt)
       }
 
@@ -2642,7 +2691,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         redraw(snappedPt, liveCp2, guides, nodeSnap)
       }
 
-      const onUp = () => { mouseIsDown = false; draggingHandle = false; redraw(cursorPt) }
+      const onUp = () => {
+        const wasDragging = draggingHandle
+        mouseIsDown = false; draggingHandle = false
+        if (wasDragging) syncLive()   // la curva quedo definida al soltar el handle
+        redraw(cursorPt)
+      }
 
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Enter' || e.key === 'Escape') commit()
@@ -2665,6 +2719,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('mouse:up',   onUp)
         window.removeEventListener('keydown', onKey)
         canvas.defaultCursor = 'default'
+        // Cambiar de herramienta con un trazo a medias lo confirma en vez de
+        // tirarlo: lo dibujado es del disenador, no del estado interno de la
+        // pluma. Si el lienzo ya se destruyo (cerraron el editor) no hay nada
+        // que confirmar.
+        if (canvasAlive.current) {
+          if (anchors.length >= 2) commit()
+          else cancelDraft()
+        }
         clearTemp()
         clearEdit()
         hideSizeCursor()
