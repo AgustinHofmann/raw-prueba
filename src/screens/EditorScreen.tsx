@@ -30,7 +30,7 @@ interface Props {
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
   | 'rect' | 'ellipse' | 'line' | 'polygon' | 'star' | 'rrect'
-  | 'symbol' | 'cut' | 'hand' | 'zoom'
+  | 'symbol' | 'hand' | 'zoom'
 
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre'
@@ -1999,7 +1999,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
       obj.set({
         evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || tool === 'fill'
-                 || tool === 'eyedropper' || tool === 'cut' || (tool === 'text' && isIText),
+                 || tool === 'eyedropper' || (tool === 'text' && isIText),
         selectable: tool === 'select',
         hoverCursor: tool === 'fill' ? 'pointer' : drawnHoverCursor,
         // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
@@ -3477,96 +3477,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
 
-    // ── Degradado (relleno lineal sobre el objeto, arrastrando la dirección) ──
-    // ── Cortar (cuchilla): parte objetos en dos con una línea recta ───────────
-    if (tool === 'cut') {
-      canvas.selection     = false
-      canvas.defaultCursor = 'crosshair'
-      let p0: fabric.Point | null = null
-      let guide: fabric.Line | null = null
-
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        p0 = e.scenePoint
-        guide = new fabric.Line([p0.x, p0.y, p0.x, p0.y], {
-          stroke: '#ff3b3b', strokeWidth: 1, strokeDashArray: [4, 4],
-          selectable: false, evented: false, strokeUniform: true,
-        })
-        canvas.add(guide)
-      }
-      const onMove = (e: fabric.TPointerEventInfo) => {
-        if (!p0 || !guide) return
-        const p = e.scenePoint
-        guide.set({ x2: p.x, y2: p.y })
-        canvas.requestRenderAll()
-      }
-      const onUp = async (e: fabric.TPointerEventInfo) => {
-        const start = p0
-        if (guide) { canvas.remove(guide); guide = null }
-        p0 = null
-        if (!start) return
-        const end = e.scenePoint ?? start
-        const ax = start.x, ay = start.y, bx = end.x, by = end.y
-        if (Math.hypot(bx - ax, by - ay) < 5) { canvas.requestRenderAll(); return }  // trazo muy corto
-        const dirx = bx - ax, diry = by - ay
-        const sideOf = (px: number, py: number) => dirx * (py - ay) - diry * (px - ax)  // signo = lado de la línea
-        // Objetos que la línea realmente atraviesa (esquinas a ambos lados)
-        const crossed = canvas.getObjects().filter(o => {
-          if (mockupObjects.current.includes(o) || (o as any)._locked) return false
-          const b = o.getBoundingRect()
-          const corners: [number, number][] = [
-            [b.left, b.top], [b.left + b.width, b.top],
-            [b.left, b.top + b.height], [b.left + b.width, b.top + b.height],
-          ]
-          let pos = false, neg = false
-          for (const [cx, cy] of corners) { const s = sideOf(cx, cy); if (s > 0) pos = true; else if (s < 0) neg = true }
-          return pos && neg
-        })
-        if (!crossed.length) { canvas.requestRenderAll(); return }
-        const angleDeg = Math.atan2(diry, dirx) * 180 / Math.PI
-        const mid = { x: (ax + bx) / 2, y: (ay + by) / 2 }
-        const L = 20000
-        const nrad = Math.atan2(diry, dirx) + Math.PI / 2
-        const nx = Math.cos(nrad), ny = Math.sin(nrad)
-        const removed: fabric.FabricObject[] = []
-        const added: fabric.FabricObject[] = []
-        for (const o of crossed) {
-          const half1 = await o.clone()
-          const half2 = await o.clone()
-          half1.clipPath = new fabric.Rect({
-            width: L, height: L, originX: 'center', originY: 'center',
-            left: mid.x + nx * L / 2, top: mid.y + ny * L / 2, angle: angleDeg, absolutePositioned: true,
-          })
-          half2.clipPath = new fabric.Rect({
-            width: L, height: L, originX: 'center', originY: 'center',
-            left: mid.x - nx * L / 2, top: mid.y - ny * L / 2, angle: angleDeg, absolutePositioned: true,
-          })
-          half1.set({ selectable: true, evented: true })
-          half2.set({ selectable: true, evented: true })
-          canvas.remove(o)
-          canvas.add(half1, half2)
-          removed.push(o)
-          added.push(half1, half2)
-        }
-        undoHistory.current.push({ type: 'erase', removed, added })
-        redoHistory.current = []
-        canvas.discardActiveObject()
-        canvas.requestRenderAll()
-        // Hecho el corte, se vuelve a Seleccionar: lo que sigue siempre es
-        // agarrar una de las dos mitades.
-        setTool('select')
-      }
-      canvas.on('mouse:down', onDown)
-      canvas.on('mouse:move', onMove)
-      canvas.on('mouse:up',   onUp)
-      offs.push(() => {
-        canvas.off('mouse:down', onDown)
-        canvas.off('mouse:move', onMove)
-        canvas.off('mouse:up',   onUp)
-        if (guide) canvas.remove(guide)
-        canvas.defaultCursor = 'default'
-      })
-    }
-
     // ── Símbolo (sello): estampa copias del símbolo activo al clickear ────────
     if (tool === 'symbol') {
       canvas.selection     = false
@@ -4621,7 +4531,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           case 'z': case 'Z': setTool('zoom');       return
           case 'i': case 'I': setTool('eyedropper'); return
           case 'k': case 'K': setTool('fill');       return   // K — balde (relleno)
-          case 'c': case 'C': setTool('cut');        return   // C — cortar (tijera)
         }
       }
 
@@ -5750,7 +5659,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <ToolBtn icon={<IconBucket />} label="Relleno (K)"      active={tool === 'fill'}        onClick={() => setTool('fill')} />
           <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"   active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
           <ToolBtn icon={<IconEraser />} label="Goma (Shift+E)"   active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon={<IconScissors />} label="Cortar (C)"     active={tool === 'cut'}    onClick={() => setTool('cut')} />
           <div style={{ marginTop: 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <ToolDivider />
             <ToolBtn icon={<IconHand />} label="Mano · pan (H · Espacio)" active={tool === 'hand'} onClick={() => setTool('hand')} />
@@ -7934,15 +7842,6 @@ const IconEyedropper = () => (
     <path d="M11.5 1.5 L14.5 4.5 L7 12 L5 14 L2 11 L4 9 Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     <path d="M11.5 1.5 L14.5 4.5 L12.5 6.5 L9.5 3.5 Z" />
     <rect x="3" y="11" width="3" height="3" rx="0.8" opacity="0.6" />
-  </svg>
-)
-
-const IconScissors = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <circle cx="4" cy="11.5" r="2.2" />
-    <circle cx="4" cy="4.5" r="2.2" />
-    <line x1="6" y1="5.7" x2="14" y2="11" strokeLinecap="round" />
-    <line x1="6" y1="10.3" x2="14" y2="5" strokeLinecap="round" />
   </svg>
 )
 
