@@ -4202,21 +4202,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     setActiveUserTex(null)
   }
 
-  // Quita cualquier estampado (interno o importado) y deja el color liso que la
-  // pieza tenía debajo. El efecto de tela NO se toca: son cosas independientes,
-  // así que "sin textura + desgaste" sigue siendo una combinación válida.
-  function removeTexture() {
-    const { targets, label } = fillTargets()
-    applyFillToTargets(targets, o => {
-      delete (o as any)._texture
-      delete (o as any)._userTex
-      if (!(o as any)._baseColor) (o as any)._baseColor = '#ffffff'
-      recomposeFill(o)
-    }, 'Textura quitada', label)
-    setActiveTexKind(null)
-    setActiveUserTex(null)
-  }
-
   // ── Efectos de tela ─────────────────────────────────────────────────────────
   function applyEffect(kind: EffectKind, intensity: number) {
     const { targets, label } = fillTargets()
@@ -6416,26 +6401,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 pueden recolorear.
               </p>
               <div key={paletteVersion} className="swatches">
-                {/* "Ninguna" siempre visible: volver a color liso no debería
-                    depender de que primero haya una textura aplicada. */}
-                <button
-                  onClick={removeTexture}
-                  title="Sin tela (color liso)"
-                  style={{
-                    display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
-                    background: 'none', border: 'none', cursor: 'pointer',
-                  }}
-                >
-                  <div style={{
-                    width: '100%', aspectRatio: '1', borderRadius: 8,
-                    display: 'grid', placeItems: 'center',
-                    fontSize: 20, color: 'var(--muted)',
-                    border: '1px solid ' + (!activeTexKind && !activeUserTex ? 'var(--accent)' : 'var(--line)'),
-                    outline: !activeTexKind && !activeUserTex ? '1px solid var(--accent)' : 'none',
-                  }}>⃠</div>
-                  <span style={{ fontSize: 10, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>Ninguna</span>
-                </button>
-
                 {/* Estampados que dibuja el programa: se recolorean */}
                 {TEXTURES.map(t => {
                   const on = activeTexKind === t.id
