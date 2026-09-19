@@ -215,18 +215,6 @@ function recorrer(pts: fabric.Point[], paso: number): { x: number; y: number; ux
   return out
 }
 
-/** La misma polilinea corrida `d` hacia un costado. */
-function corrida(pts: fabric.Point[], d: number): [number, number][] {
-  const out: [number, number][] = []
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)]
-    const dx = b.x - a.x, dy = b.y - a.y
-    const len = Math.hypot(dx, dy) || 1
-    out.push([pts[i].x - (dy / len) * d, pts[i].y + (dx / len) * d])
-  }
-  return out
-}
-
 const _mezcla = (a: number[], b: number[], t: number) =>
   `rgb(${Math.round(a[0] + (b[0] - a[0]) * t)},${Math.round(a[1] + (b[1] - a[1]) * t)},${Math.round(a[2] + (b[2] - a[2]) * t)})`
 
@@ -236,17 +224,25 @@ function _rgb(hex: string): number[] {
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
 }
 
-const CIERRE_SUPER = 2   // se dibuja al doble y se muestra a la mitad: sale nitido
+// Se dibuja a 4x y se muestra a 1x: el cierre es la pieza con mas detalle fino
+// de todo el editor y a 2x se notaba dentado al acercarse.
+const CIERRE_SUPER = 4
+const CIERRE_MAX_PX = 26e6     // techo de memoria del canvas
 
 /**
  * Dibuja el cierre sobre un canvas propio y devuelve dónde va apoyado.
- * `color` es el color de la CINTA; los dientes son metálicos.
+ *
+ * El protagonista es la CADENA metálica: dientes anchos, bien separados y con
+ * mucho contraste, como en los pinceles de cierre de Procreate. La cinta va
+ * angosta y apagada para que no le compita.
+ *
+ * `color` es el color de la cinta; los dientes son metal.
  */
 function dibujarCierre(pts: fabric.Point[], ancho: number, color: string):
-    { el: HTMLCanvasElement; left: number; top: number } | null {
+    { el: HTMLCanvasElement; left: number; top: number; sup: number } | null {
   if (pts.length < 2) return null
   const w = Math.max(3, ancho)
-  const margen = w * 2.2
+  const margen = w * 1.6
 
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
   for (const p of pts) {
@@ -255,9 +251,11 @@ function dibujarCierre(pts: fabric.Point[], ancho: number, color: string):
   }
   x0 -= margen; y0 -= margen; x1 += margen; y1 += margen
   const cw = Math.max(4, Math.ceil(x1 - x0)), ch = Math.max(4, Math.ceil(y1 - y0))
-  if (cw * ch > 16e6) return null           // trazo desmesurado: no vale la pena
 
-  const S = CIERRE_SUPER
+  // Si el trazo es enorme se baja la resolución antes que reventar la memoria.
+  let S = CIERRE_SUPER
+  while (S > 1 && cw * ch * S * S > CIERRE_MAX_PX) S--
+
   const el = document.createElement('canvas')
   el.width = cw * S; el.height = ch * S
   const x = el.getContext('2d')
@@ -274,76 +272,72 @@ function dibujarCierre(pts: fabric.Point[], ancho: number, color: string):
   }
 
   const base = _rgb(color)
-  const claro = _mezcla(base, [255, 255, 255], 0.42)
-  const medio = _mezcla(base, [255, 255, 255], 0.16)
-  const oscuro = _mezcla(base, [0, 0, 0], 0.32)
-  const borde = _mezcla(base, [0, 0, 0], 0.5)
+  const cintaClara = _mezcla(base, [255, 255, 255], 0.12)
+  const cintaMedia = base.join(',')
+  const cintaBorde = _mezcla(base, [0, 0, 0], 0.30)
 
-  // ── 1. La cinta. Varias pasadas concentricas hacen el relieve del tejido:
-  //    canto oscuro afuera, cuerpo claro, y sombra otra vez cerca de los dientes.
-  const capas: [number, string][] = [
-    [2.30, borde],
-    [2.18, oscuro],
-    [2.05, medio],
-    [1.70, claro],
-    [1.05, medio],
-    [0.78, oscuro],
-  ]
-  for (const [k, col] of capas) {
+  // ── 1. La cinta: apenas asoma a los costados. Si se agranda o se oscurece,
+  //    la cadena queda metida adentro de una capsula negra y pierde todo.
+  // Punta recta, no redonda: con punta redonda la cinta arma un capuchon en
+  // cada extremo y el cierre termina metido dentro de una capsula oscura.
+  x.lineCap = 'butt'
+  for (const [k, col] of [
+    [1.18, cintaBorde],
+    [1.12, `rgb(${cintaMedia})`],
+    [1.02, cintaClara],
+  ] as [number, string][]) {
     trazar(pts); x.strokeStyle = col; x.lineWidth = w * k; x.stroke()
   }
+  // sombra suave de la cadena sobre la cinta
+  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.18)'; x.lineWidth = w * 0.98; x.stroke()
+  x.lineCap = 'round'
 
-  // ── 2. El pespunte que sujeta la cinta, uno de cada lado.
-  x.setLineDash([w * 0.5, w * 0.42])
-  x.lineWidth = Math.max(0.6, w * 0.10)
-  x.strokeStyle = _mezcla(base, [0, 0, 0], 0.45)
-  for (const lado of [-1, 1]) { trazar(corrida(pts, lado * w * 0.85)); x.stroke() }
-  x.setLineDash([])
-
-  // ── 3. La canaleta del medio, donde encastran los dientes.
-  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.55)'; x.lineWidth = w * 0.42; x.stroke()
-
-  // ── 4. Los dientes. Van alternando de lado y cruzan el eje, como encastran
-  //    los de verdad. Cada uno lleva su degradado metalico y su brillo.
-  const paso = w * 0.62
-  const largo = w * 0.40          // lo que mide el diente a lo largo del cierre
-  const afuera = w * 0.66         // hasta donde llega hacia su costado
-  const adentro = w * 0.17        // cuanto pasa del eje hacia el otro lado
+  // ── 2. La cadena. Cada diente es una barra que cruza el eje; van alternando
+  //    un poquito de lado, y ese desfasaje es el que se lee como encastre.
+  const paso  = w * 0.46          // de diente a diente
+  const largo = w * 0.34          // lo que ocupa el diente a lo largo
+  const medio = w * 0.52          // medio ancho del diente
+  const corr  = w * 0.045         // corrimiento alternado
   let lado = 1
+
   for (const q of recorrer(pts, paso)) {
     const ang = Math.atan2(q.uy, q.ux)
     x.save()
     x.translate(q.x, q.y)
     x.rotate(ang)
-    const y1d = lado > 0 ? -afuera : -adentro
-    const y2d = lado > 0 ?  adentro :  afuera
-    const alto = y2d - y1d
-    const g = x.createLinearGradient(0, y1d, 0, y2d)
-    if (lado > 0) {
-      g.addColorStop(0, '#6f7378'); g.addColorStop(0.28, '#e8ebee')
-      g.addColorStop(0.62, '#a9aeb4'); g.addColorStop(1, '#55585c')
-    } else {
-      g.addColorStop(0, '#55585c'); g.addColorStop(0.38, '#a9aeb4')
-      g.addColorStop(0.72, '#e8ebee'); g.addColorStop(1, '#6f7378')
-    }
+    const off = lado * corr
+    const yA = -medio + off, yB = medio + off
+
+    // Metal: sombra en los cantos, una banda de luz fuerte y un segundo brillo.
+    // UNA luz dominante y corrida del centro: asi lee como una barra redondeada.
+    // Con muchas bandas el diente se veia rayado en vez de metalico.
+    const g = x.createLinearGradient(0, yA, 0, yB)
+    g.addColorStop(0.00, '#454b52')
+    g.addColorStop(0.16, '#a9b1b9')
+    g.addColorStop(0.38, '#ffffff')
+    g.addColorStop(0.55, '#dee4e9')
+    g.addColorStop(0.80, '#8b929a')
+    g.addColorStop(1.00, '#3f444a')
     x.fillStyle = g
-    const r = Math.min(largo * 0.42, alto * 0.3)
+    const r = Math.min(largo * 0.45, w * 0.13)
     x.beginPath()
-    if ((x as any).roundRect) (x as any).roundRect(-largo / 2, y1d, largo, alto, r)
-    else x.rect(-largo / 2, y1d, largo, alto)
+    if ((x as any).roundRect) (x as any).roundRect(-largo / 2, yA, largo, yB - yA, r)
+    else x.rect(-largo / 2, yA, largo, yB - yA)
     x.fill()
-    // filo brillante sobre el lomo del diente
-    x.strokeStyle = 'rgba(255,255,255,0.55)'
-    x.lineWidth = Math.max(0.4, w * 0.055)
-    x.beginPath()
-    x.moveTo(-largo * 0.34, y1d + alto * (lado > 0 ? 0.26 : 0.74))
-    x.lineTo( largo * 0.34, y1d + alto * (lado > 0 ? 0.26 : 0.74))
+
+    // canto oscuro: separa un diente del siguiente
+    x.strokeStyle = 'rgba(0,0,0,0.55)'
+    x.lineWidth = Math.max(0.35, w * 0.035)
     x.stroke()
+
     x.restore()
     lado = -lado
   }
 
-  return { el, left: x0, top: y0 }
+  // ── 3. La ranura del medio, donde encastra un lado con el otro.
+  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.30)'; x.lineWidth = w * 0.07; x.stroke()
+
+  return { el, left: x0, top: y0, sup: S }
 }
 
 // Costura (pespunte): la linea punteada con la que se marca una costura en un
@@ -2235,7 +2229,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           if (z) {
             const img = new fabric.FabricImage(z.el, {
               left: z.left, top: z.top,
-              scaleX: 1 / CIERRE_SUPER, scaleY: 1 / CIERRE_SUPER,
+              scaleX: 1 / z.sup, scaleY: 1 / z.sup,
               selectable: false, evented: false,
             })
             if (clipPath.current) img.clipPath = clipPath.current
@@ -2664,7 +2658,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               const z = dibujarCierre(sampled, brushSizeRef.current, colorRef.current)
               if (z) cierreImg = new fabric.FabricImage(z.el, {
                 left: z.left, top: z.top,
-                scaleX: 1 / CIERRE_SUPER, scaleY: 1 / CIERRE_SUPER,
+                scaleX: 1 / z.sup, scaleY: 1 / z.sup,
                 selectable: false, evented: true,
               })
             } else {
