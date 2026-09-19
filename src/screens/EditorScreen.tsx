@@ -184,83 +184,166 @@ function satinStitchPathStr(pts: fabric.Point[], width: number): string {
   return segs.join(' ')
 }
 
-// Cierre (cremallera).
+// ── Cierre (cremallera) ──────────────────────────────────────────────────────
 //
-// El anterior dibujaba dos rieles y rayitas finas alternando de lado: eso lee
-// como una via de tren, no como un cierre. Un cierre visto de frente es una
-// cinta a cada lado y una CADENA de dientes en el medio, todos del mismo lado
-// del eje y cruzandolo.
+// No es un trazo vectorial: es un PINCEL QUE ESTAMPA, como los packs de
+// Procreate. Un cierre de verdad tiene cinta con sombreado, dientes metalicos
+// con brillo y una canaleta oscura en el medio; eso no entra en un path de un
+// solo color y un solo grosor, por mas que se lo trabaje. Asi que se dibuja en
+// un canvas y entra al lienzo como imagen.
 //
-// Los dientes se devuelven como rectangulos CERRADOS para que salgan rellenos:
-// asi tienen cuerpo y no son un pelito. Las cintas quedan como lineas abiertas;
-// al rellenarlas el area es degenerada, o sea invisible, y solo se ve su trazo.
-function zipperPathStr(pts: fabric.Point[], width: number): string {
-  const w        = Math.max(1.5, width)
-  const cinta    = w * 1.15          // separacion de las cintas al eje
-  const diente   = w * 0.62          // medio largo del diente
-  const grosor   = w * 0.34          // espesor del diente
-  const paso     = w * 0.92          // cada cuanto va un diente
-  const izq: string[] = [], der: string[] = [], dientes: string[] = []
+// El tirador NO va incluido: se agrega aparte, para poder ponerlo donde uno
+// quiera y moverlo.
 
-  let carry = 0
-  let ultimo: { x: number; y: number; ux: number; uy: number } | null = null
-
+/** Recorre la polilinea a pasos parejos, devolviendo posicion y direccion. */
+function recorrer(pts: fabric.Point[], paso: number): { x: number; y: number; ux: number; uy: number }[] {
+  const out: { x: number; y: number; ux: number; uy: number }[] = []
+  let sobra = 0
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i], b = pts[i + 1]
     const dx = b.x - a.x, dy = b.y - a.y
     const len = Math.hypot(dx, dy)
-    if (len < 1e-3) continue
+    if (len < 1e-6) continue
     const ux = dx / len, uy = dy / len
-    const nx = -uy, ny = ux
-    ultimo = { x: b.x, y: b.y, ux, uy }
-
-    izq.push(`${izq.length ? 'L' : 'M'} ${(a.x + nx * cinta).toFixed(2)} ${(a.y + ny * cinta).toFixed(2)}`)
-    der.push(`${der.length ? 'L' : 'M'} ${(a.x - nx * cinta).toFixed(2)} ${(a.y - ny * cinta).toFixed(2)}`)
-    if (i === pts.length - 2) {
-      izq.push(`L ${(b.x + nx * cinta).toFixed(2)} ${(b.y + ny * cinta).toFixed(2)}`)
-      der.push(`L ${(b.x - nx * cinta).toFixed(2)} ${(b.y - ny * cinta).toFixed(2)}`)
-    }
-
-    // Dientes: un rectangulo perpendicular al eje, centrado en el.
-    let d = carry
+    let d = sobra
     while (d < len) {
-      const cx = a.x + ux * d, cy = a.y + uy * d
-      const hx = ux * grosor * 0.5, hy = uy * grosor * 0.5
-      const p1 = [cx + nx * diente - hx, cy + ny * diente - hy]
-      const p2 = [cx + nx * diente + hx, cy + ny * diente + hy]
-      const p3 = [cx - nx * diente + hx, cy - ny * diente + hy]
-      const p4 = [cx - nx * diente - hx, cy - ny * diente - hy]
-      dientes.push(
-        `M ${p1[0].toFixed(2)} ${p1[1].toFixed(2)} L ${p2[0].toFixed(2)} ${p2[1].toFixed(2)} ` +
-        `L ${p3[0].toFixed(2)} ${p3[1].toFixed(2)} L ${p4[0].toFixed(2)} ${p4[1].toFixed(2)} Z`)
+      out.push({ x: a.x + ux * d, y: a.y + uy * d, ux, uy })
       d += paso
     }
-    carry = d - len
+    sobra = d - len
+  }
+  return out
+}
+
+/** La misma polilinea corrida `d` hacia un costado. */
+function corrida(pts: fabric.Point[], d: number): [number, number][] {
+  const out: [number, number][] = []
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.hypot(dx, dy) || 1
+    out.push([pts[i].x - (dy / len) * d, pts[i].y + (dx / len) * d])
+  }
+  return out
+}
+
+const _mezcla = (a: number[], b: number[], t: number) =>
+  `rgb(${Math.round(a[0] + (b[0] - a[0]) * t)},${Math.round(a[1] + (b[1] - a[1]) * t)},${Math.round(a[2] + (b[2] - a[2]) * t)})`
+
+function _rgb(hex: string): number[] {
+  const h = (hex || '#3a3a3a').replace('#', '')
+  if (h.length < 6) return [58, 58, 58]
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
+}
+
+const CIERRE_SUPER = 2   // se dibuja al doble y se muestra a la mitad: sale nitido
+
+/**
+ * Dibuja el cierre sobre un canvas propio y devuelve dónde va apoyado.
+ * `color` es el color de la CINTA; los dientes son metálicos.
+ */
+function dibujarCierre(pts: fabric.Point[], ancho: number, color: string):
+    { el: HTMLCanvasElement; left: number; top: number } | null {
+  if (pts.length < 2) return null
+  const w = Math.max(3, ancho)
+  const margen = w * 2.2
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const p of pts) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y)
+    x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y)
+  }
+  x0 -= margen; y0 -= margen; x1 += margen; y1 += margen
+  const cw = Math.max(4, Math.ceil(x1 - x0)), ch = Math.max(4, Math.ceil(y1 - y0))
+  if (cw * ch > 16e6) return null           // trazo desmesurado: no vale la pena
+
+  const S = CIERRE_SUPER
+  const el = document.createElement('canvas')
+  el.width = cw * S; el.height = ch * S
+  const x = el.getContext('2d')
+  if (!x) return null
+  x.scale(S, S); x.translate(-x0, -y0)
+  x.lineJoin = 'round'; x.lineCap = 'round'
+
+  const trazar = (lista: [number, number][] | fabric.Point[]) => {
+    x.beginPath()
+    lista.forEach((p: any, i: number) => {
+      const px = Array.isArray(p) ? p[0] : p.x, py = Array.isArray(p) ? p[1] : p.y
+      i === 0 ? x.moveTo(px, py) : x.lineTo(px, py)
+    })
   }
 
-  // El cursor del final: es lo que vuelve inconfundible a un cierre.
-  const tirador: string[] = []
-  if (ultimo) {
-    const { x, y, ux, uy } = ultimo
-    const nx = -uy, ny = ux
-    const largo = w * 2.0, ancho = w * 1.25
-    const bx = x - ux * largo, by = y - uy * largo
-    tirador.push(
-      `M ${(bx + nx * ancho).toFixed(2)} ${(by + ny * ancho).toFixed(2)} ` +
-      `L ${(x + nx * ancho * 0.55).toFixed(2)} ${(y + ny * ancho * 0.55).toFixed(2)} ` +
-      `L ${(x - nx * ancho * 0.55).toFixed(2)} ${(y - ny * ancho * 0.55).toFixed(2)} ` +
-      `L ${(bx - nx * ancho).toFixed(2)} ${(by - ny * ancho).toFixed(2)} Z`)
-    // la lengueta, colgando del cursor
-    const lx = x + ux * w * 0.4, ly = y + uy * w * 0.4
-    const l2x = lx + ux * w * 1.5, l2y = ly + uy * w * 1.5
-    tirador.push(
-      `M ${(lx + nx * w * 0.32).toFixed(2)} ${(ly + ny * w * 0.32).toFixed(2)} ` +
-      `L ${(l2x + nx * w * 0.5).toFixed(2)} ${(l2y + ny * w * 0.5).toFixed(2)} ` +
-      `L ${(l2x - nx * w * 0.5).toFixed(2)} ${(l2y - ny * w * 0.5).toFixed(2)} ` +
-      `L ${(lx - nx * w * 0.32).toFixed(2)} ${(ly - ny * w * 0.32).toFixed(2)} Z`)
+  const base = _rgb(color)
+  const claro = _mezcla(base, [255, 255, 255], 0.42)
+  const medio = _mezcla(base, [255, 255, 255], 0.16)
+  const oscuro = _mezcla(base, [0, 0, 0], 0.32)
+  const borde = _mezcla(base, [0, 0, 0], 0.5)
+
+  // ── 1. La cinta. Varias pasadas concentricas hacen el relieve del tejido:
+  //    canto oscuro afuera, cuerpo claro, y sombra otra vez cerca de los dientes.
+  const capas: [number, string][] = [
+    [2.30, borde],
+    [2.18, oscuro],
+    [2.05, medio],
+    [1.70, claro],
+    [1.05, medio],
+    [0.78, oscuro],
+  ]
+  for (const [k, col] of capas) {
+    trazar(pts); x.strokeStyle = col; x.lineWidth = w * k; x.stroke()
   }
 
-  return [izq.join(' '), der.join(' '), ...dientes, ...tirador].join(' ')
+  // ── 2. El pespunte que sujeta la cinta, uno de cada lado.
+  x.setLineDash([w * 0.5, w * 0.42])
+  x.lineWidth = Math.max(0.6, w * 0.10)
+  x.strokeStyle = _mezcla(base, [0, 0, 0], 0.45)
+  for (const lado of [-1, 1]) { trazar(corrida(pts, lado * w * 0.85)); x.stroke() }
+  x.setLineDash([])
+
+  // ── 3. La canaleta del medio, donde encastran los dientes.
+  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.55)'; x.lineWidth = w * 0.42; x.stroke()
+
+  // ── 4. Los dientes. Van alternando de lado y cruzan el eje, como encastran
+  //    los de verdad. Cada uno lleva su degradado metalico y su brillo.
+  const paso = w * 0.62
+  const largo = w * 0.40          // lo que mide el diente a lo largo del cierre
+  const afuera = w * 0.66         // hasta donde llega hacia su costado
+  const adentro = w * 0.17        // cuanto pasa del eje hacia el otro lado
+  let lado = 1
+  for (const q of recorrer(pts, paso)) {
+    const ang = Math.atan2(q.uy, q.ux)
+    x.save()
+    x.translate(q.x, q.y)
+    x.rotate(ang)
+    const y1d = lado > 0 ? -afuera : -adentro
+    const y2d = lado > 0 ?  adentro :  afuera
+    const alto = y2d - y1d
+    const g = x.createLinearGradient(0, y1d, 0, y2d)
+    if (lado > 0) {
+      g.addColorStop(0, '#6f7378'); g.addColorStop(0.28, '#e8ebee')
+      g.addColorStop(0.62, '#a9aeb4'); g.addColorStop(1, '#55585c')
+    } else {
+      g.addColorStop(0, '#55585c'); g.addColorStop(0.38, '#a9aeb4')
+      g.addColorStop(0.72, '#e8ebee'); g.addColorStop(1, '#6f7378')
+    }
+    x.fillStyle = g
+    const r = Math.min(largo * 0.42, alto * 0.3)
+    x.beginPath()
+    if ((x as any).roundRect) (x as any).roundRect(-largo / 2, y1d, largo, alto, r)
+    else x.rect(-largo / 2, y1d, largo, alto)
+    x.fill()
+    // filo brillante sobre el lomo del diente
+    x.strokeStyle = 'rgba(255,255,255,0.55)'
+    x.lineWidth = Math.max(0.4, w * 0.055)
+    x.beginPath()
+    x.moveTo(-largo * 0.34, y1d + alto * (lado > 0 ? 0.26 : 0.74))
+    x.lineTo( largo * 0.34, y1d + alto * (lado > 0 ? 0.26 : 0.74))
+    x.stroke()
+    x.restore()
+    lado = -lado
+  }
+
+  return { el, left: x0, top: y0 }
 }
 
 // Costura (pespunte): la linea punteada con la que se marca una costura en un
@@ -344,7 +427,6 @@ function specialStrokeData(
   if (style === 'bordado') return { d: satinStitchPathStr(pts, width), sw: Math.max(1.4, width * 0.34) }
   // El cierre lleva relleno: los dientes y el cursor son formas cerradas, y sin
   // relleno quedarian como un contorno hueco.
-  if (style === 'cierre')  return { d: zipperPathStr(pts, width), sw: Math.max(1, width * 0.22), relleno: true }
   if (style === 'costura') return { d: seamPathStr(pts, width),   sw: Math.max(1, width * 0.5) }
   return null
 }
@@ -2147,12 +2229,29 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const simplified = rdp(rawPts, epsilon)
 
         // 2. Según el trazado elegido: normal (bezier suave) o especial (bordado/cierre)
+        // El cierre no es un trazo: es un pincel que estampa, y entra como imagen.
+        if (strokeStyleRef.current === 'cierre') {
+          const z = dibujarCierre(simplified, brushSizeRef.current, colorRef.current)
+          if (z) {
+            const img = new fabric.FabricImage(z.el, {
+              left: z.left, top: z.top,
+              scaleX: 1 / CIERRE_SUPER, scaleY: 1 / CIERRE_SUPER,
+              selectable: false, evented: false,
+            })
+            if (clipPath.current) img.clipPath = clipPath.current
+            canvas.add(img)
+            undoHistory.current.push({ type: 'add', obj: img })
+            redoHistory.current = []
+          }
+          rawPts = []
+          canvas.requestRenderAll()
+          return
+        }
         const special = specialStrokeData(simplified, strokeStyleRef.current, brushSizeRef.current)
         const obj = special
           ? new fabric.Path(special.d, {
               stroke: colorRef.current, strokeWidth: special.sw,
               strokeLineCap: 'round',
-              // El cierre necesita relleno: sus dientes son formas cerradas.
               fill: special.relleno ? colorRef.current : null,
               selectable: false, evented: false, strokeUniform: true,
             })
@@ -2558,11 +2657,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           // Trazado especial (bordado/cierre): muestreo la curva en puntos y la
           // reemplazo por las puntadas; si es normal, dejo el path tal cual.
           let special: { d: string; sw: number; relleno?: boolean } | null = null
+          let cierreImg: fabric.FabricImage | null = null
           if (strokeStyleRef.current !== 'normal') {
             const sampled = samplePathCommands((new fabric.Path(penPathStr)).path as any[], Math.max(3, brushSizeRef.current * 0.5))
-            special = specialStrokeData(sampled, strokeStyleRef.current, brushSizeRef.current)
+            if (strokeStyleRef.current === 'cierre') {
+              const z = dibujarCierre(sampled, brushSizeRef.current, colorRef.current)
+              if (z) cierreImg = new fabric.FabricImage(z.el, {
+                left: z.left, top: z.top,
+                scaleX: 1 / CIERRE_SUPER, scaleY: 1 / CIERRE_SUPER,
+                selectable: false, evented: true,
+              })
+            } else {
+              special = specialStrokeData(sampled, strokeStyleRef.current, brushSizeRef.current)
+            }
           }
-          const obj = special
+          const obj = cierreImg ? cierreImg : special
             ? new fabric.Path(special.d, {
                 stroke: colorRef.current, strokeWidth: special.sw,
                 strokeLineCap: 'round',
