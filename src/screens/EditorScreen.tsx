@@ -10,6 +10,7 @@ import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
          shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
 import { transformPath } from '../utils/pathWarp'
 import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
+import ColorPicker from '../components/ColorPicker'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg } from '../utils/prendasParam'
 import './EditorScreen.css'
 
@@ -6524,14 +6525,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {propFill !== null ? (
                 <>
-                  <label style={{ position: 'relative', cursor: 'pointer' }}>
-                    <input type="color" value={propFill} onChange={e => applyFill(e.target.value)}
-                      style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                    <div style={{
-                      width: 32, height: 32, borderRadius: 8, background: propFill,
-                      border: '2px solid var(--line)', cursor: 'pointer',
-                    }} />
-                  </label>
+                  <ColorPicker value={propFill} onChange={applyFill} title="Color de relleno" />
                   <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propFill}</span>
                   <PickColorBtn title="Tomar un color de la pantalla"
                     onPick={applyFill} onFallback={() => setTool('eyedropper')} />
@@ -6552,14 +6546,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
             <div className="label" style={{ marginBottom: 8 }}>Trazado</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <label style={{ position: 'relative', cursor: 'pointer' }}>
-                <input type="color" value={propStroke} onChange={e => applyStroke(e.target.value)}
-                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                <div style={{
-                  width: 32, height: 32, borderRadius: 8, background: propStroke,
-                  border: '2px solid var(--line)', cursor: 'pointer',
-                }} />
-              </label>
+              <ColorPicker value={propStroke} onChange={applyStroke} title="Color del trazado" />
               <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propStroke}</span>
               <PickColorBtn title="Tomar un color de la pantalla"
                 onPick={applyStroke} onFallback={() => setTool('eyedropper')} />
@@ -6809,12 +6796,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
                   {/* Color principal (los demás se ajustan solos) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <label style={{ position: 'relative', cursor: 'pointer' }}>
-                      <input type="color" value={texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}
-                        onChange={e => setTexPrimary(activeTexKind, e.target.value)}
-                        style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                      <div style={{ width: 32, height: 32, borderRadius: 8, background: texColors[activeTexKind][TEX_PRIMARY[activeTexKind]], border: '2px solid var(--line)' }} />
-                    </label>
+                    <ColorPicker
+                      value={texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}
+                      onChange={c => setTexPrimary(activeTexKind, c)}
+                      title="Color principal de la tela" />
                     <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
                     <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}</span>
                   </div>
@@ -6832,12 +6817,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
                           {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
                             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <label style={{ position: 'relative', cursor: 'pointer' }}>
-                                <input type="color" value={texColors[activeTexKind][i]}
-                                  onChange={e => updateTexColor(activeTexKind, i, e.target.value)}
-                                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                                <div style={{ width: 26, height: 26, borderRadius: 6, background: texColors[activeTexKind][i], border: '2px solid var(--line)' }} />
-                              </label>
+                              <ColorPicker
+                                value={texColors[activeTexKind][i]}
+                                onChange={c => updateTexColor(activeTexKind, i, c)}
+                                size={26} title={slot.label} />
                               <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
                               <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
                             </div>
@@ -6873,12 +6856,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                         resto de los hilos lo acompañan, así el tartán sigue
                         siendo el mismo tartán en otro color. */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <label style={{ position: 'relative', cursor: 'pointer' }}>
-                        <input type="color" value={cur[0]}
-                          onChange={e => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, e.target.value))}
-                          style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                        <div style={{ width: 32, height: 32, borderRadius: 8, background: cur[0], border: '2px solid var(--line)' }} />
-                      </label>
+                      <ColorPicker
+                        value={cur[0]}
+                        onChange={c => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, c))}
+                        title="Color principal de la tela" />
                       <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
                       <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[0]}</span>
                     </div>
@@ -6895,16 +6876,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
                             {src.colors.map((_, i) => (
                               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <label style={{ position: 'relative', cursor: 'pointer' }}>
-                                  <input type="color" value={cur[i]}
-                                    onChange={e => {
-                                      const next = [...cur]
-                                      next[i] = e.target.value
-                                      setRawPalette(activeUserTex, next)
-                                    }}
-                                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                                  <div style={{ width: 26, height: 26, borderRadius: 6, background: cur[i], border: '2px solid var(--line)' }} />
-                                </label>
+                                <ColorPicker
+                                  value={cur[i]}
+                                  onChange={c => {
+                                    const next = [...cur]
+                                    next[i] = c
+                                    setRawPalette(activeUserTex, next)
+                                  }}
+                                  size={26} />
                                 <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>
                                   {i === 0 ? 'Color principal' : `Color ${i + 1}`}
                                 </span>
