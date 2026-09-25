@@ -73,6 +73,21 @@ function applyPaint(obj: fabric.FabricObject, s: PaintSnap): void {
   obj.set({ fill: s.fill as string, dirty: true })
 }
 
+/**
+ * Si dos recetas de pintura son la misma.
+ *
+ * Sirve para NO anotar un paso de deshacer cuando el balde pinta algo del color
+ * que ya tenia. Sin esto, dos clics seguidos en la misma pieza dejaban un paso
+ * vacio arriba de todo y el primer Ctrl+Z no se notaba: parecia que deshacer
+ * estaba roto.
+ */
+function mismaPintura(a: PaintSnap, b: PaintSnap): boolean {
+  const j = (v: unknown) => (v === undefined ? '' : JSON.stringify(v))
+  return (a.fill ?? null) === (b.fill ?? null)
+    && j(a.tex) === j(b.tex) && j(a.eff) === j(b.eff)
+    && (a.base ?? '') === (b.base ?? '') && j(a.uTex) === j(b.uTex)
+}
+
 /** Dónde estaba y cómo estaba un objeto, para poder devolverlo ahí. */
 interface GeomSnap {
   obj: fabric.FabricObject
@@ -3439,13 +3454,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
       // volvía por encima del color recién elegido.
       const pintar = (objs: fabric.FabricObject[]) => {
+        const receta: PaintSnap = { fill: colorRef.current, base: colorRef.current }
         const items = objs
           .filter(o => o && !(o as any)._locked)
           .map(o => ({ obj: o, prev: snapshotPaint(o) }))
+          // Lo que ya esta de ese color no se toca ni se anota.
+          .filter(it => !mismaPintura(it.prev, receta))
         if (!items.length) return
-        for (const it of items) {
-          applyPaint(it.obj, { fill: colorRef.current, base: colorRef.current })
-        }
+        for (const it of items) applyPaint(it.obj, receta)
         // El hueco del cuello se lee como el reves de la tela: si el cuerpo
         // cambia de color tiene que acompanar, aunque se pinte de a una pieza.
         syncInnerShade()
@@ -4431,6 +4447,43 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.('Prenda dividida. La línea se puede mover, y cada parte se pinta aparte.')
   }
 
+  /**
+   * Reapunta los pasos de deshacer a las piezas nuevas de la prenda.
+   *
+   * La prenda se REHACE entera con cada cambio de medida: las piezas viejas se
+   * tiran y se arman otras. Los pasos de deshacer guardaban la pieza vieja, asi
+   * que pintar algo, tocar una medida y hacer Ctrl+Z no hacia nada: le devolvia
+   * el color a un objeto que ya no estaba en el lienzo.
+   *
+   * Se empareja por NOMBRE de pieza, con los mismos respaldos que usa la
+   * pintura: si la pieza se partio (`cuerpo` -> `cuerpo#1`) o al reves, igual
+   * se encuentra.
+   */
+  function remapearHistorial(viejos: fabric.FabricObject[], nuevos: fabric.FabricObject[]) {
+    if (!viejos.length || !nuevos.length) return
+    const porClave = new Map<string, fabric.FabricObject>()
+    for (const o of nuevos) {
+      const k = (o as any)._pieceKey as string | undefined
+      if (k && !porClave.has(k)) porClave.set(k, o)
+    }
+    const mapa = new Map<fabric.FabricObject, fabric.FabricObject>()
+    for (const v of viejos) {
+      const k = (v as any)._pieceKey as string | undefined
+      if (!k) continue
+      const n = porClave.get(k) ?? porClave.get(k.split('#')[0]) ?? porClave.get(k + '#1')
+      if (n && n !== v) mapa.set(v, n)
+    }
+    if (!mapa.size) return
+    const cambiar = (o: fabric.FabricObject) => mapa.get(o) ?? o
+    const arreglar = (h: HistoryEntry[]) => h.forEach(e => {
+      if (e.type === 'fill' || e.type === 'props' || e.type === 'opacity') e.obj = cambiar(e.obj)
+      else if (e.type === 'fillBatch' || e.type === 'transform') e.items.forEach(it => { it.obj = cambiar(it.obj) })
+      else if (e.type === 'moveDelta') e.objs = e.objs.map(cambiar)
+    })
+    arreglar(undoHistory.current)
+    arreglar(redoHistory.current)
+  }
+
   /** Rehace la prenda con las medidas que tiene puestas. */
   function rehacerPrenda() {
     if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
@@ -4725,6 +4778,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const items = targets.map(o => ({ obj: o, prev: snapshotPaint(o) }))
     targets.forEach(mut)
     syncInnerShade()
+    // Si no cambio nada, no se anota: un paso vacio hace que el Ctrl+Z
+    // siguiente parezca que no hizo nada.
+    if (items.every(it => mismaPintura(it.prev, snapshotPaint(it.obj)))) {
+      canvas.requestRenderAll()
+      return
+    }
     undoHistory.current.push(items.length === 1
       ? { type: 'fill', obj: items[0].obj, prev: items[0].prev }
       : { type: 'fillBatch', items })
@@ -5632,6 +5691,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
     }))
     mockupPrevKeys.current = mockupObjects.current.map(o => (o as any)._pieceKey as string ?? '')
+    const piezasViejas = mockupObjects.current
     mockupObjects.current.forEach(o => canvas.remove(o))
 
     const shapes = aplicarCortes(buildTeeShapes(m), cortesRef.current)
@@ -5713,6 +5773,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
+    remapearHistorial(piezasViejas, objs)
     syncInnerShade()
 
     // Clip = unión de todas las piezas.
@@ -5773,6 +5834,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
       key:  (o as any)._pieceKey as string | undefined,
     }))
+    const piezasViejas = mockupObjects.current
     mockupObjects.current.forEach(o => canvas.remove(o))
 
     // Las piezas, ya con los cortes aplicados. Se devuelve tambien de que pieza
@@ -5898,6 +5960,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
+    remapearHistorial(piezasViejas, objs)
     syncInnerShade()
 
     // El recorte es la unión de las piezas que se pintan (no el cuello ni los
