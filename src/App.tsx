@@ -219,6 +219,51 @@ export default function App() {
     })
   }
 
+  // ── Atajos de pestañas ─────────────────────────────────────────────────────
+  //
+  // Chrome se queda con Ctrl+W y Ctrl+Tab antes de que la pagina los vea, asi
+  // que los mismos atajos van tambien en Alt, que si llega: Alt+W cierra y
+  // Alt+flechas cambia de pestana. Se registran igual en Ctrl por si la app
+  // corre donde el navegador no los reserva.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (route === 'onboard') return
+      const el = e.target as HTMLElement | null
+      // Escribiendo en un campo mandan las teclas del campo.
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return
+      const ctrl = e.ctrlKey || e.metaKey
+
+      // Cerrar la pestana que se esta viendo.
+      if ((ctrl || e.altKey) && (e.key === 'w' || e.key === 'W')) {
+        const actual = openTabs.find(t => t.kind === route && t.project.id === activeProject?.id)
+        if (!actual) return
+        e.preventDefault(); e.stopPropagation()
+        closeTab(actual)
+        return
+      }
+
+      // Pasar de una pestana a otra, contando Inicio como una mas.
+      const conTab   = (ctrl || e.altKey) && e.key === 'Tab'
+      const conFlecha = e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      if (conTab || conFlecha) {
+        if (!openTabs.length) return
+        e.preventDefault(); e.stopPropagation()
+        const atras = conTab ? e.shiftKey : e.key === 'ArrowLeft'
+        // Inicio es la posicion 0 y las pestanas siguen; cualquier otra
+        // pantalla cuenta como Inicio.
+        const i = openTabs.findIndex(t => t.kind === route && t.project.id === activeProject?.id)
+        const actual = i < 0 ? 0 : i + 1
+        const total = openTabs.length + 1
+        const destino = (actual + (atras ? -1 : 1) + total) % total
+        if (destino === 0) { setActive(null); go('home') }
+        else activateTab(openTabs[destino - 1])
+      }
+    }
+    // En captura: el editor tambien escucha el teclado y no puede quedarse con estas.
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [route, openTabs, activeProject])
+
   async function handleCreate(p: Project) {
     try {
       await saveProject(p, user?.id)

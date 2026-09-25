@@ -5072,7 +5072,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Flechas — mover lo seleccionado de a un píxel (10 con Shift).
       // Es la forma de acomodar algo con precisión: a mano el mouse nunca cae
       // justo, y con esto se ajusta sin pelear con el pulso.
-      if (!ctrl && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      // Con Alt las flechas cambian de pestana (lo maneja App), no mueven nada.
+      if (!ctrl && !e.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
         const activo = canvas.getActiveObject()
         if (!activo) return
         e.preventDefault()
