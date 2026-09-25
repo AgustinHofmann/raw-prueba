@@ -3378,24 +3378,53 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        // Rellenar el objeto que realmente se clickeó: si es una prenda (mockup)
-        // se rellena la prenda; si es un item dibujado (forma/trazo) se rellena
-        // ese item, no la prenda que tiene detrás.
-        const target = e.target
-        if (!target || (target as any)._locked) return
-        const prev = snapshotPaint(target)
-        // El balde deja la pieza en color liso: hay que BORRAR la tela que
-        // tuviera, o al primer redibujo (cambiar una medida, guardar y abrir)
-        // el estampado volvía por encima del color recién elegido.
-        applyPaint(target, { fill: colorRef.current, base: colorRef.current })
-        syncInnerShade()
-        undoHistory.current.push({ type: 'fill', obj: target, prev })
+      // El balde deja la pieza en color liso: hay que BORRAR la tela que tuviera,
+      // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
+      // volvía por encima del color recién elegido.
+      const pintar = (objs: fabric.FabricObject[]) => {
+        const items = objs
+          .filter(o => o && !(o as any)._locked)
+          .map(o => ({ obj: o, prev: snapshotPaint(o) }))
+        if (!items.length) return
+        for (const it of items) {
+          applyPaint(it.obj, { fill: colorRef.current, base: colorRef.current })
+        }
+        undoHistory.current.push({ type: 'fillBatch', items })
         redoHistory.current = []
         canvas.requestRenderAll()
       }
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        // Un clic pinta SOLO la pieza que se tocó: si es una prenda se pinta esa
+        // pieza, y si es algo dibujado se pinta ese item y no la prenda de atrás.
+        //
+        // Ya NO se recalcula la sombra del escote. Antes se hacía siempre, y
+        // pintar el pecho de la chomba te tenía el escote de rojo oscuro sin
+        // haberlo tocado. Ahora el escote solo acompaña cuando se pinta la
+        // prenda ENTERA (doble clic o desde el panel de telas).
+        const target = e.target
+        if (!target || (target as any)._locked) return
+        pintar([target])
+      }
+
+      // Doble clic: toda la prenda de una. Ahí sí el escote acompaña, porque es
+      // el interior de la misma prenda que se acaba de pintar.
+      const onDouble = (e: fabric.TPointerEventInfo) => {
+        const target = e.target
+        if (!target) return
+        const esPrenda = mockupObjects.current.includes(target)
+        if (!esPrenda) return
+        pintar(mockupObjects.current.filter(o => !(o as any)._rawInner))
+        syncInnerShade()
+        canvas.requestRenderAll()
+      }
+
       canvas.on('mouse:down', onDown)
-      offs.push(() => canvas.off('mouse:down', onDown))
+      canvas.on('mouse:dblclick', onDouble)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:dblclick', onDouble)
+      })
     }
 
     // ── Gotero ───────────────────────────────────────────────────────────────
