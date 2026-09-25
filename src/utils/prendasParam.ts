@@ -27,6 +27,15 @@ export interface PrendaParam {
   /** Unidades del dibujo por cm, para que el estampado salga a escala real. */
   unidadesPorCm: number
   defaults: Medidas
+  /**
+   * Los valores por defecto ANTERIORES a medir el dibujo.
+   *
+   * Los primeros numeros eran de catalogo y no coincidian con la prenda
+   * dibujada. Al corregirlos, un proyecto ya guardado cambiaria de forma solo;
+   * con esto se convierten al abrirlo y la prenda se ve igual que cuando se
+   * guardo, pero con los cm ya arreglados.
+   */
+  defaultsV1?: Medidas
   campos: CampoMedida[]
   /** Agrupadas para el panel: plegado se edita el grupo, desplegado una por una. */
   grupos: GrupoMedida[]
@@ -58,23 +67,32 @@ function factorPorAltura(y: number, ctrl: [number, number][]): number {
 // ── Pantalón ─────────────────────────────────────────────────────────────────
 // Medido del archivo: el dibujo va de y=1.1 (cintura) a y=295 (ruedo) y se
 // ensancha hacia abajo (es de pierna ancha). Anchos reales del dibujo:
-//   y=13.5 → 92    y=95 → 120    y=190 → 140    y=282 → 146
-// A 2.3 unidades por cm dan 40, 52, 61 y 63 cm, que son los valores por defecto.
+//   y=13.5 → 93.1    y=95 → 120.4    y=190 → 140.8    y=282 → 152.1
+// El largo da 100 cm justos a 2.94 unidades por cm, y esa misma escala se usa
+// para los anchos: antes los anchos salian de una escala distinta (2.3) y por
+// eso decian 40 de cintura donde el dibujo tenia 31,5.
 const PANT_CX    = 77.5     // centro entre las dos piernas
 const PANT_Y_TOP = 1.1
 
+const PANT_UPC = 2.94
+/**
+ * Lo que mide el dibujo, en cm. Cintura y cadera van de lado a lado de la
+ * prenda, como se mide un pantalon apoyado en la mesa; rodilla y ruedo son de
+ * UNA pierna.
+ */
+const PANT_CM = { largoTotal: 100, cintura: 31.5, cadera: 41, rodilla: 22, ruedo: 22.5 }
+
 const pantalon: PrendaParam = {
   svg: '/mockups/pants.svg',
-  // A lo LARGO el dibujo tiene otra escala que a lo ancho (es un dibujo
-  // estilizado, no un plano). Para el estampado manda la vertical.
-  unidadesPorCm: 2.94,
-  defaults: { largoTotal: 100, cintura: 40, cadera: 52, rodilla: 61, ruedo: 63 },
+  unidadesPorCm: PANT_UPC,
+  defaults: { ...PANT_CM },
+  defaultsV1: { largoTotal: 100, cintura: 40, cadera: 52, rodilla: 61, ruedo: 63 },
   campos: [
     { key: 'largoTotal', label: 'Largo total',    min: 70, max: 130 },
-    { key: 'cintura',    label: 'Cintura',        min: 28, max: 60 },
-    { key: 'cadera',     label: 'Cadera',         min: 38, max: 75 },
-    { key: 'rodilla',    label: 'Rodilla',        min: 30, max: 85 },
-    { key: 'ruedo',      label: 'Ruedo',          min: 24, max: 90 },
+    { key: 'cintura',    label: 'Cintura',        min: 22, max: 50 },
+    { key: 'cadera',     label: 'Cadera',         min: 30, max: 62 },
+    { key: 'rodilla',    label: 'Rodilla',        min: 12, max: 42 },
+    { key: 'ruedo',      label: 'Ruedo',          min: 10, max: 45 },
   ],
   grupos: [
     { id: 'largo',  label: 'Largo',            keys: ['largoTotal'] },
@@ -82,12 +100,12 @@ const pantalon: PrendaParam = {
     { id: 'pierna', label: 'Pierna',           keys: ['rodilla', 'ruedo'] },
   ],
   warp: (m) => {
-    const fLargo = m.largoTotal / 100
+    const fLargo = m.largoTotal / PANT_CM.largoTotal
     const ctrl: [number, number][] = [
-      [13.5, m.cintura / 40],
-      [95,   m.cadera  / 52],
-      [190,  m.rodilla / 61],
-      [282,  m.ruedo   / 63],
+      [13.5, m.cintura / PANT_CM.cintura],
+      [95,   m.cadera  / PANT_CM.cadera],
+      [190,  m.rodilla / PANT_CM.rodilla],
+      [282,  m.ruedo   / PANT_CM.ruedo],
     ]
     return (x, y) => {
       const f = factorPorAltura(y, ctrl)
@@ -102,30 +120,64 @@ const pantalon: PrendaParam = {
 }
 
 // ── Chomba ───────────────────────────────────────────────────────────────────
+//
+// TODO lo de acá abajo está MEDIDO del archivo (`public/mockups/chomba.svg`),
+// que es un dibujo de líneas rectas: se leyeron sus vértices y se calcularon
+// los anchos reales a cada altura. Los centímetros por defecto son los que el
+// dibujo mide de verdad, no valores de catálogo: antes decían 56 de pecho
+// cuando el dibujo tenía 50,4, y por eso cualquier cambio salía desproporcionado
+// (pedir 26 de cuello daba 36 reales).
+//
 // El archivo trae FRENTE y ESPALDA una al lado de la otra. Cada mitad se deforma
 // alrededor de SU propio centro; si se usara uno solo, tocar el ancho de pecho
 // separaría las dos mitades en vez de ensanchar la prenda.
-const CHOMBA_CX_FRENTE = 129.6
+const CHOMBA_UPC = 3.065          // unidades del dibujo por cm
+const CHOMBA_CX_FRENTE  = 129.58
 const CHOMBA_CX_ESPALDA = 399.15
-const CHOMBA_Y_HOMBRO  = 14.8    // arriba del cuerpo; desde acá se mide el largo
-const CHOMBA_Y_SISA    = 104     // abajo de la manga
-const CHOMBA_Y_RUEDO   = 228
-const CHOMBA_Y_MANGA   = 28.9    // arriba de la manga (la costura del hombro)
-// Donde la manga se pega al cuerpo, en el FRENTE (la espalda va corrida).
-const CHOMBA_X_SISA_IZQ = 57.4
-const CHOMBA_X_SISA_DER = 201.8
+const CHOMBA_Y_CUELLO = 14.83     // punto alto del hombro: de acá arranca el escote
+const CHOMBA_Y_MANGA  = 28.90     // costura del hombro (arriba de la manga)
+const CHOMBA_Y_SISA   = 104.96    // axila: abajo de la sisa
+const CHOMBA_Y_RUEDO  = 227.95
+const CHOMBA_Y_ABAJO  = 235.49    // abajo de la tira del ruedo
+// El escote: ningún punto suyo pasa de |dx|=39 ni de y=61, y la punta del hombro
+// está en |dx|=74. Con estos límites se separan sin tocarse.
+const CHOMBA_ESCOTE_X = 45
+const CHOMBA_ESCOTE_Y = 61
+// El hombro acompaña al pecho A LA MITAD. Ensanchar 10 cm el pecho no ensancha
+// 10 cm los hombros; sin esto, subir un talle los mandaba para el costado.
+const CHOMBA_HOMBRO_PROP = 0.5
+// El borde de la manga pegado al cuerpo (la sisa) y el de la boca, por altura.
+// Están tomados de la manga IZQUIERDA del frente: las otras tres son su espejo
+// o van corridas.
+const CHOMBA_SISA_X: [number, number][] = [
+  [28.90, 54.95], [47.40, 57.36], [71.54, 57.36], [95.17, 54.87], [104.36, 51.53],
+]
+const CHOMBA_BOCA_X: [number, number][] = [[47.68, 6.63], [104.36, 18.91]]
+const CHOMBA_MANGA_MEDIO = 76.02  // mitad de la boca de la manga
+
+/** Lo que mide el dibujo, en cm. Con estos valores la prenda sale sin tocar. */
+const CHOMBA_CM = {
+  largoTotal: 72, anchoPecho: 50.5, anchoCintura: 51.5,
+  anchoCuello: 23.5, largoManga: 17, anchoManga: 18,
+}
 
 const chomba: PrendaParam = {
   svg: '/mockups/chomba.svg',
-  unidadesPorCm: 3.065,
-  defaults: { largoTotal: 72, anchoPecho: 56, anchoCintura: 60, anchoCuello: 17, largoManga: 21, anchoManga: 21 },
+  unidadesPorCm: CHOMBA_UPC,
+  defaults: { ...CHOMBA_CM },
+  // Lo que decían los valores por defecto antes de medir el dibujo. Sirve para
+  // convertir los proyectos ya guardados y que no cambien de forma.
+  defaultsV1: {
+    largoTotal: 72, anchoPecho: 56, anchoCintura: 60,
+    anchoCuello: 17, largoManga: 21, anchoManga: 21,
+  },
   campos: [
-    { key: 'largoTotal',   label: 'Largo total',      min: 58, max: 95 },
-    { key: 'anchoPecho',   label: 'Ancho de pecho',   min: 42, max: 78 },
-    { key: 'anchoCintura', label: 'Ancho de cintura', min: 44, max: 82 },
-    { key: 'anchoCuello',  label: 'Ancho de cuello',  min: 12, max: 26 },
-    { key: 'largoManga',   label: 'Largo de manga',   min: 12, max: 40 },
-    { key: 'anchoManga',   label: 'Ancho de manga',   min: 14, max: 34 },
+    { key: 'largoTotal',   label: 'Largo total',      min: 55, max: 95 },
+    { key: 'anchoPecho',   label: 'Ancho de pecho',   min: 38, max: 75 },
+    { key: 'anchoCintura', label: 'Ancho de cintura', min: 38, max: 78 },
+    { key: 'anchoCuello',  label: 'Ancho de cuello',  min: 16, max: 34 },
+    { key: 'largoManga',   label: 'Largo de manga',   min: 8,  max: 40 },
+    { key: 'anchoManga',   label: 'Ancho de manga',   min: 12, max: 32 },
   ],
   grupos: [
     { id: 'largo',  label: 'Largo',                 keys: ['largoTotal'] },
@@ -134,49 +186,71 @@ const chomba: PrendaParam = {
     { id: 'manga',  label: 'Manga',                 keys: ['largoManga', 'anchoManga'] },
   ],
   warp: (m, id) => {
-    const fPecho   = m.anchoPecho   / 56
-    const fCintura = m.anchoCintura / 60
-    const fCuello  = m.anchoCuello  / 17
-    const fLargo   = m.largoTotal   / 72
-    const fMangaL  = m.largoManga   / 21
-    const fMangaA  = m.anchoManga   / 21
+    const fPecho   = m.anchoPecho   / CHOMBA_CM.anchoPecho
+    const fCintura = m.anchoCintura / CHOMBA_CM.anchoCintura
+    const fCuello  = m.anchoCuello  / CHOMBA_CM.anchoCuello
+    const fMangaL  = m.largoManga   / CHOMBA_CM.largoManga
+    const fMangaA  = m.anchoManga   / CHOMBA_CM.anchoManga
 
-    const espalda = id.endsWith('-back')
-    const cx  = espalda ? CHOMBA_CX_ESPALDA : CHOMBA_CX_FRENTE
-    const off = espalda ? CHOMBA_CX_ESPALDA - CHOMBA_CX_FRENTE : 0
+    // El largo estira SOLO de la axila para abajo. Arriba están la sisa, el
+    // hombro y el cuello, que no cambian porque la prenda sea más larga: antes
+    // se estiraba desde el hombro, la sisa se iba para abajo sola y la manga
+    // quedaba colgando en el aire.
+    const altoFijo = CHOMBA_Y_SISA - CHOMBA_Y_CUELLO
+    const fLargo = Math.max(0.15,
+      (m.largoTotal * CHOMBA_UPC - altoFijo) / (CHOMBA_Y_ABAJO - CHOMBA_Y_SISA))
 
-    // El cuello y su vista: solo se abren o se cierran, no siguen al largo.
+    const off = id.endsWith('-back') ? CHOMBA_CX_ESPALDA - CHOMBA_CX_FRENTE : 0
+    const cx  = CHOMBA_CX_FRENTE + off
+
+    const alto = (y: number) =>
+      y <= CHOMBA_Y_SISA ? y : CHOMBA_Y_SISA + (y - CHOMBA_Y_SISA) * fLargo
+
+    // Cuánto se abre la prenda a cada altura. Una sola función para todo: la
+    // usa el cuerpo Y la usa la manga para saber dónde quedó la sisa, así las
+    // dos se mueven juntas y la manga no se despega nunca.
+    const fHombro = 1 + (fPecho - 1) * CHOMBA_HOMBRO_PROP
+    const ancho = (y: number) =>
+      y <= CHOMBA_Y_MANGA ? fHombro :
+      y <= CHOMBA_Y_SISA  ? fHombro + (fPecho - fHombro) * ((y - CHOMBA_Y_MANGA) / (CHOMBA_Y_SISA - CHOMBA_Y_MANGA)) :
+      y >= CHOMBA_Y_RUEDO ? fCintura :
+      fPecho + (fCintura - fPecho) * ((y - CHOMBA_Y_SISA) / (CHOMBA_Y_RUEDO - CHOMBA_Y_SISA))
+
+    // El cuello cosido y la vista: solo se abren o se cierran.
     if (id.includes('collar') || id.includes('escote')) {
       return (x, y) => [cx + (x - cx) * fCuello, y]
     }
 
-    // Manga y puño: se alargan hacia AFUERA desde la sisa y se ensanchan hacia
-    // abajo, colgando del hombro. La sisa se mueve sola con el ancho de pecho,
-    // así que la manga sigue al cuerpo en vez de despegarse de él.
+    // Manga y puño. La cuenta se hace SIEMPRE como si fuera la manga izquierda
+    // del frente; la derecha es su espejo y la espalda va corrida.
     if (id.includes('sleeve') || id.includes('cuff')) {
-      const izq = id.includes('left')
-      const xSisa = (izq ? CHOMBA_X_SISA_IZQ : CHOMBA_X_SISA_DER) + off
-      const xSisaNueva = cx + (xSisa - cx) * fPecho
-      return (x, y) => [
-        xSisaNueva + (x - xSisa) * fMangaL,
-        CHOMBA_Y_MANGA + (y - CHOMBA_Y_MANGA) * fMangaA,
-      ]
+      const der = id.includes('right')
+      const aIzq   = (x: number) => der ? 2 * CHOMBA_CX_FRENTE - (x - off) : x - off
+      const aFinal = (u: number) => (der ? 2 * CHOMBA_CX_FRENTE - u : u) + off
+      return (x, y) => {
+        const u = aIzq(x)
+        const sisa = factorPorAltura(y, CHOMBA_SISA_X)
+        const boca = factorPorAltura(y, CHOMBA_BOCA_X)
+        // 0 = pegado al cuerpo, 1 = en la boca de la manga.
+        const t = (sisa - u) / (sisa - boca)
+        // El borde de la sisa va a parar exactamente donde fue a parar el
+        // cuerpo, y lo que se estira o se abre es de ahí para afuera.
+        const sisaNueva = CHOMBA_CX_FRENTE + (sisa - CHOMBA_CX_FRENTE) * ancho(y)
+        return [
+          aFinal(sisaNueva - t * (sisa - boca) * fMangaL),
+          y + t * (fMangaA - 1) * (y - CHOMBA_MANGA_MEDIO),
+        ]
+      }
     }
 
     // Cuerpo y ruedo.
     return (x, y) => {
       const dx = x - cx
-      // El escote está dibujado dentro del cuerpo: si se ensanchara con el
-      // pecho, subir una talle agrandaría el cuello. Se lo trata aparte.
-      if (y < 62 && Math.abs(dx) < 32) return [cx + dx * fCuello, y]
-      const f = y <= CHOMBA_Y_SISA ? fPecho
-              : y >= CHOMBA_Y_RUEDO ? fCintura
-              : fPecho + (fCintura - fPecho) * ((y - CHOMBA_Y_SISA) / (CHOMBA_Y_RUEDO - CHOMBA_Y_SISA))
-      return [
-        cx + dx * f,
-        // Arriba del hombro no hay nada que alargar; de la sisa para abajo sí.
-        y <= CHOMBA_Y_HOMBRO ? y : CHOMBA_Y_HOMBRO + (y - CHOMBA_Y_HOMBRO) * fLargo,
-      ]
+      // El escote está dibujado dentro del cuerpo. Si se ensanchara con el
+      // pecho, subir un talle agrandaría el cuello y el cuello cosido —que sigue
+      // a SU medida— se despegaría del cuerpo.
+      const enEscote = y <= CHOMBA_ESCOTE_Y && Math.abs(dx) <= CHOMBA_ESCOTE_X
+      return [cx + dx * (enEscote ? fCuello : ancho(y)), alto(y)]
     }
   },
 }

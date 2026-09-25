@@ -12,7 +12,7 @@ import { transformPath } from '../utils/pathWarp'
 import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import ColorPicker from '../components/ColorPicker'
 import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
-import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg } from '../utils/prendasParam'
+import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -1900,7 +1900,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // ESTA prenda, así un proyecto viejo (guardado sin medidas) abre entero en
     // vez de con medidas en blanco.
     if (prendaParam) {
-      const md: Medidas = { ...prendaParam.defaults, ...(design?.garment?.medidas ?? {}) }
+      const md: Medidas = { ...prendaParam.defaults, ...convertirMedidas(design?.garment, prendaParam) }
       medidasRef.current = md
       setMedidas(md)
     }
@@ -5375,6 +5375,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const garment: SavedGarment = {
       measures: measuresRef.current,
       medidas:  medidasRef.current,
+      medidasV: 2,
       cortes:   cortesRef.current,
       pieces: mockupObjects.current.map(o => ({
         key:  (o as any)._pieceKey as string | undefined,
@@ -8070,7 +8071,33 @@ interface SavedPiece {
 // `cortes` acepta el formato viejo (solo los puntos) y el nuevo, que ademas
 // guarda a que pieza se le aplico el corte.
 type SavedCorte = number[][] | { pts: number[][]; piezas?: string[] }
-interface SavedGarment { measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[]; cortes?: SavedCorte[] }
+interface SavedGarment {
+  measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[]; cortes?: SavedCorte[]
+  /** 2 = las medidas ya estan en la escala real del dibujo. Sin esto, son viejas. */
+  medidasV?: number
+}
+
+/**
+ * Pasa las medidas guardadas a la escala nueva.
+ *
+ * Los centimetros por defecto de la chomba y el pantalon no coincidian con lo
+ * que el dibujo media de verdad (decia 56 de pecho donde habia 50,4). Al
+ * corregirlos, un proyecto guardado con los viejos se veria distinto de como
+ * quedo: se convierte proporcionalmente para que la prenda salga IGUAL, solo
+ * que ahora el numero dice la verdad.
+ */
+function convertirMedidas(g: SavedGarment | null | undefined, prenda: PrendaParam): Medidas {
+  const guardadas = g?.medidas
+  if (!guardadas) return {}
+  if ((g?.medidasV ?? 1) >= 2 || !prenda.defaultsV1) return guardadas
+  const viejos = prenda.defaultsV1
+  const out: Medidas = {}
+  for (const [k, v] of Object.entries(guardadas)) {
+    const antes = viejos[k], ahora = prenda.defaults[k]
+    out[k] = (antes && ahora) ? v * (ahora / antes) : v
+  }
+  return out
+}
 interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
 
 function parseDesign(json: string): SavedDesign {
