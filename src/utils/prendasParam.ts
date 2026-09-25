@@ -153,12 +153,18 @@ const CHOMBA_SISA_X: [number, number][] = [
   [28.90, 54.95], [47.40, 57.36], [71.54, 57.36], [95.17, 54.87], [104.36, 51.53],
 ]
 const CHOMBA_BOCA_X: [number, number][] = [[47.68, 6.63], [104.36, 18.91]]
-const CHOMBA_MANGA_MEDIO = 76.02  // mitad de la boca de la manga
+// El borde de ARRIBA de la manga: arranca en la costura del hombro y termina
+// arriba de la boca. El ancho crece desde ese borde hacia ABAJO, así que el
+// borde no se mueve nunca.
+const CHOMBA_MANGA_ARRIBA = 47.68
+// Cuanto más larga la manga, más apunta para abajo. Con tope, para que no se
+// pliegue sobre sí misma.
+const CHOMBA_CAIDA_MAX = 0.40
 
 /** Lo que mide el dibujo, en cm. Con estos valores la prenda sale sin tocar. */
 const CHOMBA_CM = {
   largoTotal: 72, anchoPecho: 50.5, anchoCintura: 51.5,
-  anchoCuello: 23.5, largoManga: 17, anchoManga: 18,
+  anchoCuello: 23.5, profundidadCuello: 15, largoManga: 17, anchoManga: 18,
 }
 
 const chomba: PrendaParam = {
@@ -169,26 +175,28 @@ const chomba: PrendaParam = {
   // convertir los proyectos ya guardados y que no cambien de forma.
   defaultsV1: {
     largoTotal: 72, anchoPecho: 56, anchoCintura: 60,
-    anchoCuello: 17, largoManga: 21, anchoManga: 21,
+    anchoCuello: 17, profundidadCuello: 15, largoManga: 21, anchoManga: 21,
   },
   campos: [
     { key: 'largoTotal',   label: 'Largo total',      min: 55, max: 95 },
     { key: 'anchoPecho',   label: 'Ancho de pecho',   min: 38, max: 75 },
     { key: 'anchoCintura', label: 'Ancho de cintura', min: 38, max: 78 },
     { key: 'anchoCuello',  label: 'Ancho de cuello',  min: 16, max: 34 },
+    { key: 'profundidadCuello', label: 'Profundidad de cuello', min: 6, max: 30 },
     { key: 'largoManga',   label: 'Largo de manga',   min: 8,  max: 40 },
     { key: 'anchoManga',   label: 'Ancho de manga',   min: 12, max: 32 },
   ],
   grupos: [
     { id: 'largo',  label: 'Largo',                 keys: ['largoTotal'] },
     { id: 'ancho',  label: 'Ancho (pecho/cintura)', keys: ['anchoPecho', 'anchoCintura'] },
-    { id: 'cuello', label: 'Cuello',                keys: ['anchoCuello'] },
+    { id: 'cuello', label: 'Cuello',                keys: ['anchoCuello', 'profundidadCuello'] },
     { id: 'manga',  label: 'Manga',                 keys: ['largoManga', 'anchoManga'] },
   ],
   warp: (m, id) => {
     const fPecho   = m.anchoPecho   / CHOMBA_CM.anchoPecho
     const fCintura = m.anchoCintura / CHOMBA_CM.anchoCintura
     const fCuello  = m.anchoCuello  / CHOMBA_CM.anchoCuello
+    const fProf    = m.profundidadCuello / CHOMBA_CM.profundidadCuello
     const fMangaL  = m.largoManga   / CHOMBA_CM.largoManga
     const fMangaA  = m.anchoManga   / CHOMBA_CM.anchoManga
 
@@ -216,9 +224,15 @@ const chomba: PrendaParam = {
       y >= CHOMBA_Y_RUEDO ? fCintura :
       fPecho + (fCintura - fPecho) * ((y - CHOMBA_Y_SISA) / (CHOMBA_Y_RUEDO - CHOMBA_Y_SISA))
 
-    // El cuello cosido y la vista: solo se abren o se cierran.
+    // Qué tan hondo baja el escote. Se mide desde la costura del hombro: lo que
+    // está por encima (la tira del cuello) no se mueve, y lo que baja del
+    // escote se alarga o se acorta.
+    const hondo = (y: number) =>
+      y <= CHOMBA_Y_CUELLO ? y : CHOMBA_Y_CUELLO + (y - CHOMBA_Y_CUELLO) * fProf
+
+    // El cuello cosido y la vista: se abren de ancho y bajan de profundidad.
     if (id.includes('collar') || id.includes('escote')) {
-      return (x, y) => [cx + (x - cx) * fCuello, y]
+      return (x, y) => [cx + (x - cx) * fCuello, hondo(y)]
     }
 
     // Manga y puño. La cuenta se hace SIEMPRE como si fuera la manga izquierda
@@ -227,18 +241,32 @@ const chomba: PrendaParam = {
       const der = id.includes('right')
       const aIzq   = (x: number) => der ? 2 * CHOMBA_CX_FRENTE - (x - off) : x - off
       const aFinal = (u: number) => (der ? 2 * CHOMBA_CX_FRENTE - u : u) + off
+      // La punta del hombro, que es por donde cuelga la manga.
+      const hombroU = CHOMBA_CX_FRENTE
+        + (factorPorAltura(CHOMBA_Y_MANGA, CHOMBA_SISA_X) - CHOMBA_CX_FRENTE) * ancho(CHOMBA_Y_MANGA)
+      // Hacia la izquierda, caer es girar al revés.
+      const th = -Math.min(CHOMBA_CAIDA_MAX, Math.max(0, fMangaL - 1) * 0.22)
       return (x, y) => {
         const u = aIzq(x)
         const sisa = factorPorAltura(y, CHOMBA_SISA_X)
         const boca = factorPorAltura(y, CHOMBA_BOCA_X)
-        // 0 = pegado al cuerpo, 1 = en la boca de la manga.
+        // 0 = pegado al cuerpo, 1 = en la boca de la manga. Todo lo que hace la
+        // manga se multiplica por esto, así que EN LA SISA NO PASA NADA: el
+        // borde va exactamente a donde fue a parar el cuerpo.
         const t = (sisa - u) / (sisa - boca)
-        // El borde de la sisa va a parar exactamente donde fue a parar el
-        // cuerpo, y lo que se estira o se abre es de ahí para afuera.
         const sisaNueva = CHOMBA_CX_FRENTE + (sisa - CHOMBA_CX_FRENTE) * ancho(y)
+        // El borde de arriba de la manga a esa distancia: el ancho crece de ahí
+        // hacia ABAJO y ese borde no se mueve, igual que en la remera.
+        const yArriba = CHOMBA_Y_MANGA + t * (CHOMBA_MANGA_ARRIBA - CHOMBA_Y_MANGA)
+        const uu = sisaNueva - t * (sisa - boca) * fMangaL
+        const vv = y + t * (fMangaA - 1) * (y - yArriba)
+        // Y cuanto más larga, más apunta para abajo: gira alrededor de la punta
+        // del hombro, pero de a poco, así la sisa se queda donde está.
+        const a = th * Math.min(1, Math.max(0, t))
+        const du = uu - hombroU, dv = vv - CHOMBA_Y_MANGA
         return [
-          aFinal(sisaNueva - t * (sisa - boca) * fMangaL),
-          y + t * (fMangaA - 1) * (y - CHOMBA_MANGA_MEDIO),
+          aFinal(hombroU + du * Math.cos(a) - dv * Math.sin(a)),
+          CHOMBA_Y_MANGA + du * Math.sin(a) + dv * Math.cos(a),
         ]
       }
     }
@@ -250,7 +278,8 @@ const chomba: PrendaParam = {
       // pecho, subir un talle agrandaría el cuello y el cuello cosido —que sigue
       // a SU medida— se despegaría del cuerpo.
       const enEscote = y <= CHOMBA_ESCOTE_Y && Math.abs(dx) <= CHOMBA_ESCOTE_X
-      return [cx + dx * (enEscote ? fCuello : ancho(y)), alto(y)]
+      if (enEscote) return [cx + dx * fCuello, hondo(y)]
+      return [cx + dx * ancho(y), alto(y)]
     }
   },
 }

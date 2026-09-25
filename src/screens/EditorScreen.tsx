@@ -5479,6 +5479,54 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   /** Devuelve la prenda al centro del lienzo. */
+  // Cuando el encuadre lo puso el programa (y no el diseñador a mano), se puede
+  // deshacer solo al volver la prenda a un tamaño que entra.
+  const encuadreAuto = useRef(false)
+
+  /**
+   * Aleja la vista lo justo para que la prenda entre entera en el lienzo.
+   *
+   * La escala del DIBUJO es fija a propósito: así alargar una prenda se ve más
+   * larga y no más chica, y los cm significan algo. El costo era que una prenda
+   * larga o muy ancha se salía del lienzo. Lo que se mueve acá es la VISTA, no
+   * la prenda: el zoom baja hasta que entra, y vuelve a 1 cuando deja de hacer
+   * falta. Nunca se acerca más allá de 1, y si el diseñador movió o acercó la
+   * vista a mano no se le pisa.
+   */
+  function encuadrarPrenda() {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = mockupObjects.current
+    if (!objs.length) return
+    if (panned && !encuadreAuto.current) return
+
+    // Se mide con el zoom apagado: la caja de la prenda es del DIBUJO, no de lo
+    // que se ve ahora.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const o of objs) {
+      if (o.visible === false) continue
+      const r = o.getBoundingRect()
+      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+    }
+    if (vpt) canvas.viewportTransform = vpt
+    if (!isFinite(x1) || x2 <= x1 || y2 <= y1) return
+
+    const W = canvas.getWidth(), H = canvas.getHeight()
+    const margen = 0.94                       // un respiro contra los bordes
+    const z = Math.min(1, (W * margen) / (x2 - x1), (H * margen) / (y2 - y1))
+
+    if (z >= 0.999 && !encuadreAuto.current) return   // entra sola y nadie tocó nada
+    encuadreAuto.current = z < 0.999
+    const cxG = (x1 + x2) / 2, cyG = (y1 + y2) / 2
+    canvas.setViewportTransform([z, 0, 0, z, W / 2 - cxG * z, H / 2 - cyG * z])
+    canvas.requestRenderAll()
+    setZoom(z)
+    setPanned(false)
+  }
+
   function centrarPrenda() {
     const canvas = fc.current
     if (!canvas) return
@@ -5626,6 +5674,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
     canvas.requestRenderAll()
+    encuadrarPrenda()
     refreshLayersNow()
   }
 
@@ -5814,6 +5863,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
     canvas.requestRenderAll()
+    encuadrarPrenda()
     refreshLayersNow()
   }
 
@@ -8013,29 +8063,53 @@ const TEE_DETAILS = [
 // Transforma un path SVG aplicando W a cada coordenada (convierte todo a absoluto).
 // W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
 function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
-  const cx = 247.3, armY = 173, hemY = 357, slvTop = 50, URx = 400.95, ULx = 92.49
+  const cx = 247.3, armY = 173, hemY = 357, URx = 400.95, ULx = 92.49
   // fLen modela el LARGO TOTAL real (HPS al ruedo): 33.8cm fijos del torso superior + la parte
   // inferior (36.2cm por defecto) que es la que se estira. fLen = 1 con largoTotal = 70.
   const fLen = (m.largoTotal - 33.8) / 36.2, fP = m.anchoPecho / 60, fC = m.anchoCintura / 63, fN = m.anchoCuello / 18
   const fML = m.largoManga / 18, fMA = m.anchoManga / 25, dProf = (m.profundidadCuello - 8) * 5.0
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
-    // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba).
-    // Al alargarse, la manga ROTA alrededor de la punta del hombro: el HOMBRO se mantiene igual y
-    // la manga cae en angulo (el puño no se acampana). El angulo crece con cuanto se estiro
-    // (fML-1), con tope para que no se pliegue sobre si misma.
+    // ── Manga ────────────────────────────────────────────────────────────────
+    //
+    // Cada punto se ubica por `t`: 0 = pegado al cuerpo (en la sisa), 1 = en la
+    // boca de la manga. Todo lo que hace la manga —estirarse, ensancharse,
+    // caer— se multiplica por `t`, así que EN LA SISA NO PASA NADA y el borde
+    // va exactamente a donde fue a parar el cuerpo.
+    //
+    // Sin eso, agrandar mucho la manga arrastraba también la curva de la sisa
+    // (la clasificación es por posición, y la sisa del CUERPO cae adentro de
+    // esta rama): se estiraba, rotaba, y terminaba metida para adentro de la
+    // remera.
+    //
+    // El ancho crece hacia ABAJO dejando quieto el borde de arriba, y cuanto
+    // más larga es la manga más apunta para abajo (rota alrededor de la punta
+    // del hombro, con tope para que no se pliegue sobre sí misma).
     if (rSlv || lSlv) {
-      const URo = rSlv ? URx : ULx, sign = rSlv ? 1 : -1
-      const nUR = cx + (URo - cx) * fP
-      let ox = nUR + (x - URo) * fML
-      let oy = slvTop + (y - slvTop) * fMA
-      const srcPx = rSlv ? 493.43 : (2 * cx - 493.43)        // punta del hombro (espejada para la izq)
-      const pX = nUR + (srcPx - URo) * fML, pY = slvTop + (58.94 - slvTop) * fMA
-      const th = Math.min(0.46, Math.max(0, fML - 1) * 0.22) * sign
-      const dx = ox - pX, dy = oy - pY
-      ox = pX + dx * Math.cos(th) - dy * Math.sin(th)
-      oy = pY + dx * Math.sin(th) + dy * Math.cos(th)
-      return [ox, oy]
+      const sign = rSlv ? 1 : -1
+      const hx  = rSlv ? 392.43 : 101.36, hy  = rSlv ? 31.46  : 26.21   // punta del hombro
+      const ax  = rSlv ? URx    : ULx,    ay   = rSlv ? 173.24 : 173.16 // axila
+      const bx1 = rSlv ? 493.43 : 1.14,   by1  = rSlv ? 58.94  : 50.05  // boca, arriba
+      const bx2 = rSlv ? 470.28 : 22.58,  by2  = rSlv ? 177.99 : 178.06 // boca, abajo
+      const cl = (v: number) => Math.max(0, Math.min(1, v))
+      const xSisa = hx  + (ax  - hx)  * cl((y - hy)  / (ay  - hy))
+      const xBoca = bx1 + (bx2 - bx1) * cl((y - by1) / (by2 - by1))
+      const t = (x - xSisa) / (xBoca - xSisa)
+      // t <= 0 es la sisa, o algo de adentro del cuerpo: cae en la regla del
+      // cuerpo, que es la de más abajo.
+      if (t > 0) {
+        const pX = cx + (hx - cx) * fP, pY = hy
+        // El borde de ARRIBA de la manga a esa distancia. El ancho crece desde
+        // ahí hacia abajo, así que ese borde no se mueve nunca.
+        const yArriba = hy + t * (by1 - hy)
+        let ox = cx + (xSisa - cx) * fP + t * (xBoca - xSisa) * fML
+        let oy = y + t * (fMA - 1) * (y - yArriba)
+        const th = Math.min(0.46, Math.max(0, fML - 1) * 0.22) * sign * Math.min(1, t)
+        const dx = ox - pX, dy = oy - pY
+        ox = pX + dx * Math.cos(th) - dy * Math.sin(th)
+        oy = pY + dx * Math.sin(th) + dy * Math.cos(th)
+        return [ox, oy]
+      }
     }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
     const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
