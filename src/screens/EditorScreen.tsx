@@ -1167,8 +1167,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * parte. Se fija al dividir y no cambia despues, asi cambiar una medida no
    * hace que el corte se meta en una pieza que el disenador no eligio.
    */
-  type Corte = { pts: Punto[]; piezas?: string[] }
+  type Corte = { pts: Punto[]; piezas?: string[]; id?: string }
   const cortesRef = useRef<Corte[]>([])
+  const corteSeq = useRef(1)
   const [hayCortes, setHayCortes] = useState(false)  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
@@ -1702,6 +1703,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.on('object:added',   refreshLayers)
     canvas.on('object:removed', refreshLayers)
     canvas.on('object:modified', refreshLayers)
+    // Mover o deformar la linea de division vuelve a cortar la prenda.
+    canvas.on('object:modified', e => { if (e.target) actualizarCorte(e.target) })
+    canvas.on('object:removed',  e => { if (e.target) quitarCorteDe(e.target) })
 
     const syncSelKind = () => {
       const a = canvas.getActiveObject()
@@ -1914,6 +1918,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           Array.isArray(c) ? { pts: c as Punto[] } : (c as Corte)
         ).filter(c => c?.pts?.length)
       : []
+    cortesRef.current = cortesRef.current.map((c, i) => c.id ? c : { ...c, id: 'c' + (i + 1) })
+    corteSeq.current = cortesRef.current.length + 1
     setHayCortes(cortesRef.current.length > 0)
 
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
@@ -2078,7 +2084,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (cancelled) return
         const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[])
           .filter(obj => obj.fill && obj.fill !== 'none' && obj.fill !== '')
-          .map(obj => { obj.set({ left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy, scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc }); return obj })
+          .map(obj => {
+            obj.set({
+              left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy,
+              scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc,
+              // Ídem: sin trazo queda una costura entre piezas pegadas.
+              stroke: '#000', strokeWidth: 2, strokeUniform: true,
+            })
+            return obj
+          })
         const cg = new fabric.Group(clipObjs)
         cg.absolutePositioned = true
         clipPath.current = cg
@@ -4406,18 +4420,61 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       return
     }
     const piezas = soloPieza ? [soloPieza] : piezasQueDivide(corte)
-    cortesRef.current = [...cortesRef.current, { pts: estirarTrazo(corte), piezas }]
+    const id = 'c' + (corteSeq.current++)
+    cortesRef.current = [...cortesRef.current, { pts: estirarTrazo(corte), piezas, id }]
     setHayCortes(true)
-    // El trazo deja de ser un dibujo: ahora es la costura entre las dos piezas,
-    // y la dibuja el borde de cada una. Si se dejara, quedaría la línea doble.
-    fc.current?.remove(obj)
+    // La linea NO se borra: queda como la linea de division, que se puede
+    // mover, pintar y borrar. Al moverla, la division la sigue.
+    ;(obj as any)._corte = id
     if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
     else placePrenda(medidasRef.current, true)
-    onToast?.('Prenda dividida. Ahora podés pintar cada parte por separado.')
+    onToast?.('Prenda dividida. La línea se puede mover, y cada parte se pinta aparte.')
+  }
+
+  /** Rehace la prenda con las medidas que tiene puestas. */
+  function rehacerPrenda() {
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
+  }
+
+  /**
+   * La linea de division se movio: la division la sigue.
+   *
+   * Los rellenos van con ella porque las piezas se vuelven a cortar desde cero
+   * con el trazo en su lugar nuevo, y cada pedazo se queda con la pintura que
+   * tenia (se busca por nombre de pieza, no por posicion).
+   */
+  function actualizarCorte(obj: fabric.FabricObject) {
+    const id = (obj as any)._corte as string | undefined
+    if (!id) return
+    const i = cortesRef.current.findIndex(c => c.id === id)
+    if (i < 0) return
+    const pts = trazoDivide(obj)
+    if (!pts) {
+      onToast?.('Ahi el trazo ya no cruza la prenda: la division se quedo donde estaba.')
+      return
+    }
+    const copia = [...cortesRef.current]
+    copia[i] = { ...copia[i], pts: estirarTrazo(pts) }
+    cortesRef.current = copia
+    rehacerPrenda()
+  }
+
+  /** Se borro la linea: se va tambien su division. */
+  function quitarCorteDe(obj: fabric.FabricObject) {
+    const id = (obj as any)._corte as string | undefined
+    if (!id) return
+    const quedan = cortesRef.current.filter(c => c.id !== id)
+    if (quedan.length === cortesRef.current.length) return
+    cortesRef.current = quedan
+    setHayCortes(quedan.length > 0)
+    rehacerPrenda()
   }
 
   /** Vuelve la prenda a sus piezas originales. */
   function quitarCortes() {
+    // Las lineas vuelven a ser dibujos comunes; no se borran, son del usuario.
+    fc.current?.getObjects().forEach(o => { delete (o as any)._corte })
     cortesRef.current = []
     setHayCortes(false)
     if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
@@ -5368,7 +5425,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
       // circulitos azules y lineas punteadas como si fueran parte del diseno.
       .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -5593,6 +5650,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ;(p as any)._rawMockup = true
       ;(p as any)._pieceKey = s.key
       if (s.nombre) (p as any)._pieceName = s.nombre
+      if (s.padre) (p as any)._piecePadre = s.padre
       if (s.role === 'inner') (p as any)._rawInner = true
       // _rawBody marca de donde saca el color el interior del cuello: es el
       // CUERPO, no las mangas, asi el escote acompana a lo que se ve detras.
@@ -5617,8 +5675,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const clave = (o as any)._pieceKey as string | undefined
         // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
         // la que salio, asi dividir no cambia como se ve la prenda.
+        const padre = (o as any)._piecePadre as string | undefined
         const pp = (clave ? porNombre.get(clave) : undefined)
           ?? (clave ? porNombre.get(clave.split('#')[0]) : undefined)
+          // Una pieza que antes no existia (el ruedo, los punos, el cuello)
+          // arranca con la pintura de la pieza de la que se separo.
+          ?? (padre ? porNombre.get(padre) : undefined)
           ?? (prevPaint.length === objs.length ? prevPaint[i] : undefined)
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
@@ -5653,9 +5715,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     mockupObjects.current = objs
     syncInnerShade()
 
-    // Clip = unión de todas las piezas (cuerpo + mangas)
+    // Clip = unión de todas las piezas.
+    //
+    // Cada pieza lleva un trazo de 2 px: SIN eso, dos piezas pegadas (el cuerpo
+    // y el ruedo, o los dos lados de una división) dejan entre sí una costura
+    // de píxeles a medio pintar, y lo que el diseñador dibuje encima aparece
+    // cortado justo ahí. El trazo las hace pisarse un pelo y la costura
+    // desaparece.
     const clipObjs = shapes.filter(s => s.role === 'piece').map(s => {
-      const p = new fabric.Path(s.d, { fill: '#000' })
+      const p = new fabric.Path(s.d, { fill: '#000', stroke: '#000', strokeWidth: 2, strokeUniform: true })
       p.set({ left: (p.left ?? 0) * sc + ox, top: (p.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc })
       return p
     })
@@ -5845,8 +5913,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // Se clona del objeto ya construido y ya corrido: si se rehiciera aparte,
       // el recorte no llevaría la corrección y quedaría movido respecto de la
       // prenda (lo dibujado encima se cortaría en el lugar equivocado).
+      // El trazo es lo que evita la costura de píxeles entre dos piezas pegadas
+      // (ver el comentario del mismo recorte en la remera).
       .map(obj => {
-        const p = new fabric.Path((obj as any).path, { fill: '#000' })
+        const p = new fabric.Path((obj as any).path, {
+          fill: '#000', stroke: '#000', strokeWidth: 2, strokeUniform: true,
+        })
         p.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
         return p
       })
@@ -8190,6 +8262,8 @@ interface FormaPrenda {
   /** Nombre estable de la pieza: con esto se restaura la pintura al reabrir. */
   key: string
   nombre?: string
+  /** De que pieza saca la pintura si es nueva (proyectos guardados antes). */
+  padre?: string
   fill: string | null
   stroke: string
   strokeWidth: number
@@ -8210,13 +8284,13 @@ interface FormaPrenda {
  * M/L/C/Q/Z al construir el trazado, asi que se le pasa por ahi primero: sin
  * esto el corte funcionaba en la remera y no hacia nada en las otras prendas.
  */
-function aplanarTrazado(d: string): Punto[] {
+function aplanarTrazado(d: string, paso = 2.5): Punto[] {
   if (!d) return []
   const cmds = (new fabric.Path(d) as any).path as any[] | undefined
-  if (!cmds?.length) return aplanarPath(d)
+  if (!cmds?.length) return aplanarPath(d, paso)
   let simple = ''
   for (const c of cmds) simple += c[0] + ' ' + c.slice(1).join(' ') + ' '
-  return aplanarPath(simple)
+  return aplanarPath(simple, paso)
 }
 
 /**
@@ -8256,27 +8330,84 @@ function aplicarCortes(formas: FormaPrenda[], cortes: { pts: Punto[]; piezas?: s
   return actuales
 }
 
+/**
+ * Parte una pieza en dos con una costura del dibujo.
+ *
+ * La costura viene dibujada justo del largo de la pieza, asi que no llega a
+ * cruzarla: se la estira por las dos puntas antes de cortar.
+ */
+function partirPorCostura(
+  d: string, costura: string, a: Omit<FormaPrenda, 'd'>, b: Omit<FormaPrenda, 'd'>,
+  cuantoBanda: (p: Punto[]) => number,
+): FormaPrenda[] {
+  const pts = aplanarTrazado(costura)
+  if (pts.length < 2) return [{ ...a, d }]
+  const larga = (p: Punto, q: Punto): Punto => {
+    const dx = q[0] - p[0], dy = q[1] - p[1], n = Math.hypot(dx, dy)
+    return n < 1e-6 ? q : [q[0] + (dx / n) * 500, q[1] + (dy / n) * 500]
+  }
+  const corte = [larga(pts[1], pts[0]), ...pts, larga(pts[pts.length - 2], pts[pts.length - 1])]
+  const partes = partirPoligono(aplanarTrazado(d), corte)
+  if (!partes) return [{ ...a, d }]
+  // La que da el valor mas alto es la banda: la de abajo, o la de mas afuera.
+  const banda = cuantoBanda(partes[0]) > cuantoBanda(partes[1]) ? 0 : 1
+  return [
+    { ...a, d: poligonoAPath(partes[1 - banda]) },
+    { ...b, d: poligonoAPath(partes[banda]) },
+  ]
+}
+
+const TEE_PIEZA = { role: 'piece' as const, fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 }
+const centroY = (p: Punto[]) => p.reduce((a, q) => a + q[1], 0) / p.length
+const centroX = (p: Punto[]) => p.reduce((a, q) => a + q[0], 0) / p.length
+
 function buildTeeShapes(m: Measures): FormaPrenda[] {
   const W = teeWarp(m)
+  const det = TEE_DETAILS.map(d => transformPath(d, W))
+
+  // El cuerpo y las mangas se parten por su costura, así el RUEDO y los PUÑOS
+  // son piezas de verdad y se pueden pintar aparte (una remera con vivos de
+  // otro color es de lo mas comun). Antes eran solo una raya dibujada encima:
+  // no habia nada que pintar.
   const shapes: FormaPrenda[] = [
-    { d: transformPath(TEE_CUERPO, W), role: 'piece', key: 'cuerpo', nombre: 'Cuerpo',
-      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
-    { d: transformPath(TEE_MANGA_IZQ, W), role: 'piece', key: 'manga-izq', nombre: 'Manga izquierda',
-      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
-    { d: transformPath(TEE_MANGA_DER, W), role: 'piece', key: 'manga-der', nombre: 'Manga derecha',
-      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
-    // Va después del cuerpo y antes de los detalles: tapa el estampado y las
-    // líneas del escote le quedan dibujadas encima.
+    ...partirPorCostura(transformPath(TEE_CUERPO, W), det[6],
+      { ...TEE_PIEZA, key: 'cuerpo', nombre: 'Cuerpo' },
+      { ...TEE_PIEZA, key: 'ruedo', nombre: 'Ruedo', padre: 'cuerpo' },
+      centroY),
+    ...partirPorCostura(transformPath(TEE_MANGA_IZQ, W), det[5],
+      { ...TEE_PIEZA, key: 'manga-izq', nombre: 'Manga izquierda' },
+      { ...TEE_PIEZA, key: 'puno-izq', nombre: 'Puño izquierdo', padre: 'manga-izq' },
+      p => -centroX(p)),
+    ...partirPorCostura(transformPath(TEE_MANGA_DER, W), det[2],
+      { ...TEE_PIEZA, key: 'manga-der', nombre: 'Manga derecha' },
+      { ...TEE_PIEZA, key: 'puno-der', nombre: 'Puño derecho', padre: 'manga-der' },
+      centroX),
+    // Va despues del cuerpo y antes de los detalles: tapa el estampado y las
+    // lineas del escote le quedan dibujadas encima.
     { d: transformPath(TEE_INNER, W), role: 'inner', key: 'escote', nombre: 'Interior del cuello',
       fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
   ]
-  TEE_DETAILS.forEach((d, i) => shapes.push({
-    d: transformPath(d, W), role: 'detail', key: 'detalle-' + i,
-    fill: null, stroke: '#1d1d1b', strokeWidth: 2,
-  }))
+
+  // El cuello tejido: la banda entre su borde de afuera y el hueco del escote.
+  // Se arma con los dos bordes ya deformados, uno de ida y el otro de vuelta.
+  const afuera = aplanarTrazado(det[1], 1)
+  const adentro = aplanarTrazado(det[4], 1)
+  if (afuera.length > 2 && adentro.length > 2) {
+    shapes.push({
+      ...TEE_PIEZA, d: poligonoAPath([...afuera, ...adentro.slice().reverse()]),
+      key: 'cuello-rib', nombre: 'Cuello', padre: 'cuerpo',
+    })
+  }
+
+  // Las costuras que ahora son el borde de una pieza no se vuelven a dibujar:
+  // quedarian pintadas dos veces y se ven mas gruesas.
+  const yaDibujadas = new Set([1, 2, 4, 5, 6])
+  det.forEach((d, i) => {
+    if (yaDibujadas.has(i)) return
+    shapes.push({ d, role: 'detail', key: 'detalle-' + i, fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
+  })
   return shapes
 }
-
 // Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
 // parecidos al color de fondo (muestreado en las esquinas). Solo borra regiones de fondo
 // conectadas al borde, así no se come colores iguales que estén dentro del sujeto.
