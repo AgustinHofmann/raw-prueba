@@ -11,6 +11,7 @@ import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
 import { transformPath } from '../utils/pathWarp'
 import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import ColorPicker from '../components/ColorPicker'
+import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg } from '../utils/prendasParam'
 import './EditorScreen.css'
 
@@ -1156,7 +1157,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
   // Nombres de las piezas antes de rehacer la prenda, para reponer la pintura
   // donde corresponde aunque cambie la cantidad de piezas.
-  const mockupPrevKeys = useRef<string[]>([])  // escala fija: el tamaño refleja los cm
+  const mockupPrevKeys = useRef<string[]>([])
+  // Los cortes con los que se partio la prenda, en coordenadas del DIBUJO
+  // (no del lienzo), asi se estiran junto con la prenda al cambiar medidas.
+  /**
+   * Un corte de la prenda.
+   *
+   * `piezas` guarda el alcance que eligio el disenador: las piezas que el corte
+   * parte. Se fija al dividir y no cambia despues, asi cambiar una medida no
+   * hace que el corte se meta en una pieza que el disenador no eligio.
+   */
+  type Corte = { pts: Punto[]; piezas?: string[] }
+  const cortesRef = useRef<Corte[]>([])
+  const [hayCortes, setHayCortes] = useState(false)  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
@@ -1270,7 +1283,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
-  const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; isGroup: boolean; isMulti: boolean }>(null)
+  const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
   // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
@@ -1891,6 +1904,17 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       medidasRef.current = md
       setMedidas(md)
     }
+    // Los cortes van ANTES de construir la prenda: si se pusieran despues,
+    // la prenda se armaria entera y habria que rehacerla.
+    const cortesGuardados = design?.garment?.cortes
+    cortesRef.current = Array.isArray(cortesGuardados)
+      // Los primeros proyectos guardaban solo los puntos: esos valen para toda
+      // la prenda, que era lo unico que se podia hacer.
+      ? (cortesGuardados as unknown[]).map(c =>
+          Array.isArray(c) ? { pts: c as Punto[] } : (c as Corte)
+        ).filter(c => c?.pts?.length)
+      : []
+    setHayCortes(cortesRef.current.length > 0)
 
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
@@ -3408,6 +3432,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         for (const it of items) {
           applyPaint(it.obj, { fill: colorRef.current, base: colorRef.current })
         }
+        // El hueco del cuello se lee como el reves de la tela: si el cuerpo
+        // cambia de color tiene que acompanar, aunque se pinte de a una pieza.
+        syncInnerShade()
         undoHistory.current.push({ type: 'fillBatch', items })
         redoHistory.current = []
         canvas.requestRenderAll()
@@ -4245,6 +4272,156 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     } finally {
       setVectorizing(false)
     }
+  }
+
+  // ── Dividir la prenda con un trazo ─────────────────────────────────────────
+
+  /** El encuadre de la prenda que se esta editando. */
+  function encuadreActual() {
+    return project.mockupId === 'tshirt' ? teeFitRef.current : prendaFitRef.current
+  }
+
+  /** Los puntos de un trazo, en coordenadas del LIENZO. */
+  function puntosDelTrazo(obj: fabric.FabricObject): Punto[] {
+    const m = obj.calcTransformMatrix()
+    const llevar = (x: number, y: number): Punto => {
+      const q = fabric.util.transformPoint(new fabric.Point(x, y), m)
+      return [q.x, q.y]
+    }
+    const path = (obj as any).path
+    if (path) {
+      const off = (obj as any).pathOffset ?? { x: 0, y: 0 }
+      return samplePathCommands(path, 3).map(q => llevar(q.x - off.x, q.y - off.y))
+    }
+    if (obj.type === 'line') {
+      const l = obj as fabric.Line
+      const cx = (l.x1! + l.x2!) / 2, cy = (l.y1! + l.y2!) / 2
+      return [llevar(l.x1! - cx, l.y1! - cy), llevar(l.x2! - cx, l.y2! - cy)]
+    }
+    return []
+  }
+
+  /**
+   * ¿Este trazo sirve para dividir? Solo si cruza alguna pieza de lado a lado.
+   * Se usa para no ofrecer la opción cuando no va a hacer nada.
+   */
+  function trazoDivide(obj: fabric.FabricObject): Punto[] | null {
+    const fit = encuadreActual()
+    if (!fit || !mockupObjects.current.length) return null
+    const enLienzo = puntosDelTrazo(obj)
+    if (enLienzo.length < 2) return null
+    // Del lienzo al dibujo: así el corte se estira junto con la prenda cuando se
+    // cambia una medida, en vez de quedarse clavado donde se dibujó.
+    const corte: Punto[] = enLienzo.map(([x, y]) => [(x - fit.ox) / fit.sc, (y - fit.oy) / fit.sc])
+    const alguna = mockupObjects.current.some(o => {
+      if ((o as any)._rawInner) return false
+      const d = (o as any).path ? pathDeObjeto(o) : ''
+      return d ? !!partirPoligono(aplanarTrazado(d), corte) : false
+    })
+    return alguna ? corte : null
+  }
+
+  /** Las piezas que parte ese trazo, por nombre. */
+  function piezasQueDivide(corte: Punto[]): string[] {
+    return mockupObjects.current.filter(o => {
+      if ((o as any)._rawInner) return false
+      const d = (o as any).path ? pathDeObjeto(o) : ''
+      return d ? !!partirPoligono(aplanarTrazado(d), corte) : false
+    }).map(o => (o as any)._pieceKey as string).filter(Boolean)
+  }
+
+  /**
+   * Alarga el trazo por las dos puntas.
+   *
+   * El corte se guarda en coordenadas del dibujo, y al agrandar una medida la
+   * pieza crece por los costados: un trazo que llegaba justo de borde a borde
+   * se quedaba corto y la division desaparecia sola. Estirandolo bien lejos
+   * sigue cruzando pase lo que pase, y como el alcance ya esta fijado por
+   * nombre de pieza, el sobrante no toca nada que no corresponda.
+   */
+  function estirarTrazo(pts: Punto[]): Punto[] {
+    if (pts.length < 2) return pts
+    const largo = 4000
+    const prolongar = (a: Punto, b: Punto): Punto => {
+      const dx = b[0] - a[0], dy = b[1] - a[1]
+      const n = Math.hypot(dx, dy)
+      if (n < 1e-6) return b
+      return [b[0] + (dx / n) * largo, b[1] + (dy / n) * largo]
+    }
+    return [prolongar(pts[1], pts[0]), ...pts, prolongar(pts[pts.length - 2], pts[pts.length - 1])]
+  }
+
+  /** La pieza de la prenda que esta debajo de ese punto. */
+  function piezaEn(pt: fabric.Point | undefined): fabric.FabricObject | null {
+    if (!pt) return null
+    const piezas = mockupObjects.current
+    for (let i = piezas.length - 1; i >= 0; i--) {
+      const o = piezas[i]
+      if ((o as any)._rawInner) continue
+      if (o.visible === false) continue
+      if (o.containsPoint(pt)) return o
+    }
+    return null
+  }
+
+  /** El trazado de una pieza, en coordenadas del dibujo. */
+  function pathDeObjeto(o: fabric.FabricObject): string {
+    const path = (o as any).path as any[] | undefined
+    if (!path) return ''
+    let d = ''
+    for (const c of path) {
+      const cmd = c[0]
+      d += cmd + ' ' + c.slice(1).map((n: number) => n.toFixed(2)).join(' ') + ' '
+    }
+    return d
+  }
+
+  /**
+   * El trazo dibujado que pasa por ese punto.
+   *
+   * No se usa el buscador de Fabric porque los trazos del lápiz se crean sin
+   * eventos —para poder seguir dibujando encima— y nunca los encontraría.
+   */
+  function trazoEn(pt: fabric.Point | undefined): fabric.FabricObject | null {
+    const canvas = fc.current
+    if (!canvas || !pt) return null
+    const objs = canvas.getObjects()
+    for (let i = objs.length - 1; i >= 0; i--) {
+      const o = objs[i]
+      if (mockupObjects.current.includes(o)) continue
+      if (o instanceof fabric.IText) continue
+      if (!(o as any).path && o.type !== 'line') continue
+      if (o.visible === false) continue
+      o.setCoords()
+      if (o.containsPoint(pt)) return o
+    }
+    return null
+  }
+
+  /** Parte la prenda con ese trazo y se queda con el corte. */
+  function dividirPrendaCon(obj: fabric.FabricObject, soloPieza?: string) {
+    const corte = trazoDivide(obj)
+    if (!corte) {
+      onToast?.('Ese trazo no cruza la prenda de lado a lado, así que no la divide.')
+      return
+    }
+    const piezas = soloPieza ? [soloPieza] : piezasQueDivide(corte)
+    cortesRef.current = [...cortesRef.current, { pts: estirarTrazo(corte), piezas }]
+    setHayCortes(true)
+    // El trazo deja de ser un dibujo: ahora es la costura entre las dos piezas,
+    // y la dibuja el borde de cada una. Si se dejara, quedaría la línea doble.
+    fc.current?.remove(obj)
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
+    onToast?.('Prenda dividida. Ahora podés pintar cada parte por separado.')
+  }
+
+  /** Vuelve la prenda a sus piezas originales. */
+  function quitarCortes() {
+    cortesRef.current = []
+    setHayCortes(false)
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
   }
 
   // ── Bordado ────────────────────────────────────────────────────────────────
@@ -5197,6 +5374,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const garment: SavedGarment = {
       measures: measuresRef.current,
       medidas:  medidasRef.current,
+      cortes:   cortesRef.current,
       pieces: mockupObjects.current.map(o => ({
         key:  (o as any)._pieceKey as string | undefined,
         fill: typeof o.fill === 'string' ? o.fill : undefined,
@@ -5349,14 +5527,17 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     mockupPrevKeys.current = mockupObjects.current.map(o => (o as any)._pieceKey as string ?? '')
     mockupObjects.current.forEach(o => canvas.remove(o))
 
-    const shapes = buildTeeShapes(m)
+    const shapes = aplicarCortes(buildTeeShapes(m), cortesRef.current)
+    let objsConCuerpo = false
     const objs = shapes.map(s => {
       const p = new fabric.Path(s.d, {
         fill: s.fill ?? null, stroke: s.stroke, strokeWidth: s.strokeWidth,
         selectable: false,
-        // El interior no se pinta, así que tampoco se hace clic: el clic lo
-        // atraviesa y cae en el cuerpo, que es lo que el diseñador quiso tocar.
-        evented: s.role !== 'inner',
+        // El interior y las lineas de detalle no se pintan, asi que tampoco
+        // reciben el clic: lo atraviesa y cae en la pieza de abajo, que es la
+        // que el disenador quiso tocar. Sin esto el balde rellenaba de golpe
+        // el contorno del cuello o una costura y la prenda quedaba manchada.
+        evented: s.role !== 'inner' && !(s.role === 'detail' && !s.fill),
         hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
@@ -5365,7 +5546,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (s.role === 'inner') (p as any)._rawInner = true
       // _rawBody marca de donde saca el color el interior del cuello: es el
       // CUERPO, no las mangas, asi el escote acompana a lo que se ve detras.
-      if (s.key === 'cuerpo') (p as any)._rawBody = true
+      // Si el cuerpo esta dividido, el que manda es el primer pedazo: el de
+      // arriba, que es el que se ve por el hueco.
+      if (s.key === 'cuerpo' || s.key.startsWith('cuerpo#')) {
+        if (!objsConCuerpo) { (p as any)._rawBody = true; objsConCuerpo = true }
+      }
       return p
     })
     // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar
@@ -5379,7 +5564,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (prevPaint.length) {
       objs.forEach((o, i) => {
         if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
-        const pp = porNombre.get((o as any)._pieceKey as string) ?? prevPaint[i]
+        const clave = (o as any)._pieceKey as string | undefined
+        // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
+        // la que salio, asi dividir no cambia como se ve la prenda.
+        const pp = (clave ? porNombre.get(clave) : undefined)
+          ?? (clave ? porNombre.get(clave.split('#')[0]) : undefined)
+          ?? (prevPaint.length === objs.length ? prevPaint[i] : undefined)
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
@@ -5462,11 +5652,44 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       eff:  (o as any)._effect  as { kind: EffectKind; intensity: number } | undefined,
       base: (o as any)._baseColor as string | undefined,
       uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
+      key:  (o as any)._pieceKey as string | undefined,
     }))
     mockupObjects.current.forEach(o => canvas.remove(o))
 
-    const construir = (mm: Medidas) => piezas.map(pz => {
-      const d = transformPath(pz.d, prendaParam.warp(mm, pz.id))
+    // Las piezas, ya con los cortes aplicados. Se devuelve tambien de que pieza
+    // del archivo salio cada una, porque la correccion de la segunda mitad y el
+    // recorte trabajan sobre esa lista.
+    const expandir = (mm: Medidas) => {
+      const out: { pz: PiezaSvg; d: string; key: string; nombre: string }[] = []
+      for (const pz of piezas) {
+        const d = transformPath(pz.d, prendaParam.warp(mm, pz.id))
+        const nombre = pieceLabelFromId(pz.id, pz.id)
+        if (pz.id.startsWith('inner-') || !cortesRef.current.length) {
+          out.push({ pz, d, key: pz.id, nombre }); continue
+        }
+        let trozos = [{ d, key: pz.id, nombre }]
+        for (const corte of cortesRef.current) {
+          const nuevos: typeof trozos = []
+          for (const t of trozos) {
+            if (!alcanzaA(corte, t.key)) { nuevos.push(t); continue }
+            const partes = partirPoligono(aplanarTrazado(t.d), corte.pts)
+            if (!partes) { nuevos.push(t); continue }
+            const centro = (q: Punto[]) => q.reduce((a, b) => a + b[1], 0) / q.length
+            const ord = centro(partes[0]) <= centro(partes[1]) ? partes : [partes[1], partes[0]]
+            ord.forEach((q, i) => nuevos.push({
+              d: poligonoAPath(q),
+              key: `${t.key}#${i + 1}`,
+              nombre: `${t.nombre} · ${i === 0 ? 'arriba' : 'abajo'}`,
+            }))
+          }
+          trozos = nuevos
+        }
+        for (const t of trozos) out.push({ pz, d: t.d, key: t.key, nombre: t.nombre })
+      }
+      return out
+    }
+
+    const construir = (mm: Medidas) => expandir(mm).map(({ pz, d, key, nombre }) => {
       const esInterior = pz.id.startsWith('inner-')
       const p = new fabric.Path(d, {
         fill: pz.fill, stroke: pz.stroke, strokeWidth: pz.strokeWidth,
@@ -5474,7 +5697,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
-      ;(p as any)._pieceName = pieceLabelFromId(pz.id, pz.id)
+      ;(p as any)._pieceKey = key
+      ;(p as any)._pieceName = nombre
+      // De que pieza del molde salio. Al dividir hay mas trazados que piezas,
+      // asi que la separacion frente/espalda no puede ir por posicion.
+      ;(p as any)._srcId = pz.id
       if (esInterior) { (p as any)._rawInner = true }
       else if (pz.id.startsWith('body')) { (p as any)._rawBody = true }
       return p
@@ -5487,8 +5714,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     /** Cuánto hay que correr la segunda mitad para que el hueco no cambie. */
     const correccion = (lista: fabric.Path[]) => {
       if (!esB) return 0
-      const a = lista.filter((_, i) => !esB(piezas[i].id))
-      const b = lista.filter((_, i) =>  esB(piezas[i].id))
+      const a = lista.filter(o => !esB((o as any)._srcId))
+      const b = lista.filter(o =>  esB((o as any)._srcId))
       if (!a.length || !b.length) return 0
       const finA = Math.max(...a.map(o => (o.left ?? 0) + (o.width ?? 0)))
       const iniB = Math.min(...b.map(o => o.left ?? 0))
@@ -5497,7 +5724,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     const aplicarCorreccion = (lista: fabric.Path[], delta: number) => {
       if (!esB || !delta) return
-      lista.forEach((o, i) => { if (esB(piezas[i].id)) o.set({ left: (o.left ?? 0) + delta }) })
+      lista.forEach(o => { if (esB((o as any)._srcId)) o.set({ left: (o.left ?? 0) + delta }) })
     }
 
     // El hueco se calibra una sola vez, con las medidas por defecto.
@@ -5507,10 +5734,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const deltaB = correccion(objs)
     aplicarCorreccion(objs, deltaB)
 
-    if (prevPaint.length === objs.length) {
+    // La pintura se busca por NOMBRE de pieza, no por posicion: al dividir una
+    // pieza cambia la cantidad, y comparando posiciones la prenda se despintaba
+    // entera de golpe.
+    const porNombre = new Map<string, typeof prevPaint[number]>()
+    for (const pp of prevPaint) if (pp.key) porNombre.set(pp.key, pp)
+    if (prevPaint.length) {
       objs.forEach((o, i) => {
         if ((o as any)._rawInner) return
-        const pp = prevPaint[i]
+        const clave = (o as any)._pieceKey as string | undefined
+        // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
+        // la que salio, asi dividir no cambia como se ve la prenda.
+        const pp = (clave ? porNombre.get(clave) : undefined)
+          ?? (clave ? porNombre.get(clave.split('#')[0]) : undefined)
+          ?? (prevPaint.length === objs.length ? prevPaint[i] : undefined)
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
@@ -5546,13 +5783,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     // El recorte es la unión de las piezas que se pintan (no el cuello ni los
     // detalles): lo que el diseñador dibuje encima se corta contra la prenda.
-    const clipObjs = piezas
-      .map((pz, i) => ({ pz, obj: objs[i] }))
-      .filter(({ pz }) => pz.fill && !pz.id.startsWith('inner-'))
+    // Se recorre `objs` y no `piezas`: al dividir hay mas trazados que piezas del
+    // molde, y emparejandolos por posicion el recorte quedaba corrido.
+    const porId = new Map(piezas.map(pz => [pz.id, pz]))
+    const clipObjs = objs
+      .filter(o => {
+        const pz = porId.get((o as any)._srcId as string)
+        return !!pz?.fill && !pz.id.startsWith('inner-')
+      })
       // Se clona del objeto ya construido y ya corrido: si se rehiciera aparte,
       // el recorte no llevaría la corrección y quedaría movido respecto de la
       // prenda (lo dibujado encima se cortaría en el lugar equivocado).
-      .map(({ obj }) => {
+      .map(obj => {
         const p = new fabric.Path((obj as any).path, { fill: '#000' })
         p.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
         return p
@@ -5863,6 +6105,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     setCtxMenu({
       x: e.clientX, y: e.clientY, target,
+      escena: canvas.getScenePoint(e.nativeEvent),
       isGroup: !!target && target.type === 'group',
       isMulti: !!target && target.type === 'activeselection',
     })
@@ -7138,6 +7381,41 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </>
               )}
 
+              {/* Dividir con este trazo: solo aparece si el trazo cruza alguna
+                  pieza de lado a lado, o sea si de verdad la parte en dos. */}
+              {(() => {
+                // El trazo puede ser el objeto seleccionado o simplemente el que
+                // pasa por donde se hizo clic derecho.
+                const trazo = (t && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup))
+                  ? t : trazoEn(ctxMenu.escena)
+                if (!trazo) return null
+                const corte = trazoDivide(trazo)
+                if (!corte) return null
+                // Si el trazo cruza varias piezas hay que preguntar el alcance:
+                // no es lo mismo partir toda la remera que solo el cuerpo.
+                const varias = piezasQueDivide(corte).length > 1
+                const pieza = varias ? piezaEn(ctxMenu.escena) : null
+                const keyPieza = pieza ? (pieza as any)._pieceKey as string | undefined : undefined
+                return (
+                  <>
+                    <CtxDivider />
+                    <CtxItem label={varias ? 'Dividir toda la prenda acá' : 'Dividir la prenda acá'}
+                      hint="para pintar cada lado"
+                      onClick={() => { dividirPrendaCon(trazo); closeCtx() }} />
+                    {varias && keyPieza && (
+                      <CtxItem label={`Dividir solo ${(pieza as any)._pieceName ?? 'esta pieza'}`}
+                        hint="el resto queda entero"
+                        onClick={() => { dividirPrendaCon(trazo, keyPieza); closeCtx() }} />
+                    )}
+                  </>
+                )
+              })()}
+              {hayCortes && (
+                <>
+                  <CtxDivider />
+                  <CtxItem label="Quitar las divisiones" onClick={() => { quitarCortes(); closeCtx() }} />
+                </>
+              )}
               {t && !ctxMenu.isMulti && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup) && (
                 <>
                   <CtxDivider />
@@ -7788,7 +8066,10 @@ interface SavedPiece {
 // `measures` son las de la remera y `medidas` las del pantalón o la chomba.
 // Van en campos distintos a propósito: cada prenda tiene medidas propias y
 // mezclarlas haría que abrir un pantalón le pisara el talle a la remera.
-interface SavedGarment { measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[] }
+// `cortes` acepta el formato viejo (solo los puntos) y el nuevo, que ademas
+// guarda a que pieza se le aplico el corte.
+type SavedCorte = number[][] | { pts: number[][]; piezas?: string[] }
+interface SavedGarment { measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[]; cortes?: SavedCorte[] }
 interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
 
 function parseDesign(json: string): SavedDesign {
@@ -7810,6 +8091,67 @@ interface FormaPrenda {
   fill: string | null
   stroke: string
   strokeWidth: number
+}
+
+/**
+ * Aplica los cortes guardados a las piezas de una prenda.
+ *
+ * Cada corte parte en dos toda pieza que cruce de lado a lado. Las que no cruza
+ * quedan enteras. Se hace acá, al construir, para que sobreviva a cambiar las
+ * medidas: el corte es parte de la RECETA de la prenda, no un objeto suelto.
+ */
+/**
+ * Aplana un trazado a puntos, pase lo que pase por dentro.
+ *
+ * Los moldes de la chomba y el pantalon salen de un SVG y traen comandos que el
+ * aplanador no entiende (arcos, atajos, relativos). Fabric los normaliza a
+ * M/L/C/Q/Z al construir el trazado, asi que se le pasa por ahi primero: sin
+ * esto el corte funcionaba en la remera y no hacia nada en las otras prendas.
+ */
+function aplanarTrazado(d: string): Punto[] {
+  if (!d) return []
+  const cmds = (new fabric.Path(d) as any).path as any[] | undefined
+  if (!cmds?.length) return aplanarPath(d)
+  let simple = ''
+  for (const c of cmds) simple += c[0] + ' ' + c.slice(1).join(' ') + ' '
+  return aplanarPath(simple)
+}
+
+/**
+ * Si un corte le toca a esa pieza.
+ *
+ * Un corte con alcance apunta a la pieza tal como se llamaba cuando se hizo;
+ * los pedazos que salgan de ella heredan el nombre con `#1`, `#2`, asi que un
+ * corte posterior sobre uno de esos pedazos lo sigue encontrando.
+ */
+function alcanzaA(corte: { piezas?: string[] }, key: string): boolean {
+  if (!corte.piezas?.length) return true          // proyectos viejos: toda la prenda
+  return corte.piezas.some(p => key === p || key.startsWith(p + '#'))
+}
+
+function aplicarCortes(formas: FormaPrenda[], cortes: { pts: Punto[]; piezas?: string[] }[]): FormaPrenda[] {
+  if (!cortes.length) return formas
+  let actuales = formas
+  for (const corte of cortes) {
+    const siguientes: FormaPrenda[] = []
+    for (const f of actuales) {
+      if (f.role !== 'piece' || !alcanzaA(corte, f.key)) { siguientes.push(f); continue }
+      const partes = partirPoligono(aplanarTrazado(f.d), corte.pts)
+      if (!partes) { siguientes.push(f); continue }
+      // El que tiene el centro más arriba es el de arriba. Nombrarlas así hace
+      // que la lista de capas se entienda sin tener que clickear cada una.
+      const centro = (q: Punto[]) => q.reduce((a, b) => a + b[1], 0) / q.length
+      const ordenadas = partes[0] && centro(partes[0]) <= centro(partes[1]) ? partes : [partes[1], partes[0]]
+      ordenadas.forEach((q, i) => siguientes.push({
+        ...f,
+        d: poligonoAPath(q),
+        key: `${f.key}#${i + 1}`,
+        nombre: `${f.nombre ?? f.key} · ${i === 0 ? 'arriba' : 'abajo'}`,
+      }))
+    }
+    actuales = siguientes
+  }
+  return actuales
 }
 
 function buildTeeShapes(m: Measures): FormaPrenda[] {
