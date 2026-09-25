@@ -1153,7 +1153,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
   const pxPerCmRef = useRef(0)
-  const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)  // escala fija: el tamaño refleja los cm
+  const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
+  // Nombres de las piezas antes de rehacer la prenda, para reponer la pintura
+  // donde corresponde aunque cambie la cantidad de piezas.
+  const mockupPrevKeys = useRef<string[]>([])  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
@@ -1460,11 +1463,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function restoreGarmentPaint(garment: SavedGarment | null | undefined) {
     const pieces = garment?.pieces
     const objs = mockupObjects.current
-    if (!pieces || pieces.length !== objs.length) return
+    if (!pieces || !pieces.length) return
+
+    // Se busca por NOMBRE de pieza. Antes era por posicion, y con eso el dia que
+    // cambia la cantidad de piezas el color cae en la pieza equivocada -o no
+    // cae en ninguna, porque la funcion se cortaba entera.
+    const porNombre = new Map<string, SavedPiece>()
+    for (const p of pieces) if (p?.key) porNombre.set(p.key, p)
+
+    // Proyectos guardados antes de partir la remera: tenian UNA sola pieza de
+    // cuerpo, y ese color cubria tambien las mangas. Se reparte a las tres.
+    const formatoViejo = porNombre.size === 0
+    const pintuaViejaDelCuerpo = formatoViejo ? pieces[0] : undefined
 
     objs.forEach((o, i) => {
       if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
-      const p = pieces[i]
+      const clave = (o as any)._pieceKey as string | undefined
+      const esCuerpoOManga = clave === 'cuerpo' || clave === 'manga-izq' || clave === 'manga-der'
+      const p = formatoViejo
+        ? (esCuerpoOManga ? pintuaViejaDelCuerpo : pieces[i])
+        : (clave ? porNombre.get(clave) : pieces[i])
       if (!p) return
       if (p.tex)  (o as any)._texture   = p.tex
       if (p.eff)  (o as any)._effect    = p.eff
@@ -5180,6 +5198,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       measures: measuresRef.current,
       medidas:  medidasRef.current,
       pieces: mockupObjects.current.map(o => ({
+        key:  (o as any)._pieceKey as string | undefined,
         fill: typeof o.fill === 'string' ? o.fill : undefined,
         tex:  (o as any)._texture,
         eff:  (o as any)._effect,
@@ -5327,6 +5346,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // relleno se rehace desde cero y _userTex no viajaba en la copia.
       uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
     }))
+    mockupPrevKeys.current = mockupObjects.current.map(o => (o as any)._pieceKey as string ?? '')
     mockupObjects.current.forEach(o => canvas.remove(o))
 
     const shapes = buildTeeShapes(m)
@@ -5340,15 +5360,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
-      if (s.role === 'inner') { (p as any)._rawInner = true; (p as any)._pieceName = 'Interior del cuello' }
-      if (s.role === 'piece') (p as any)._rawBody  = true
+      ;(p as any)._pieceKey = s.key
+      if (s.nombre) (p as any)._pieceName = s.nombre
+      if (s.role === 'inner') (p as any)._rawInner = true
+      // _rawBody marca de donde saca el color el interior del cuello: es el
+      // CUERPO, no las mangas, asi el escote acompana a lo que se ve detras.
+      if (s.key === 'cuerpo') (p as any)._rawBody = true
       return p
     })
-    // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar medidas)
-    if (prevPaint.length === objs.length) {
+    // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar
+    // medidas). Se busca por NOMBRE de pieza y no por posicion: si algun dia
+    // cambia la cantidad de piezas, la pintura sigue cayendo donde corresponde.
+    const porNombre = new Map<string, typeof prevPaint[number]>()
+    prevPaint.forEach((pp, i) => {
+      const k = (mockupPrevKeys.current[i] ?? '') as string
+      if (k) porNombre.set(k, pp)
+    })
+    if (prevPaint.length) {
       objs.forEach((o, i) => {
         if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
-        const pp = prevPaint[i]
+        const pp = porNombre.get((o as any)._pieceKey as string) ?? prevPaint[i]
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
@@ -7644,7 +7675,10 @@ const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
-const TEE_BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
+// La silueta entera, de una sola pieza. Ya no se dibuja: quedan las tres de
+// abajo, que juntas dan exactamente esto. Se conserva como referencia.
+// @ts-expect-error se deja a proposito aunque no se use
+const _TEE_SILUETA_ORIGINAL = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
 
 // El hueco del cuello: lo que se ve del OTRO lado de la remera al mirarla de frente.
 // No es una pieza más, es un agujero, y por eso nunca lleva el estampado: la tela
@@ -7660,11 +7694,35 @@ const TEE_INNER = "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25C22
 // Color del interior cuando el cuerpo tiene estampado (ahí no hay color liso del
 // que derivarlo). Gris apagado: tiene que leerse como sombra, no como una pieza.
 const TEE_INNER_FALLBACK = '#8f8f8f'
+// La remera partida en CUERPO y dos MANGAS, para poder pintar cada parte por
+// separado con el balde y darle su propia tela.
+//
+// El corte va por la costura de la sisa, que NO es una linea recta inventada:
+// son las mismas curvas que ya se dibujaban como detalle (las dos que estaban
+// en TEE_DETAILS y ahora se sacaron de ahi). Asi la costura de la pieza cae
+// exactamente sobre la que el dibujo ya tenia.
+//
+// Los vertices compartidos entre piezas no abren hueco al cambiar las medidas
+// porque la deformacion depende solo de la posicion del punto: un mismo punto
+// se mueve igual, sea de la manga o del cuerpo.
+const TEE_CUERPO =
+  "M292.24,4.64 L392.43,31.46 " +
+  "C392.43,31.46 367.17,77.13 400.96,173.24 " +      // sisa derecha, bajando
+  "L408.98,357.27 L80.85,356.20 L92.49,173.16 " +
+  "C126.28,77.06 101.36,26.21 101.36,26.21 " +       // sisa izquierda, subiendo
+  "L205.89,1.08 s22.26,16.91 86.35,3.56 Z"
+
+const TEE_MANGA_DER =
+  "M392.43,31.46 L493.43,58.94 L470.28,177.99 L400.96,173.24 " +
+  "C367.17,77.13 392.43,31.46 392.43,31.46 Z"
+
+const TEE_MANGA_IZQ =
+  "M101.36,26.21 L1.14,50.05 L22.58,178.06 L92.49,173.16 " +
+  "C126.28,77.06 101.36,26.21 101.36,26.21 Z"
+
 const TEE_DETAILS = [
   "M208.82,15.39s38.5,12.6,80.07,2.15",
   "M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06",
-  "M101.36,26.21s24.92,50.85-8.87,146.95",
-  "M392.43,31.46s-25.26,45.67,8.53,141.78",
   "M462.27,174.84L485.7,56.86",
   "M207.82,10.09s39.45,12.6,82.06,2.15",
   "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25",
@@ -7719,6 +7777,8 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
 // tela/color de cada pieza. Se sigue leyendo el formato viejo (un array) para
 // no romper los proyectos que ya existen.
 interface SavedPiece {
+  /** Nombre estable de la pieza. Los proyectos viejos no lo tienen. */
+  key?: string
   fill?: string
   tex?:  { kind: TextureKind; colors: string[] }
   eff?:  { kind: EffectKind; intensity: number }
@@ -7741,15 +7801,35 @@ function parseDesign(json: string): SavedDesign {
   }
 }
 
-function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
+interface FormaPrenda {
+  d: string
+  role: 'piece' | 'inner' | 'detail'
+  /** Nombre estable de la pieza: con esto se restaura la pintura al reabrir. */
+  key: string
+  nombre?: string
+  fill: string | null
+  stroke: string
+  strokeWidth: number
+}
+
+function buildTeeShapes(m: Measures): FormaPrenda[] {
   const W = teeWarp(m)
-  const shapes: { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
-    { d: transformPath(TEE_BODY, W), role: 'piece', fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
+  const shapes: FormaPrenda[] = [
+    { d: transformPath(TEE_CUERPO, W), role: 'piece', key: 'cuerpo', nombre: 'Cuerpo',
+      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
+    { d: transformPath(TEE_MANGA_IZQ, W), role: 'piece', key: 'manga-izq', nombre: 'Manga izquierda',
+      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
+    { d: transformPath(TEE_MANGA_DER, W), role: 'piece', key: 'manga-der', nombre: 'Manga derecha',
+      fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
     // Va después del cuerpo y antes de los detalles: tapa el estampado y las
     // líneas del escote le quedan dibujadas encima.
-    { d: transformPath(TEE_INNER, W), role: 'inner', fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
+    { d: transformPath(TEE_INNER, W), role: 'inner', key: 'escote', nombre: 'Interior del cuello',
+      fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
   ]
-  for (const d of TEE_DETAILS) shapes.push({ d: transformPath(d, W), role: 'detail', fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
+  TEE_DETAILS.forEach((d, i) => shapes.push({
+    d: transformPath(d, W), role: 'detail', key: 'detalle-' + i,
+    fill: null, stroke: '#1d1d1b', strokeWidth: 2,
+  }))
   return shapes
 }
 
