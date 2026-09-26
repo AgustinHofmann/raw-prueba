@@ -1185,6 +1185,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   type Corte = { pts: Punto[]; piezas?: string[]; id?: string }
   const cortesRef = useRef<Corte[]>([])
   const corteSeq = useRef(1)
+  // Mientras se arrastra la linea de division: el cuadro pedido y si hay que
+  // callar el panel de capas.
+  const corteEnVivo = useRef<number | null>(null)
+  const saltarCapas = useRef(false)
   const [hayCortes, setHayCortes] = useState(false)  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
@@ -1718,8 +1722,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.on('object:added',   refreshLayers)
     canvas.on('object:removed', refreshLayers)
     canvas.on('object:modified', refreshLayers)
-    // Mover o deformar la linea de division vuelve a cortar la prenda.
-    canvas.on('object:modified', e => { if (e.target) actualizarCorte(e.target) })
+    // Mover o deformar la linea de division vuelve a cortar la prenda, y se ve
+    // mientras se arrastra: no hay que soltar para saber como queda.
+    canvas.on('object:moving',   e => corteEnMovimiento(e.target))
+    canvas.on('object:scaling',  e => corteEnMovimiento(e.target))
+    canvas.on('object:rotating', e => corteEnMovimiento(e.target))
+    canvas.on('object:modified', e => corteSoltado(e.target))
     canvas.on('object:removed',  e => { if (e.target) quitarCorteDe(e.target) })
 
     const syncSelKind = () => {
@@ -4513,6 +4521,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     rehacerPrenda()
   }
 
+  /**
+   * La linea se esta moviendo AHORA: la division la sigue sin soltar el mouse.
+   *
+   * Se rehace como mucho una vez por cuadro. Rehacer la prenda en cada
+   * movimiento del mouse la trababa, porque cada vez hay que volver a cortar
+   * todas las piezas.
+   */
+  function corteEnMovimiento(obj: fabric.FabricObject | undefined) {
+    if (!obj || !(obj as any)._corte) return
+    saltarCapas.current = true
+    if (corteEnVivo.current !== null) return
+    corteEnVivo.current = requestAnimationFrame(() => {
+      corteEnVivo.current = null
+      actualizarCorte(obj)
+    })
+  }
+
+  /** Se solto la linea: ultimo recorte y se vuelve a habilitar el panel. */
+  function corteSoltado(obj: fabric.FabricObject | undefined) {
+    if (corteEnVivo.current !== null) {
+      cancelAnimationFrame(corteEnVivo.current)
+      corteEnVivo.current = null
+    }
+    saltarCapas.current = false
+    if (!obj || !(obj as any)._corte) return
+    actualizarCorte(obj)
+    refreshLayersNow()
+  }
+
   /** Se borro la linea: se va tambien su division. */
   function quitarCorteDe(obj: fabric.FabricObject) {
     const id = (obj as any)._corte as string | undefined
@@ -6301,6 +6338,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // ── Acciones del panel de capas ─────────────────────────────────────────────
   function refreshLayersNow() {
+    // Mientras se arrastra la linea de division la prenda se rehace en cada
+    // cuadro; repintar el panel de capas ahi es tirar trabajo a la basura.
+    if (saltarCapas.current) return
     const canvas = fc.current
     if (canvas) setLayers([...canvas.getObjects()])
     setLayersVersion(v => v + 1)
