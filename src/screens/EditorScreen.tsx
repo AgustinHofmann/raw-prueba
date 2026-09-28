@@ -3019,9 +3019,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       // Al editar una pieza del mockup, el path se reconstruye: hay que mantener su
       // identidad de mockup (para que siga bloqueable y no quede huérfano al regenerar).
+      const PROPIAS = [
+        '_rawMockup', '_rawInner', '_rawBody', '_pieceKey', '_pieceName', '_piecePadre',
+        '_srcId', '_texture', '_effect', '_baseColor', '_userTex', '_locked', '_corte',
+      ]
       const inheritMockup = (oldO: fabric.FabricObject, newO: fabric.FabricObject) => {
+        // El trazado se rehace de cero en cada cuadro, asi que hay que pasarle
+        // TODO lo que el editor le colgo al objeto. Sin esto, editar con la
+        // pluma de curvatura una linea de division la dejaba de ser: el objeto
+        // nuevo salia pelado y la prenda se quedaba sin su corte.
+        for (const k of PROPIAS) {
+          const v = (oldO as any)[k]
+          if (v !== undefined) (newO as any)[k] = v
+        }
         if ((oldO as any)._rawMockup) {
-          ;(newO as any)._rawMockup = true
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
@@ -3196,6 +3207,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         ;(newObj as any).hoverCursor = CURVE_CURSOR
         canvas.remove(editObj); canvas.add(newObj)
         inheritMockup(editObj, newObj)
+        // Si es una linea de division, la prenda se vuelve a cortar en vivo
+        // mientras se curva, igual que cuando se la arrastra.
+        corteEnMovimiento(newObj)
         // History updated only on mouseUp via 'modify' entry, not during drag frames
         editObj = newObj
       }
@@ -3322,6 +3336,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       const onUp = () => {
         if (!dragging || !editObj) { dragging = false; draggingIdx = null; return }
+        corteSoltado(editObj)
         if (preDragObj && editObj !== preDragObj) {
           undoHistory.current.push({ type: 'modify', prev: preDragObj, next: editObj })
           redoHistory.current = []
@@ -4529,12 +4544,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * todas las piezas.
    */
   function corteEnMovimiento(obj: fabric.FabricObject | undefined) {
-    if (!obj || !(obj as any)._corte) return
+    const id = obj && (obj as any)._corte as string | undefined
+    if (!id) return
     saltarCapas.current = true
     if (corteEnVivo.current !== null) return
     corteEnVivo.current = requestAnimationFrame(() => {
       corteEnVivo.current = null
-      actualizarCorte(obj)
+      // Se busca por id y no se usa el objeto capturado: con la pluma de
+      // curvatura, para cuando llega el cuadro ese objeto ya fue reemplazado.
+      const vivo = fc.current?.getObjects().find(o => (o as any)._corte === id)
+      if (vivo) actualizarCorte(vivo)
     })
   }
 
@@ -4545,20 +4564,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       corteEnVivo.current = null
     }
     saltarCapas.current = false
-    if (!obj || !(obj as any)._corte) return
-    actualizarCorte(obj)
+    const id = obj && (obj as any)._corte as string | undefined
+    if (!id) return
+    const vivo = fc.current?.getObjects().find(o => (o as any)._corte === id) ?? obj
+    actualizarCorte(vivo)
     refreshLayersNow()
   }
 
-  /** Se borro la linea: se va tambien su division. */
+  /**
+   * Se borro la linea: se va tambien su division.
+   *
+   * Ojo: sacar el objeto del lienzo NO siempre quiere decir borrarlo. La pluma
+   * de curvatura rehace el trazado en cada cuadro —saca el viejo y agrega uno
+   * nuevo— y asi la division se perdia apenas se tocaba la linea. Por eso se
+   * espera a que termine lo que se este haciendo y recien ahi se mira: si
+   * quedo OTRO objeto con el mismo corte, es un reemplazo y no hay que sacar
+   * nada.
+   */
   function quitarCorteDe(obj: fabric.FabricObject) {
     const id = (obj as any)._corte as string | undefined
     if (!id) return
-    const quedan = cortesRef.current.filter(c => c.id !== id)
-    if (quedan.length === cortesRef.current.length) return
-    cortesRef.current = quedan
-    setHayCortes(quedan.length > 0)
-    rehacerPrenda()
+    queueMicrotask(() => {
+      const sigue = fc.current?.getObjects().some(o => (o as any)._corte === id)
+      if (sigue) return
+      const quedan = cortesRef.current.filter(c => c.id !== id)
+      if (quedan.length === cortesRef.current.length) return
+      cortesRef.current = quedan
+      setHayCortes(quedan.length > 0)
+      rehacerPrenda()
+    })
   }
 
   /** Vuelve la prenda a sus piezas originales. */
