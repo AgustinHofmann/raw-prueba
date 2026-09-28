@@ -432,6 +432,27 @@ function samplePathCommands(path: any[], step = 4): fabric.Point[] {
 }
 
 // Datos del trazado especial a partir de una polilínea de puntos.
+/**
+ * Devuelve los puntos de una curva SUAVE que pasa por esos puntos.
+ *
+ * El lapiz reduce los puntos del trazo (RDP) antes de dibujarlo: el trazo
+ * normal despues los pasa por una curva, pero los trazos especiales dibujaban
+ * la polilinea pelada. Con el pincel grueso el reductor deja pocos puntos, y
+ * entonces cada vuelta de una costura salia en ESQUINA en vez de curva.
+ *
+ * Aca se arma la misma curva que usa el trazo normal y se la vuelve a muestrear
+ * densa, asi las puntadas siguen la curva de verdad.
+ */
+function suavizarPuntos(pts: fabric.Point[], paso = 2): fabric.Point[] {
+  if (pts.length < 3) return pts
+  const d = catmullRomToBezier(pts)
+  if (!d) return pts
+  const cmds = (new fabric.Path(d) as any).path as any[] | undefined
+  if (!cmds?.length) return pts
+  const densos = samplePathCommands(cmds, paso)
+  return densos.length >= 2 ? densos : pts
+}
+
 function specialStrokeData(
   pts: fabric.Point[], style: StrokeStyle, width: number,
 ): { d: string; sw: number; relleno?: boolean } | null {
@@ -2301,11 +2322,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // 1. Reducir puntos con RDP (epsilon según grosor)
         const epsilon = Math.max(2, brushSizeRef.current * 0.4)
         const simplified = rdp(rawPts, epsilon)
+        // Los trazos especiales (costura, bordado, cierre) dibujan SOBRE los
+        // puntos, no sobre una curva: hay que devolverles la curva que el
+        // reductor les saco, o cada vuelta sale en esquina.
+        const curva = suavizarPuntos(simplified)
 
         // 2. Según el trazado elegido: normal (bezier suave) o especial (bordado/cierre)
         // El cierre no es un trazo: es un pincel que estampa, y entra como imagen.
         if (strokeStyleRef.current === 'cierre') {
-          const z = dibujarCierre(simplified, brushSizeRef.current, colorRef.current)
+          const z = dibujarCierre(curva, brushSizeRef.current, colorRef.current)
           if (z) {
             const img = new fabric.FabricImage(z.el, {
               left: z.left, top: z.top,
@@ -2321,7 +2346,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           canvas.requestRenderAll()
           return
         }
-        const special = specialStrokeData(simplified, strokeStyleRef.current, brushSizeRef.current)
+        const special = specialStrokeData(curva, strokeStyleRef.current, brushSizeRef.current)
         const obj = special
           ? new fabric.Path(special.d, {
               stroke: colorRef.current, strokeWidth: special.sw,
