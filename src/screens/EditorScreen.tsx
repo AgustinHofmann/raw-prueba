@@ -6583,7 +6583,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               background: 'color-mix(in oklch, var(--accent) 8%, rgb(0 0 0 / 0.35))',
               display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
             }}>
-              <span style={{ fontSize: 34 }}>🖼️</span>
+              <span style={{ color: 'var(--muted-2)' }}><IconImagen /></span>
               <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>Soltá la imagen para importarla</span>
               <span style={{ color: 'var(--muted)', fontSize: 12 }}>sin abrir el explorador · no sale de pantalla completa</span>
             </div>
@@ -7245,7 +7245,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   style={{ width: '100%', justifyContent: 'center', marginBottom: 14, fontSize: 11,
                     border: '1px solid ' + (mockupLocked ? 'var(--line)' : 'var(--accent)'),
                     color: mockupLocked ? 'var(--fg-2)' : 'var(--accent)' }}>
-                  {mockupLocked ? '🖌  Pintar una pieza puntual' : '✓  Terminar (volver a toda la prenda)'}
+                  {mockupLocked
+                    ? <><IconPincel /> Pintar una pieza puntual</>
+                    : <><IconCheck /> Terminar (volver a toda la prenda)</>}
                 </button>
               )}
 
@@ -8740,8 +8742,8 @@ function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj,
                 style={{ fontSize: 'var(--t-label)', cursor: isLast ? 'default' : 'pointer', color: isLast ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▼</span>
             </span>
 
-            {iconBtn(hidden ? '🚫' : '👁', hidden ? 'Mostrar' : 'Ocultar', () => onToggleVisible(obj), !hidden)}
-            {iconBtn(locked ? '🔒' : '🔓', locked ? 'Desbloquear' : 'Bloquear', () => onToggleLock(obj), locked)}
+            {iconBtn(<IconOjo off={hidden} />, hidden ? 'Mostrar esta capa' : 'Ocultar esta capa', () => onToggleVisible(obj), !hidden)}
+            {iconBtn(<IconCandado abierto={!locked} />, locked ? 'Desbloquear: vuelve a ser seleccionable' : 'Bloquear: deja de recibir clics', () => onToggleLock(obj), locked)}
             {iconBtn('✕', 'Eliminar', () => onDelete(obj), false, true)}
           </div>
         )
@@ -8771,7 +8773,7 @@ function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj,
               }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >{mockupLocked ? '🔒' : '🔓'}</span>
+            ><IconCandado abierto={!mockupLocked} /></span>
           </div>
 
           {/* Sub-capas del mockup */}
@@ -9009,6 +9011,38 @@ function PathfinderGlyph({ op }: { op: 'unite' | 'subtract' | 'intersect' | 'exc
   else                         body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, c, 'none')}<rect x={5.5} y={5.5} width={4} height={4} fill={bg} /></>
   return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
 }
+const IconCheck = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 8.5 L6.5 12 L13 4.5" />
+  </svg>
+)
+const IconOjo = ({ off = false }: { off?: boolean }) => (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1.5 8 S4 3.5 8 3.5 S14.5 8 14.5 8 S12 12.5 8 12.5 S1.5 8 1.5 8 Z" />
+    <circle cx="8" cy="8" r="2" />
+    {off && <path d="M2.5 13.5 L13.5 2.5" />}
+  </svg>
+)
+const IconCandado = ({ abierto = false }: { abierto?: boolean }) => (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
+    <path d={abierto ? 'M5.5 7 V4.5 a2.5 2.5 0 0 1 5 0' : 'M5.5 7 V4.5 a2.5 2.5 0 0 1 5 0 V7'} />
+  </svg>
+)
+const IconPincel = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 2.5 L13.5 7 L7.5 13 H4 v-3.5 Z" />
+    <path d="M4 9.5 L7.5 13" />
+  </svg>
+)
+const IconImagen = () => (
+  <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="1.5" y="3" width="13" height="10" rx="1.5" />
+    <circle cx="5.5" cy="6.5" r="1.2" />
+    <path d="M2.5 11.5 L6 8.5 L9 11 L11.5 9 L13.5 10.5" />
+  </svg>
+)
+
 const IconSelect = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
     <path d="M3 1.5 L13 8 L8 8.5 L11 13 L9 14 L6 9.5 L3 12 Z" stroke="currentColor" strokeWidth="0.8" strokeLinejoin="round" />
