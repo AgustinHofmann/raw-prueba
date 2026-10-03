@@ -87,7 +87,7 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
             {MOCKUPS.map(m => (
               <button key={m.id} onClick={() => setMockup(m.id)} style={{
-                padding: '16px 8px', borderRadius: 12, cursor: 'pointer',
+                padding: '16px 8px', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
                 background: mockup === m.id ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',
                 border: '1.5px solid ' + (mockup === m.id ? 'var(--accent)' : 'var(--line)'),
@@ -108,7 +108,7 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
               <button
                 onClick={() => setFolder(null)}
                 style={{
-                  padding: '9px 14px', borderRadius: 10, cursor: 'pointer',
+                  padding: '9px 14px', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', gap: 10,
                   background: folderId === null ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',
                   border: '1.5px solid ' + (folderId === null ? 'var(--accent)' : 'var(--line)'),
@@ -124,7 +124,7 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
                   key={f.id}
                   onClick={() => setFolder(f.id)}
                   style={{
-                    padding: '9px 14px', borderRadius: 10, cursor: 'pointer',
+                    padding: '9px 14px', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', gap: 10,
                     background: folderId === f.id ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',
                     border: '1.5px solid ' + (folderId === f.id ? 'var(--accent)' : 'var(--line)'),

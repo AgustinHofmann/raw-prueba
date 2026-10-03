@@ -148,7 +148,7 @@ export default function HomeScreen({
             placeholder="Nombre de carpeta"
             style={{
               background: 'var(--surface)', border: '1px solid var(--accent)',
-              borderRadius: 8, padding: '7px 10px', fontSize: 12,
+              borderRadius: 'var(--radius)', padding: '7px 10px', fontSize: 12,
               color: 'var(--fg)', fontFamily: 'var(--ui)', outline: 'none', width: '100%',
               boxSizing: 'border-box',
             }}
@@ -215,7 +215,7 @@ export default function HomeScreen({
               onChange={e => setSearch(e.target.value)}
               placeholder="Buscar proyectos..."
               style={{
-                height: 36, padding: '0 14px', borderRadius: 8,
+                height: 36, padding: '0 14px', borderRadius: 'var(--radius)',
                 background: 'var(--surface)', border: '1px solid var(--line)',
                 color: 'var(--fg)', fontFamily: 'var(--ui)', fontSize: 12,
                 outline: 'none', width: 220,
@@ -241,7 +241,7 @@ export default function HomeScreen({
           }}>
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} style={{
-                borderRadius: 12, overflow: 'hidden',
+                borderRadius: 'var(--radius-lg)', overflow: 'hidden',
                 border: '1px solid var(--line)',
                 animation: `rise 0.4s var(--ease) ${i * 0.04}s both`,
               }}>
@@ -252,8 +252,8 @@ export default function HomeScreen({
                   animation: 'shimmer 1.4s infinite',
                 }} />
                 <div style={{ padding: '10px 12px', background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ height: 10, borderRadius: 4, background: 'var(--surface-2)', width: '70%' }} />
-                  <div style={{ height: 8,  borderRadius: 4, background: 'var(--surface-2)', width: '45%' }} />
+                  <div style={{ height: 10, borderRadius: 'var(--radius-sm)', background: 'var(--surface-2)', width: '70%' }} />
+                  <div style={{ height: 8,  borderRadius: 'var(--radius-sm)', background: 'var(--surface-2)', width: '45%' }} />
                 </div>
               </div>
             ))}
@@ -336,7 +336,7 @@ export default function HomeScreen({
             onClick={e => e.stopPropagation()}
             style={{
               background: 'var(--bg)', border: '1px solid var(--line)',
-              borderRadius: 16, padding: '28px 32px', width: 340,
+              borderRadius: 'var(--radius-xl)', padding: '28px 32px', width: 340,
               display: 'flex', flexDirection: 'column', gap: 20,
               boxShadow: 'var(--shadow-lg)',
               animation: 'rise 0.2s var(--ease) both',
@@ -362,7 +362,7 @@ export default function HomeScreen({
               <button
                 onClick={() => { onDeleteProject(pendingDelete.id); setPendingDelete(null) }}
                 style={{
-                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  fontSize: 12, padding: '7px 16px', borderRadius: 'var(--radius)',
                   background: 'var(--danger, #e53935)', border: 'none',
                   color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
                   transition: 'opacity 0.15s',
@@ -392,7 +392,7 @@ export default function HomeScreen({
             onClick={e => e.stopPropagation()}
             style={{
               background: 'var(--bg)', border: '1px solid var(--line)',
-              borderRadius: 16, padding: '28px 32px', width: 340,
+              borderRadius: 'var(--radius-xl)', padding: '28px 32px', width: 340,
               display: 'flex', flexDirection: 'column', gap: 20,
               boxShadow: 'var(--shadow-lg)',
               animation: 'rise 0.2s var(--ease) both',
@@ -418,7 +418,7 @@ export default function HomeScreen({
               <button
                 onClick={() => { onDeleteFolder(pendingDeleteFolder.id); setPendingDeleteFolder(null) }}
                 style={{
-                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  fontSize: 12, padding: '7px 16px', borderRadius: 'var(--radius)',
                   background: 'var(--danger, #e53935)', border: 'none',
                   color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
                   transition: 'opacity 0.15s',
@@ -438,7 +438,7 @@ export default function HomeScreen({
         <div style={{
           position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)',
           zIndex: 150, display: 'flex', alignItems: 'center', gap: 6,
-          background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14,
+          background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius-xl)',
           padding: '8px 10px', boxShadow: 'var(--shadow-lg)',
           animation: 'rise 0.2s var(--ease) both',
         }}>
@@ -473,7 +473,7 @@ export default function HomeScreen({
               <div style={{
                 position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 10,
                 background: 'var(--bg)', border: '1px solid var(--line)',
-                borderRadius: 8, overflow: 'hidden', minWidth: 160,
+                borderRadius: 'var(--radius)', overflow: 'hidden', minWidth: 160,
                 boxShadow: 'var(--shadow-lg)', maxHeight: 240, overflowY: 'auto',
               }}>
                 <button
@@ -518,7 +518,7 @@ export default function HomeScreen({
             onClick={() => setPendingBulkDelete(true)}
             disabled={selectedIds.size === 0}
             style={{
-              fontSize: 12, padding: '7px 12px', borderRadius: 8, whiteSpace: 'nowrap',
+              fontSize: 12, padding: '7px 12px', borderRadius: 'var(--radius)', whiteSpace: 'nowrap',
               background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--ui)',
               color: 'var(--danger, #e53935)', opacity: selectedIds.size === 0 ? 0.4 : 1,
             }}
@@ -553,7 +553,7 @@ export default function HomeScreen({
             onClick={e => e.stopPropagation()}
             style={{
               background: 'var(--bg)', border: '1px solid var(--line)',
-              borderRadius: 16, padding: '28px 32px', width: 340,
+              borderRadius: 'var(--radius-xl)', padding: '28px 32px', width: 340,
               display: 'flex', flexDirection: 'column', gap: 20,
               boxShadow: 'var(--shadow-lg)',
               animation: 'rise 0.2s var(--ease) both',
@@ -579,7 +579,7 @@ export default function HomeScreen({
               <button
                 onClick={bulkDelete}
                 style={{
-                  fontSize: 12, padding: '7px 16px', borderRadius: 8,
+                  fontSize: 12, padding: '7px 16px', borderRadius: 'var(--radius)',
                   background: 'var(--danger, #e53935)', border: 'none',
                   color: '#fff', cursor: 'pointer', fontFamily: 'var(--ui)',
                   transition: 'opacity 0.15s',
@@ -629,7 +629,7 @@ function FolderCard({ folder, projectCount, delay, isDragOver, onClick, onDelete
       onDragLeave={onDragLeave}
       onDrop={onDrop}
       style={{
-        borderRadius: 12, overflow: 'hidden', cursor: 'pointer',
+        borderRadius: 'var(--radius-lg)', overflow: 'hidden', cursor: 'pointer',
         border: '1.5px solid ' + (isDragOver ? 'var(--accent)' : hover ? 'var(--accent)' : 'var(--line)'),
         transition: 'all 0.2s var(--ease)',
         transform: isDragOver ? 'scale(1.04)' : hover ? 'translateY(-2px)' : 'none',
@@ -732,7 +732,7 @@ function ProjectCard({ project: p, folders, delay, selectMode, selected, onClick
       onDragStart={e => { setDragging(true); onDragStart(e) }}
       onDragEnd={() => setDragging(false)}
       style={{
-        borderRadius: 12, overflow: 'hidden', cursor: dragging ? 'grabbing' : 'pointer',
+        borderRadius: 'var(--radius-lg)', overflow: 'hidden', cursor: dragging ? 'grabbing' : 'pointer',
         border: '1px solid ' + (selected ? 'var(--accent)' : hover ? 'var(--accent)' : 'var(--line)'),
         transition: 'all 0.2s var(--ease)',
         transform: hover && !dragging ? 'translateY(-2px)' : 'none',
@@ -807,7 +807,7 @@ function ProjectCard({ project: p, folders, delay, selectMode, selected, onClick
             style={{
               position: 'absolute', top: 32, right: 6, zIndex: 10,
               background: 'var(--bg)', border: '1px solid var(--line)',
-              borderRadius: 8, overflow: 'hidden', minWidth: 140,
+              borderRadius: 'var(--radius)', overflow: 'hidden', minWidth: 140,
               boxShadow: 'var(--shadow-lg)',
             }}
           >

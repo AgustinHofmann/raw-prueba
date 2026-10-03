@@ -194,7 +194,7 @@ export default function ProfilePanel({ user, projects, folders, theme, onThemeCh
                 >
                   {/* mini preview de colores */}
                   <div style={{
-                    display: 'flex', borderRadius: 6, overflow: 'hidden',
+                    display: 'flex', borderRadius: 'var(--radius-sm)', overflow: 'hidden',
                     border: '1px solid var(--line-soft)', width: 44, height: 26,
                   }}>
                     <div style={{ flex: 1, background: t.swatch[0] }} />

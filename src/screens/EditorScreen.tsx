@@ -564,7 +564,7 @@ function PickColorBtn({ onPick, onFallback, title }: {
       }}
       style={{
         display: 'grid', placeItems: 'center', width: 26, height: 26,
-        borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+        borderRadius: 'var(--radius-sm)', cursor: 'pointer', flexShrink: 0,
         background: 'none', border: '1px solid var(--line)', color: 'var(--fg-2)',
         transition: 'all 0.15s var(--ease)',
       }}
@@ -1134,7 +1134,7 @@ function NumberField({
             else if (e.key === 'ArrowDown') { e.preventDefault(); stepBy(-step) }
           }}
           style={{
-            width: '100%', padding: '5px 20px 5px 8px', borderRadius: 6, textAlign: 'right', boxSizing: 'border-box',
+            width: '100%', padding: '5px 20px 5px 8px', borderRadius: 'var(--radius-sm)', textAlign: 'right', boxSizing: 'border-box',
             background: 'var(--surface)', border: '1px solid var(--line)',
             color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: 12,
           }}
@@ -6541,7 +6541,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             zIndex: 45, pointerEvents: 'none',
             visibility: eyeProbe ? 'visible' : 'hidden',
             display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
-            borderRadius: 10, overflow: 'hidden',
+            borderRadius: 'var(--radius-lg)', overflow: 'hidden',
             background: 'rgb(0 0 0 / 0.78)', border: '1px solid rgb(255 255 255 / 0.22)',
             boxShadow: '0 6px 18px rgb(0 0 0 / 0.45)',
           }}>
@@ -6552,7 +6552,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               borderTop: '1px solid rgb(255 255 255 / 0.18)',
             }}>
               <div style={{
-                width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                width: 16, height: 16, borderRadius: 'var(--radius-sm)', flexShrink: 0,
                 background: eyeProbe?.hex ?? '#000',
                 border: '1px solid rgb(255 255 255 / 0.5)',
               }} />
@@ -6566,7 +6566,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           {dragActive && (
             <div style={{
               position: 'absolute', inset: 12, zIndex: 40, pointerEvents: 'none',
-              border: '2px dashed var(--accent)', borderRadius: 14,
+              border: '2px dashed var(--accent)', borderRadius: 'var(--radius-xl)',
               background: 'color-mix(in oklch, var(--accent) 8%, rgb(0 0 0 / 0.35))',
               display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
             }}>
@@ -6585,7 +6585,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               display: 'flex', alignItems: 'center', gap: 7,
               background: 'var(--bg)',
               border: '1px solid ' + (clipEnabled ? 'var(--line)' : 'var(--accent)'),
-              borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+              borderRadius: 'var(--radius)', padding: '6px 12px', cursor: 'pointer',
               fontFamily: 'var(--ui)', fontSize: 11,
               color: clipEnabled ? 'var(--fg-2)' : 'var(--accent)',
               boxShadow: 'var(--shadow-lg)',
@@ -6613,7 +6613,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 position: 'absolute', bottom: 16, right: 16,
                 display: 'flex', alignItems: 'center', gap: 7,
                 background: 'var(--bg)', border: '1px solid var(--line)',
-                borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+                borderRadius: 'var(--radius)', padding: '6px 12px', cursor: 'pointer',
                 fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--fg)',
                 boxShadow: 'var(--shadow-lg)',
                 animation: 'rise 0.2s var(--ease) both',
@@ -6700,7 +6700,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 title="Arrastrar puntos sobre la remera para cambiar las medidas"
                 style={{
                   width: '100%', justifyContent: 'center', marginBottom: 10, fontSize: 11,
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 6, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                   background: measureEdit ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
                   border: '1px solid ' + (measureEdit ? 'var(--accent)' : 'var(--line)'),
                   color: measureEdit ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
@@ -6714,13 +6714,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   const open = !!openGroups[g.id]
                   const mainFld = MEASURE_FIELDS.find(f => f.key === g.keys[0])!
                   return (
-                    <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+                    <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                       <div
                         onClick={() => { if (!single) setOpenGroups(p => ({ ...p, [g.id]: !p[g.id] })) }}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
                           cursor: single ? 'default' : 'pointer', background: 'var(--surface)' }}
                       >
-                        {!single && <span style={{ fontSize: 9, width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
+                        {!single && <span style={{ fontSize: 'var(--t-label)', width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
                         <span style={{ flex: 1, fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--ui)' }}>{g.label}</span>
                         {/* Colapsado: editar en general (escala todo el grupo) */}
                         {(single || !open) && cmInput(measures[g.keys[0]], mainFld.min, mainFld.max,
@@ -6778,13 +6778,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     const open  = !!openGroups[g.id]
                     const main  = campo(g.keys[0])
                     return (
-                      <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+                      <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                         <div
                           onClick={() => { if (!unica) setOpenGroups(p => ({ ...p, [g.id]: !p[g.id] })) }}
                           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
                             cursor: unica ? 'default' : 'pointer', background: 'var(--surface)' }}
                         >
-                          {!unica && <span style={{ fontSize: 9, width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
+                          {!unica && <span style={{ fontSize: 'var(--t-label)', width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
                           <span style={{ flex: 1, fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--ui)' }}>{g.label}</span>
                           {(unica || !open) && cmInput(medidas[g.keys[0]], main.min, main.max,
                             v => unica ? aplicarMedidas({ ...medidasRef.current, [g.keys[0]]: v })
@@ -6854,7 +6854,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   ['⤓', 'Enviar al fondo', 'back'],
                 ] as const).map(([ic, title, dir]) => (
                   <button key={dir} title={title} onClick={() => reorderSelected(dir)}
-                    style={{ padding: '6px 0', borderRadius: 6, cursor: 'pointer', fontSize: 14,
+                    style={{ padding: '6px 0', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 14,
                       background: 'var(--surface)', border: '1px solid var(--line)', color: 'var(--fg-2)' }}
                     onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
@@ -6881,7 +6881,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <button
                 onClick={() => { setFontPickerOpen(v => !v); setFontFilter('') }}
                 style={{
-                  width: '100%', padding: '9px 12px', borderRadius: 8, marginBottom: 4,
+                  width: '100%', padding: '9px 12px', borderRadius: 'var(--radius)', marginBottom: 4,
                   background: 'var(--surface)', border: '1px solid ' + (fontPickerOpen ? 'var(--accent)' : 'var(--line)'),
                   cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                   textAlign: 'left', transition: 'border-color 0.15s var(--ease)',
@@ -6896,7 +6896,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {/* Font dropdown */}
               {fontPickerOpen && (
                 <div style={{
-                  background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8,
+                  background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)',
                   overflow: 'hidden', marginBottom: 8,
                 }}>
                   <input
@@ -6917,7 +6917,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     {/* User fonts */}
                     {(userFonts.length > 0 || !fontFilter) && (
                       <div style={{ borderTop: '1px solid var(--line-soft)' }}>
-                        <div style={{ padding: '6px 10px 2px', fontSize: 9, color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+                        <div style={{ padding: '6px 10px 2px', fontSize: 'var(--t-label)', color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
                           Mis fuentes
                         </div>
                         {userFonts
@@ -6968,7 +6968,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
                 {([['X', propX, applyX], ['Y', propY, applyY]] as const).map(([label, val, fn]) => (
                   <div key={label}>
-                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+                    <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
                     <NumberField value={val} onChange={fn} step={1} fullWidth />
                   </div>
                 ))}
@@ -6977,7 +6977,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
                 {([['W', propW, applyW], ['H', propH, applyH]] as const).map(([label, val, fn]) => (
                   <div key={label}>
-                    <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+                    <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
                     <NumberField value={val} onChange={fn} step={1} min={1} fullWidth />
                   </div>
                 ))}
@@ -7020,7 +7020,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 <AlignBtn title="Intersecar" onClick={() => pathfinder('intersect')}><PathfinderGlyph op="intersect" /></AlignBtn>
                 <AlignBtn title="Excluir"   onClick={() => pathfinder('exclude')}><PathfinderGlyph op="exclude" /></AlignBtn>
               </div>
-              <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
+              <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
                 Combina las formas en un trazado nuevo
               </div>
             </div>
@@ -7059,7 +7059,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   {symbols.map(s => (
                     <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <button onClick={() => setActiveSymbol(s.id)} style={{
-                        flex: 1, textAlign: 'left', padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                        flex: 1, textAlign: 'left', padding: '5px 8px', borderRadius: 'var(--radius-sm)', fontSize: 11, cursor: 'pointer',
                         background: activeSymbol === s.id ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
                         border: '1px solid ' + (activeSymbol === s.id ? 'var(--accent)' : 'var(--line)'),
                         color: activeSymbol === s.id ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
@@ -7133,7 +7133,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     title={`Trazado ${opt.label.toLowerCase()}`}
                     style={{
                       flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-                      padding: '7px 4px', borderRadius: 7, cursor: 'pointer',
+                      padding: '7px 4px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                       background: strokeStyle === opt.id ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
                       border: '1px solid ' + (strokeStyle === opt.id ? 'var(--accent)' : 'var(--line)'),
                       color: strokeStyle === opt.id ? 'var(--accent)' : 'var(--fg-2)',
@@ -7141,7 +7141,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     }}
                   >
                     {opt.icon}
-                    <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>{opt.label}</span>
+                    <span style={{ fontSize: 'var(--t-label)', fontFamily: 'var(--ui)' }}>{opt.label}</span>
                   </button>
                 ))}
               </div>
@@ -7264,7 +7264,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                       }}
                     >
                       <div style={{
-                        width: '100%', aspectRatio: '1', borderRadius: 8,
+                        width: '100%', aspectRatio: '1', borderRadius: 'var(--radius)',
                         backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
                         backgroundSize: '56px 56px',
                         border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
@@ -7302,7 +7302,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                         }}
                       >
                         <div style={{
-                          width: '100%', aspectRatio: '1', borderRadius: 8,
+                          width: '100%', aspectRatio: '1', borderRadius: 'var(--radius)',
                           backgroundImage: `url("${thumb}")`, backgroundSize: 'cover',
                           border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
                           outline: on ? '1px solid var(--accent)' : 'none',
@@ -7342,7 +7342,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {texError && (
                 <div style={{
                   fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginTop: 8,
-                  padding: '7px 9px', borderRadius: 6,
+                  padding: '7px 9px', borderRadius: 'var(--radius-sm)',
                   background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
                   border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
                 }}>{texError}</div>
@@ -7515,7 +7515,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     title="Sin efecto de tela"
                     style={{
                       display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
-                      padding: '8px 4px', borderRadius: 7, cursor: 'pointer',
+                      padding: '8px 4px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                       background: !activeEffect ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
                       border: '1px solid ' + (!activeEffect ? 'var(--accent)' : 'var(--line)'),
                       color: !activeEffect ? 'var(--accent)' : 'var(--fg-2)',
@@ -7523,12 +7523,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     }}
                   >
                     <span style={{
-                      width: '100%', height: 26, borderRadius: 4,
+                      width: '100%', height: 26, borderRadius: 'var(--radius-sm)',
                       border: '1px solid var(--line-soft)',
                       display: 'grid', placeItems: 'center',
                       fontSize: 13, color: 'var(--muted)',
                     }}>⃠</span>
-                    <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>Ninguno</span>
+                    <span style={{ fontSize: 'var(--t-label)', fontFamily: 'var(--ui)' }}>Ninguno</span>
                   </button>
 
                   {EFFECTS.map(e => {
@@ -7540,7 +7540,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                         title={e.hint}
                         style={{
                           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
-                          padding: '8px 4px', borderRadius: 7, cursor: 'pointer',
+                          padding: '8px 4px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                           background: on ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
                           border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
                           color: on ? 'var(--accent)' : 'var(--fg-2)',
@@ -7548,12 +7548,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                         }}
                       >
                         <span style={{
-                          width: '100%', height: 26, borderRadius: 4,
+                          width: '100%', height: 26, borderRadius: 'var(--radius-sm)',
                           backgroundImage: `url(${effectPreview(e.id, effectIntensity)})`,
                           backgroundSize: 'cover',
                           border: '1px solid var(--line-soft)',
                         }} />
-                        <span style={{ fontSize: 9.5, fontFamily: 'var(--ui)' }}>{e.label}</span>
+                        <span style={{ fontSize: 'var(--t-label)', fontFamily: 'var(--ui)' }}>{e.label}</span>
                       </button>
                     )
                   })}
@@ -7610,7 +7610,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             position: 'fixed', zIndex: 321,
             left: Math.min(exactDialog.px, window.innerWidth - 230),
             top: Math.min(exactDialog.py, window.innerHeight - 150),
-            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
             padding: 12, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', width: 210,
           }}
             onKeyDown={e => { if (e.key === 'Enter') createExactShape(); if (e.key === 'Escape') setExactDialog(null) }}>
@@ -7619,11 +7619,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
               <div>
-                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Ancho</div>
+                <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Ancho</div>
                 <NumberField value={exactW} onChange={v => setExactW(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
               </div>
               <div>
-                <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Alto</div>
+                <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginBottom: 3, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Alto</div>
                 <NumberField value={exactH} onChange={v => setExactH(Math.max(1, Math.round(v)))} min={1} step={1} fullWidth />
               </div>
             </div>
@@ -7648,8 +7648,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             <div style={{
               position: 'fixed', left: Math.min(ctxMenu.x, window.innerWidth - 210), top: ctxMenu.y, zIndex: 301,
               minWidth: 196, maxHeight: '80vh', overflowY: 'auto',
-              background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
-              padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 12.5,
+              background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
+              padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
             }}>
               {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
               {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
@@ -7722,9 +7722,9 @@ function CtxItem({ label, hint, icon, danger, onClick }: { label: string; hint?:
     <button onClick={onClick}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-        padding: '7px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
+        padding: '7px 10px', borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
         background: 'transparent', color: danger ? 'var(--danger, #f87171)' : 'var(--fg-2)',
-        fontFamily: 'var(--ui)', fontSize: 12.5,
+        fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
       }}
       onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in oklch, var(--accent) 14%, var(--surface))'; e.currentTarget.style.color = danger ? 'var(--danger, #f87171)' : 'var(--fg)' }}
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = danger ? 'var(--danger, #f87171)' : 'var(--fg-2)' }}>
@@ -8665,7 +8665,7 @@ function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj,
       title={title}
       onClick={e => { e.stopPropagation(); onClick() }}
       style={{
-        width: 20, height: 20, flexShrink: 0, borderRadius: 5,
+        width: 20, height: 20, flexShrink: 0, borderRadius: 'var(--radius-sm)',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 11, cursor: 'pointer', userSelect: 'none',
         color: danger ? 'var(--muted)' : (active ? 'var(--accent)' : 'var(--muted)'),
@@ -8722,9 +8722,9 @@ function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj,
             {/* Reorder */}
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 0.7, flexShrink: 0 }}>
               <span role="button" title="Subir" onClick={e => { e.stopPropagation(); if (!isFirst) onMove(obj, 'up') }}
-                style={{ fontSize: 9, cursor: isFirst ? 'default' : 'pointer', color: isFirst ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▲</span>
+                style={{ fontSize: 'var(--t-label)', cursor: isFirst ? 'default' : 'pointer', color: isFirst ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▲</span>
               <span role="button" title="Bajar" onClick={e => { e.stopPropagation(); if (!isLast) onMove(obj, 'down') }}
-                style={{ fontSize: 9, cursor: isLast ? 'default' : 'pointer', color: isLast ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▼</span>
+                style={{ fontSize: 'var(--t-label)', cursor: isLast ? 'default' : 'pointer', color: isLast ? 'var(--line)' : 'var(--muted)', padding: '0 2px' }}>▼</span>
             </span>
 
             {iconBtn(hidden ? '🚫' : '👁', hidden ? 'Mostrar' : 'Ocultar', () => onToggleVisible(obj), !hidden)}
@@ -8743,16 +8743,16 @@ function LayersPanel({ layers, version, mockupObjects, garmentName, selectedObj,
             color: 'var(--fg-2)', fontFamily: 'var(--ui)', fontSize: 11,
           }}>
             <span role="button" onClick={() => setMockupOpen(v => !v)}
-              style={{ fontSize: 9, cursor: 'pointer', transition: 'transform 0.15s', transform: mockupOpen ? 'none' : 'rotate(-90deg)', width: 10 }}>▾</span>
+              style={{ fontSize: 'var(--t-label)', cursor: 'pointer', transition: 'transform 0.15s', transform: mockupOpen ? 'none' : 'rotate(-90deg)', width: 10 }}>▾</span>
             <span style={{ fontSize: 11, width: 12, textAlign: 'center' }}>⬡</span>
             <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => setMockupOpen(v => !v)}>Prenda · {garmentName}</span>
-            <span style={{ fontSize: 9, color: 'var(--muted)', marginRight: 2 }}>{mockupObjects.length}</span>
+            <span style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginRight: 2 }}>{mockupObjects.length}</span>
             <span
               role="button"
               title={mockupLocked ? 'Desbloquear mockup' : 'Bloquear mockup'}
               onClick={onToggleMockupLock}
               style={{
-                width: 20, height: 20, borderRadius: 5, cursor: 'pointer',
+                width: 20, height: 20, borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 11, color: mockupLocked ? 'var(--accent)' : 'var(--muted)',
               }}
@@ -8796,14 +8796,17 @@ function ToolBtn({ icon, label, active, onClick }: {
   icon: React.ReactNode; label: string; active: boolean; onClick: () => void
 }) {
   return (
-    <button onClick={onClick} title={label} style={{
-      width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+    <button onClick={onClick} title={label} aria-label={label} aria-pressed={active} style={{
+      // 28px es el alto de control del resto del editor: la barra de herramientas
+      // y el panel tienen que medir lo mismo o la pantalla se lee como dos apps
+      // pegadas. El borde de 1px (no 1.5) evita que el boton activo "engorde".
+      width: 28, height: 28, borderRadius: 'var(--radius-sm)', flexShrink: 0,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
-      border: '1.5px solid ' + (active ? 'var(--accent)' : 'transparent'),
+      background: active ? 'color-mix(in oklch, var(--accent) 14%, var(--surface))' : 'transparent',
+      border: '1px solid ' + (active ? 'var(--accent)' : 'transparent'),
       color: active ? 'var(--accent)' : 'var(--fg-2)',
-      cursor: 'pointer', fontSize: 16,
-      transition: 'all 0.15s var(--ease)',
+      cursor: 'pointer', fontSize: 15,
+      transition: 'background-color 0.1s var(--ease), border-color 0.1s var(--ease), color 0.1s var(--ease)',
     }}>
       {icon}
     </button>
@@ -8831,7 +8834,7 @@ function ShapeToolGroup({ tool, setTool }: { tool: Tool; setTool: (t: Tool) => v
   return (
     <div style={{ position: 'relative' }}>
       <button onClick={() => setOpen(o => !o)} title="Figuras" style={{
-        width: 36, height: 36, borderRadius: 8, flexShrink: 0, position: 'relative',
+        width: 36, height: 36, borderRadius: 'var(--radius)', flexShrink: 0, position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: (isShape || open) ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
         border: '1.5px solid ' + ((isShape || open) ? 'var(--accent)' : 'transparent'),
@@ -8851,7 +8854,7 @@ function ShapeToolGroup({ tool, setTool }: { tool: Tool; setTool: (t: Tool) => v
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
           <div style={{
             position: 'absolute', left: 'calc(100% + 8px)', top: 0, zIndex: 70,
-            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10,
+            background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
             padding: 6, display: 'flex', flexDirection: 'column', gap: 2,
             boxShadow: '0 10px 30px rgb(0 0 0 / 0.28)', minWidth: 184,
           }}>
@@ -8865,7 +8868,7 @@ function ShapeToolGroup({ tool, setTool }: { tool: Tool; setTool: (t: Tool) => v
                   onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                    padding: '7px 10px', borderRadius: 7, fontSize: 13, textAlign: 'left',
+                    padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 13, textAlign: 'left',
                     background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'transparent',
                     border: '1px solid ' + (active ? 'var(--accent)' : 'transparent'),
                     color: active ? 'var(--accent)' : 'var(--fg)',
@@ -8974,7 +8977,7 @@ function AlignBtn({ title, onClick, children }: { title: string; onClick: () => 
   return (
     <button onClick={onClick} title={title} style={{
       height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 6,
+      background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
       color: 'var(--fg-2)', cursor: 'pointer',
     }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
@@ -9068,7 +9071,7 @@ function FontSection({ label, fonts, filter, selected, onSelect }: {
   if (visible.length === 0) return null
   return (
     <div style={{ borderTop: '1px solid var(--line-soft)' }}>
-      <div style={{ padding: '6px 10px 2px', fontSize: 9, color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+      <div style={{ padding: '6px 10px 2px', fontSize: 'var(--t-label)', color: 'var(--muted)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>
         {label}
       </div>
       {visible.map(f => (

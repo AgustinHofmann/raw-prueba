@@ -133,7 +133,7 @@ export default function AnnotationLayer({
               position: 'absolute', left: pct(a.boxX), top: pct(a.boxY),
               transform: 'translate(-50%,-50%)', zIndex: 4,
               minWidth: 70, maxWidth: 150,
-              background: '#fff', border: `1.5px solid ${c}`, borderRadius: 4,
+              background: '#fff', border: `1.5px solid ${c}`, borderRadius: 'var(--radius-sm)',
               boxShadow: '0 1px 4px rgb(0 0 0 / 0.15)',
             }}
           >

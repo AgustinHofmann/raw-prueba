@@ -166,7 +166,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
               <Plus size={14} /> Agregar página
             </button>
             {addOpen && (
-              <div style={{ position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 10, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, boxShadow: 'var(--shadow-lg)', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 10, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden' }}>
                 {PAGE_CATALOG.map(c => {
                   const I = PAGE_ICON[c.kind]
                   return (
@@ -200,7 +200,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
       <div className="no-print" style={{
         position: 'fixed', left: '50%', bottom: 18, transform: 'translateX(-50%)', zIndex: 120,
         display: 'flex', alignItems: 'center', gap: 4, padding: 5,
-        background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow-lg)',
+        background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)',
       }}>
         {ANN_TOOLS.map(({ tool, icon: I, label }) => (
           <IconButton key={tool} title={label} active={annTool === tool} onClick={() => setAnnTool(tool)}><I size={16} /></IconButton>
@@ -262,7 +262,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
   function imageBox(role: ImageRole, label: string, h = 540) {
     const s = slot(role)
     return (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', border: '1px solid #e3e3e3', borderRadius: 6, overflow: 'hidden', background: '#fafafa', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', border: '1px solid #e3e3e3', borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: '#fafafa', minWidth: 0 }}>
         <div style={{ height: h, position: 'relative' }}>
           <AnnotationLayer
             slotId={s?.id ?? role} src={s?.src ?? null} alt={label} height="100%"
@@ -294,9 +294,9 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <SectionTitle>Construcción y acabados</SectionTitle>
           <textarea value={p.body} onChange={e => patchPage(p.id, { body: e.target.value })} placeholder="Detalles de costura, puntadas, refuerzos, acabados…"
-            style={{ height: 300, border: '1px solid #ddd', borderRadius: 6, padding: 10, fontSize: 11, fontFamily: 'Arial', resize: 'none', color: '#111', background: '#fff' }} />
+            style={{ height: 300, border: '1px solid #ddd', borderRadius: 'var(--radius-sm)', padding: 10, fontSize: 11, fontFamily: 'Arial', resize: 'none', color: '#111', background: '#fff' }} />
           <SectionTitle>Materiales principales</SectionTitle>
-          <div style={{ border: '1px solid #eee', borderRadius: 6, padding: '6px 10px' }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 'var(--radius-sm)', padding: '6px 10px' }}>
             {doc.bom.slice(0, 4).map(r => (
               <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, padding: '2px 0' }}>
                 {r.color ? <span style={{ width: 10, height: 10, borderRadius: 2, background: r.color, border: '1px solid #999', flexShrink: 0 }} /> : <span style={{ width: 10 }} />}
@@ -385,7 +385,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
         {project.colors.map((c, i) => (
           <div key={i} style={{ textAlign: 'center' }}>
-            <div style={{ width: 70, height: 70, background: c, border: '1px solid #999', borderRadius: 6 }} />
+            <div style={{ width: 70, height: 70, background: c, border: '1px solid #999', borderRadius: 'var(--radius-sm)' }} />
             <div style={{ fontSize: 10, fontFamily: 'monospace', marginTop: 4 }}>{c}</div>
           </div>
         ))}
@@ -396,7 +396,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
   function renderNotes(p: TechPackPage) {
     return (
       <textarea value={p.body} onChange={e => patchPage(p.id, { body: e.target.value })} placeholder="Observaciones para el taller…"
-        style={{ width: '100%', height: '100%', minHeight: 360, border: '1px solid #ddd', borderRadius: 6, padding: 12, fontSize: 12, fontFamily: 'Arial', resize: 'none', color: '#111', background: '#fff', boxSizing: 'border-box' }} />
+        style={{ width: '100%', height: '100%', minHeight: 360, border: '1px solid #ddd', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 12, fontFamily: 'Arial', resize: 'none', color: '#111', background: '#fff', boxSizing: 'border-box' }} />
     )
   }
 
@@ -406,7 +406,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
 function IconButton({ children, title, onClick, active }: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean }) {
   return (
     <button title={title} onClick={onClick} style={{
-      width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      width: 30, height: 30, borderRadius: 'var(--radius)', display: 'flex', alignItems: 'center', justifyContent: 'center',
       border: '1px solid ' + (active ? 'var(--accent)' : 'transparent'),
       background: active ? 'color-mix(in oklch, var(--accent) 16%, transparent)' : 'transparent',
       color: active ? 'var(--accent)' : 'var(--fg-2)', cursor: 'pointer', padding: 0,
@@ -443,7 +443,7 @@ function SortablePageItem({ page, index, Icon, active, onSelect, onDelete, total
       className={undefined}
     >
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 7, padding: '8px 8px', borderRadius: 8, cursor: 'pointer',
+        display: 'flex', alignItems: 'center', gap: 7, padding: '8px 8px', borderRadius: 'var(--radius)', cursor: 'pointer',
         background: active ? 'color-mix(in oklch, var(--accent) 12%, var(--bg))' : 'var(--surface)',
         border: '1px solid ' + (active ? 'var(--accent)' : 'var(--line-soft)'),
       }}>
@@ -463,6 +463,6 @@ function SortablePageItem({ page, index, Icon, active, onSelect, onDelete, total
   )
 }
 
-const btnTiny: React.CSSProperties = { fontSize: 9, padding: '3px 8px', border: '1px solid #ccc', borderRadius: 4, background: '#fff', cursor: 'pointer', color: '#111', display: 'inline-flex', alignItems: 'center', gap: 4 }
-const addRowBtn: React.CSSProperties = { marginTop: 7, fontSize: 10, padding: '4px 10px', border: '1px dashed #bbb', borderRadius: 4, background: '#fff', cursor: 'pointer', color: '#333', display: 'inline-flex', alignItems: 'center', gap: 4 }
+const btnTiny: React.CSSProperties = { fontSize: 9, padding: '3px 8px', border: '1px solid #ccc', borderRadius: 'var(--radius-sm)', background: '#fff', cursor: 'pointer', color: '#111', display: 'inline-flex', alignItems: 'center', gap: 4 }
+const addRowBtn: React.CSSProperties = { marginTop: 7, fontSize: 10, padding: '4px 10px', border: '1px dashed #bbb', borderRadius: 'var(--radius-sm)', background: '#fff', cursor: 'pointer', color: '#333', display: 'inline-flex', alignItems: 'center', gap: 4 }
 const delBtn: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: '#c00', display: 'inline-flex', alignItems: 'center', padding: 2 }

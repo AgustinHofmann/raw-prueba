@@ -61,7 +61,7 @@ export function TechPackSheetBody({ project, designer, garmentImg, measures }: B
       {/* Vista de la prenda */}
       <div style={{ marginTop: 18 }}>
         <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Vista frontal</div>
-        <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 10, textAlign: 'center', background: '#fafafa' }}>
+        <div style={{ border: '1px solid #ddd', borderRadius: 'var(--radius-sm)', padding: 10, textAlign: 'center', background: '#fafafa' }}>
           <img src={garmentImg} alt="Prenda" style={{ maxWidth: '100%', maxHeight: 420, objectFit: 'contain' }} />
         </div>
       </div>
@@ -100,7 +100,7 @@ export function TechPackSheetBody({ project, designer, garmentImg, measures }: B
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {project.colors.map((c, i) => (
                 <div key={i} style={{ textAlign: 'center' }}>
-                  <div style={{ width: 46, height: 46, background: c, border: '1px solid #999', borderRadius: 4 }} />
+                  <div style={{ width: 46, height: 46, background: c, border: '1px solid #999', borderRadius: 'var(--radius-sm)' }} />
                   <div style={{ fontSize: 9, fontFamily: 'monospace', marginTop: 2 }}>{c}</div>
                 </div>
               ))}
@@ -116,12 +116,12 @@ export function TechPackSheetBody({ project, designer, garmentImg, measures }: B
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Materiales (BOM)</div>
           <textarea value={bom} onChange={e => setBom(e.target.value)}
-            style={{ width: '100%', minHeight: 90, border: '1px solid #ccc', borderRadius: 4, padding: 8, fontSize: 11, fontFamily: 'Arial', resize: 'vertical', color: '#111', background: '#fff' }} />
+            style={{ width: '100%', minHeight: 90, border: '1px solid #ccc', borderRadius: 'var(--radius-sm)', padding: 8, fontSize: 11, fontFamily: 'Arial', resize: 'vertical', color: '#111', background: '#fff' }} />
         </div>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Construcción / Notas</div>
           <textarea value={notes} onChange={e => setNotes(e.target.value)}
-            style={{ width: '100%', minHeight: 90, border: '1px solid #ccc', borderRadius: 4, padding: 8, fontSize: 11, fontFamily: 'Arial', resize: 'vertical', color: '#111', background: '#fff' }} />
+            style={{ width: '100%', minHeight: 90, border: '1px solid #ccc', borderRadius: 'var(--radius-sm)', padding: 8, fontSize: 11, fontFamily: 'Arial', resize: 'vertical', color: '#111', background: '#fff' }} />
         </div>
       </div>
 

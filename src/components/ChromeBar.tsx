@@ -213,7 +213,7 @@ export default function ChromeBar({
                 autoFocus
                 style={{
                   background: 'var(--surface)', border: '1px solid var(--accent)',
-                  borderRadius: 6, padding: '3px 8px', color: 'var(--fg)',
+                  borderRadius: 'var(--radius-sm)', padding: '3px 8px', color: 'var(--fg)',
                   fontFamily: 'var(--display)', fontStyle: 'italic', fontSize: 15,
                   outline: 'none', width: 160,
                 }}
@@ -225,7 +225,7 @@ export default function ChromeBar({
                 style={{
                   background: 'none', border: 'none', cursor: 'text',
                   fontFamily: 'var(--display)', fontStyle: 'italic', fontSize: Math.round(15 * fsScale),
-                  color: 'var(--fg)', padding: '3px 6px', borderRadius: 6,
+                  color: 'var(--fg)', padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                   transition: 'background 0.15s',
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
@@ -252,7 +252,7 @@ export default function ChromeBar({
                     style={{ position: 'fixed', inset: 0, zIndex: 90 }} />
                   <div style={{
                     position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 91,
-                    background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 10,
+                    background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
                     boxShadow: 'var(--shadow-lg)', minWidth: 220, padding: 6,
                     display: 'flex', flexDirection: 'column', gap: 2,
                   }}>
@@ -274,7 +274,7 @@ export default function ChromeBar({
           onClick={toggleFullscreen}
           title={isFullscreen ? 'Salir de pantalla completa (F11)' : 'Pantalla completa (F11)'}
           style={{
-            width: 32, height: 32, borderRadius: 7, flexShrink: 0,
+            width: 32, height: 32, borderRadius: 'var(--radius-sm)', flexShrink: 0,
             background: 'transparent', border: '1px solid var(--line)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: 'pointer', color: 'var(--fg-2)', padding: 0, fontSize: 16,
@@ -324,7 +324,7 @@ function MenuItem({ icon, label, hint, onClick }: {
       onClick={onClick}
       style={{
         display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-        background: 'none', border: 'none', borderRadius: 6, cursor: 'pointer',
+        background: 'none', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
         padding: '8px 10px', textAlign: 'left', color: 'var(--fg)',
         fontFamily: 'var(--ui)', fontSize: 13,
         transition: 'background 0.1s',
