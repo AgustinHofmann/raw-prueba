@@ -45,6 +45,18 @@ export default function App() {
   // Queda recordado para no volver a preguntárselo en cada arranque.
   const [sinCuenta, setSinCuenta]   = useState(() => localStorage.getItem('raw.sinCuenta') === '1')
   const [theme, setTheme]           = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'illustrator')
+  // Referencia que SIEMPRE apunta al proyecto activo de ahora.
+  //
+  // El editor registra sus acciones y engancha los eventos del lienzo una sola
+  // vez, al montar: la copia de `handleSave` que guarda cierra sobre el
+  // `activeProject` de ESE momento y nunca se entera de los cambios posteriores.
+  // Por eso, al renombrar la prenda y seguir dibujando, el autoguardado volvia
+  // a escribir el nombre viejo — y encima lo devolvia a la pantalla, porque
+  // tambien hace setActive. Se asigna en el render (no en un efecto) para que
+  // ya este actualizada cuando un temporizador dispare entre render y efecto.
+  const activeRef = useRef<Project | null>(null)
+  activeRef.current = activeProject
+
   const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)
@@ -330,8 +342,13 @@ export default function App() {
   // cantar "Guardado ✓" cuando en verdad falló: antes salían los dos carteles a
   // la vez y el diseñador se iba creyendo que su trabajo estaba a salvo.
   async function handleSave(thumbnail: string, canvasJson: string): Promise<boolean> {
-    if (!activeProject) return false
-    const updated = { ...activeProject, thumbnail, canvasJson, updatedAt: Date.now() }
+    // Siempre sobre el proyecto de ahora: el editor puede estar llamando con una
+    // version vieja de esta funcion (ver activeRef), y lo unico que aporta el
+    // editor son el dibujo y la miniatura — el nombre, la carpeta y el resto del
+    // proyecto son de la app, no suyos.
+    const base = activeRef.current
+    if (!base) return false
+    const updated = { ...base, thumbnail, canvasJson, updatedAt: Date.now() }
     // Lo que decide si el trabajo está a salvo es el guardado LOCAL. Que la nube
     // falle por falta de internet no es un error: se sube al reconectar. El
     // único fallo real es que no se pueda escribir en esta máquina.
@@ -353,8 +370,9 @@ export default function App() {
   }
 
   async function handleRename(name: string) {
-    if (!activeProject) return
-    const updated = { ...activeProject, name, updatedAt: Date.now() }
+    const base = activeRef.current
+    if (!base) return
+    const updated = { ...base, name, updatedAt: Date.now() }
     await saveProject(updated, user?.id)
     setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
