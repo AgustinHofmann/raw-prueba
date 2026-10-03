@@ -8,6 +8,11 @@ import { RAW_TEXTURES, isRawTexture, rawTextureById, loadRawWidths, saveRawWidth
          loadRawPalettes, saveRawPalette } from '../utils/rawTextures'
 import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
          shiftPalette, sameColors, loadImage, svgToDataUrl } from '../utils/rawRecolor'
+import { transformPath } from '../utils/pathWarp'
+import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
+import ColorPicker from '../components/ColorPicker'
+import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
+import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
@@ -15,7 +20,9 @@ interface EditorActions { save: () => void; export: () => void; importImage: (f:
 interface Props {
   project: Project
   designer: string
-  onSave: (thumbnail: string, canvasJson: string) => void
+  // Devuelve si el guardado llego a la base. Sin ese dato el editor
+  // cantaba "Guardado" aunque hubiera fallado.
+  onSave: (thumbnail: string, canvasJson: string) => Promise<boolean>
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
@@ -25,53 +32,102 @@ interface Props {
 
 type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' | 'eyedropper'
   | 'rect' | 'ellipse' | 'line' | 'polygon' | 'star' | 'rrect'
-  | 'gradient' | 'symbol' | 'cut' | 'hand' | 'zoom'
+  | 'symbol' | 'hand' | 'zoom'
 
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
-type StrokeStyle = 'normal' | 'bordado' | 'cierre'
+type StrokeStyle = 'normal' | 'bordado' | 'cierre' | 'costura'
 
-// Cada cuanto se guarda solo el diseño. 15 s es corto para que no se pierda casi
-// nada y largo para no golpear la base en cada trazo: ademas solo guarda si el
-// diseño cambio de verdad respecto de lo ultimo guardado.
-const AUTOSAVE_MS = 15_000
-
-// Receta de pintura de una pieza de la prenda. El relleno final se recompone desde
-// aca cada vez que la prenda se regenera (al cambiar una medida), asi que deshacer un
-// color tiene que devolver la receta y no solo el `fill` que quedo dibujado.
-type PaintState = {
+// Lo que hay que guardar para poder deshacer un cambio de relleno.
+//
+// No alcanza con el color/patrón que se ve: una pieza pintada guarda además la
+// RECETA de cómo se pintó (_texture, _userTex, _baseColor, _effect), y es la
+// receta la que se guarda en el proyecto y la que se vuelve a dibujar cuando
+// cambian las medidas o los colores de la tela.
+//
+// Antes acá solo se guardaba `fill`. Entonces Ctrl+Z devolvía el aspecto pero
+// la pieza seguía "acordándose" de la tela deshecha: al guardar, al cambiar una
+// medida o al tocar un color, la tela volvía sola. Los dos síntomas —el Ctrl+Z
+// que no deshace y el guardado que trae de vuelta lo borrado— eran esto.
+interface PaintSnap {
+  fill: fabric.TFiller | string | null
   tex?:  { kind: TextureKind; colors: string[] }
   eff?:  { kind: EffectKind; intensity: number }
   base?: string
   uTex?: { id: string; widthCm: number }
 }
 
-function snapshotPaint(o: fabric.FabricObject): PaintState {
-  return {
-    tex:  (o as any)._texture,
-    eff:  (o as any)._effect,
-    base: (o as any)._baseColor,
-    uTex: (o as any)._userTex,
-  }
+function snapshotPaint(obj: fabric.FabricObject): PaintSnap {
+  const o = obj as any
+  return { fill: o.fill ?? null, tex: o._texture, eff: o._effect, base: o._baseColor, uTex: o._userTex }
 }
 
-function restorePaint(o: fabric.FabricObject, p: PaintState): void {
-  if (p.tex)  (o as any)._texture   = p.tex;  else delete (o as any)._texture
-  if (p.eff)  (o as any)._effect    = p.eff;  else delete (o as any)._effect
-  if (p.base) (o as any)._baseColor = p.base; else delete (o as any)._baseColor
-  if (p.uTex) (o as any)._userTex   = p.uTex; else delete (o as any)._userTex
+// Repone la receta EXACTA: lo que el snapshot no tiene, se borra. Si solo se
+// asignara lo presente, deshacer "le puse tela a una pieza que era lisa" dejaría
+// la tela puesta.
+function applyPaint(obj: fabric.FabricObject, s: PaintSnap): void {
+  const o = obj as any
+  if (s.tex)  o._texture   = s.tex;  else delete o._texture
+  if (s.eff)  o._effect    = s.eff;  else delete o._effect
+  if (s.base) o._baseColor = s.base; else delete o._baseColor
+  if (s.uTex) o._userTex   = s.uTex; else delete o._userTex
+  obj.set({ fill: s.fill as string, dirty: true })
+}
+
+/**
+ * Si dos recetas de pintura son la misma.
+ *
+ * Sirve para NO anotar un paso de deshacer cuando el balde pinta algo del color
+ * que ya tenia. Sin esto, dos clics seguidos en la misma pieza dejaban un paso
+ * vacio arriba de todo y el primer Ctrl+Z no se notaba: parecia que deshacer
+ * estaba roto.
+ */
+function mismaPintura(a: PaintSnap, b: PaintSnap): boolean {
+  const j = (v: unknown) => (v === undefined ? '' : JSON.stringify(v))
+  return (a.fill ?? null) === (b.fill ?? null)
+    && j(a.tex) === j(b.tex) && j(a.eff) === j(b.eff)
+    && (a.base ?? '') === (b.base ?? '') && j(a.uTex) === j(b.uTex)
+}
+
+/** Dónde estaba y cómo estaba un objeto, para poder devolverlo ahí. */
+interface GeomSnap {
+  obj: fabric.FabricObject
+  left: number; top: number
+  scaleX: number; scaleY: number
+  angle: number
+}
+
+const snapGeom = (o: fabric.FabricObject): GeomSnap => ({
+  obj: o,
+  left: o.left ?? 0, top: o.top ?? 0,
+  scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1,
+  angle: o.angle ?? 0,
+})
+
+function applyGeom(s: GeomSnap): void {
+  s.obj.set({ left: s.left, top: s.top, scaleX: s.scaleX, scaleY: s.scaleY, angle: s.angle })
+  s.obj.setCoords()
 }
 
 type HistoryEntry =
   | { type: 'add';    obj: fabric.FabricObject }
   | { type: 'remove'; obj: fabric.FabricObject }
-  | { type: 'fill';    obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null; prevPaint?: PaintState | null }
-  | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prevFill: fabric.TFiller | string | null }[] }
+  | { type: 'fill';    obj: fabric.FabricObject; prev: PaintSnap }
+  | { type: 'fillBatch'; items: { obj: fabric.FabricObject; prev: PaintSnap }[] }
   | { type: 'opacity'; obj: fabric.FabricObject; prevOpacity: number }
   | { type: 'modify'; prev: fabric.FabricObject; next: fabric.FabricObject }
   | { type: 'erase';  removed: fabric.FabricObject[]; added: fabric.FabricObject[] }
   | { type: 'group';   children: fabric.FabricObject[]; group: fabric.Group }
   | { type: 'ungroup'; children: fabric.FabricObject[]; group: fabric.Group }
-  | { type: 'transform'; items: { obj: fabric.FabricObject; left: number; top: number }[] }
+  // Mover, escalar o rotar. Guarda la geometría COMPLETA y no solo la posición:
+  // con left/top sueltos, deshacer un escalado devolvía el objeto a su lugar
+  // pero con el tamaño nuevo.
+  | { type: 'transform'; items: GeomSnap[] }
+  // Arrastre de varios objetos a la vez. Va por separado porque mientras hay una
+  // selección múltiple las coordenadas de cada hijo son relativas al centro de
+  // la selección: recién se vuelven absolutas al soltarla. Guardar un left/top
+  // de ese momento y reponerlo después manda los objetos a cualquier lado.
+  // El desplazamiento, en cambio, vale igual antes y después.
+  | { type: 'moveDelta'; objs: fabric.FabricObject[]; dx: number; dy: number }
   | { type: 'props';  obj: fabric.FabricObject; prev: Record<string, any> }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
@@ -145,44 +201,194 @@ function satinStitchPathStr(pts: fabric.Point[], width: number): string {
   return segs.join(' ')
 }
 
-// Cierre (cremallera): banda central + dientes alternados a cada lado, como los
-// eslabones de un cierre. También devuelve un único path multi-trazo.
-function zipperPathStr(pts: fabric.Point[], width: number): string {
-  const spacing = Math.max(2.6, width * 0.7)    // separación entre dientes
-  const half    = Math.max(2, width * 0.85)      // medio ancho de la banda
-  const tooth   = Math.max(1.2, width * 0.5)     // largo del diente hacia afuera
-  const segs: string[] = []
-  // 1) dos rieles paralelos (líneas centrales del cierre)
-  const railL: string[] = [], railR: string[] = []
-  let flip = 1, carry = 0
+// ── Cierre (cremallera) ──────────────────────────────────────────────────────
+//
+// No es un trazo vectorial: es un PINCEL QUE ESTAMPA, como los packs de
+// Procreate. Un cierre de verdad tiene cinta con sombreado, dientes metalicos
+// con brillo y una canaleta oscura en el medio; eso no entra en un path de un
+// solo color y un solo grosor, por mas que se lo trabaje. Asi que se dibuja en
+// un canvas y entra al lienzo como imagen.
+//
+// El tirador NO va incluido: se agrega aparte, para poder ponerlo donde uno
+// quiera y moverlo.
+
+/** Recorre la polilinea a pasos parejos, devolviendo posicion y direccion. */
+function recorrer(pts: fabric.Point[], paso: number): { x: number; y: number; ux: number; uy: number }[] {
+  const out: { x: number; y: number; ux: number; uy: number }[] = []
+  let sobra = 0
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i], b = pts[i + 1]
     const dx = b.x - a.x, dy = b.y - a.y
-    const segLen = Math.hypot(dx, dy)
-    if (segLen < 1e-3) continue
-    const ux = dx / segLen, uy = dy / segLen
-    const nx = -uy, ny = ux                        // normal unitaria
-    // rieles a media distancia del eje
-    const rh = half * 0.45
-    railL.push(`${i === 0 ? 'M' : 'L'} ${a.x + nx * rh} ${a.y + ny * rh}`)
-    railR.push(`${i === 0 ? 'M' : 'L'} ${a.x - nx * rh} ${a.y - ny * rh}`)
-    if (i === pts.length - 2) {
-      railL.push(`L ${b.x + nx * rh} ${b.y + ny * rh}`)
-      railR.push(`L ${b.x - nx * rh} ${b.y - ny * rh}`)
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-6) continue
+    const ux = dx / len, uy = dy / len
+    let d = sobra
+    while (d < len) {
+      out.push({ x: a.x + ux * d, y: a.y + uy * d, ux, uy })
+      d += paso
     }
-    // 2) dientes: un trazo corto perpendicular, alternando lado
-    let d = carry
-    while (d < segLen) {
-      const cx = a.x + ux * d, cy = a.y + uy * d
-      const inner = half * 0.1
-      const outer = half * 0.1 + tooth
-      segs.push(`M ${cx + nx * inner * flip} ${cy + ny * inner * flip} L ${cx + nx * outer * flip} ${cy + ny * outer * flip}`)
-      flip = -flip
-      d += spacing
-    }
-    carry = d - segLen
+    sobra = d - len
   }
-  return [railL.join(' '), railR.join(' '), ...segs].join(' ')
+  return out
+}
+
+const _mezcla = (a: number[], b: number[], t: number) =>
+  `rgb(${Math.round(a[0] + (b[0] - a[0]) * t)},${Math.round(a[1] + (b[1] - a[1]) * t)},${Math.round(a[2] + (b[2] - a[2]) * t)})`
+
+function _rgb(hex: string): number[] {
+  const h = (hex || '#3a3a3a').replace('#', '')
+  if (h.length < 6) return [58, 58, 58]
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
+}
+
+// Se dibuja a 4x y se muestra a 1x: el cierre es la pieza con mas detalle fino
+// de todo el editor y a 2x se notaba dentado al acercarse.
+const CIERRE_SUPER = 4
+const CIERRE_MAX_PX = 26e6     // techo de memoria del canvas
+
+/**
+ * Dibuja el cierre sobre un canvas propio y devuelve dónde va apoyado.
+ *
+ * El protagonista es la CADENA metálica: dientes anchos, bien separados y con
+ * mucho contraste, como en los pinceles de cierre de Procreate. La cinta va
+ * angosta y apagada para que no le compita.
+ *
+ * `color` es el color de la cinta; los dientes son metal.
+ */
+function dibujarCierre(pts: fabric.Point[], ancho: number, color: string):
+    { el: HTMLCanvasElement; left: number; top: number; sup: number } | null {
+  if (pts.length < 2) return null
+  const w = Math.max(3, ancho)
+  const margen = w * 1.6
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const p of pts) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y)
+    x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y)
+  }
+  x0 -= margen; y0 -= margen; x1 += margen; y1 += margen
+  const cw = Math.max(4, Math.ceil(x1 - x0)), ch = Math.max(4, Math.ceil(y1 - y0))
+
+  // Si el trazo es enorme se baja la resolución antes que reventar la memoria.
+  let S = CIERRE_SUPER
+  while (S > 1 && cw * ch * S * S > CIERRE_MAX_PX) S--
+
+  const el = document.createElement('canvas')
+  el.width = cw * S; el.height = ch * S
+  const x = el.getContext('2d')
+  if (!x) return null
+  x.scale(S, S); x.translate(-x0, -y0)
+  x.lineJoin = 'round'; x.lineCap = 'round'
+
+  const trazar = (lista: [number, number][] | fabric.Point[]) => {
+    x.beginPath()
+    lista.forEach((p: any, i: number) => {
+      const px = Array.isArray(p) ? p[0] : p.x, py = Array.isArray(p) ? p[1] : p.y
+      i === 0 ? x.moveTo(px, py) : x.lineTo(px, py)
+    })
+  }
+
+  const base = _rgb(color)
+  const cintaClara = _mezcla(base, [255, 255, 255], 0.12)
+  const cintaMedia = base.join(',')
+  const cintaBorde = _mezcla(base, [0, 0, 0], 0.30)
+
+  // ── 1. La cinta: apenas asoma a los costados. Si se agranda o se oscurece,
+  //    la cadena queda metida adentro de una capsula negra y pierde todo.
+  // Punta recta, no redonda: con punta redonda la cinta arma un capuchon en
+  // cada extremo y el cierre termina metido dentro de una capsula oscura.
+  x.lineCap = 'butt'
+  for (const [k, col] of [
+    [1.18, cintaBorde],
+    [1.12, `rgb(${cintaMedia})`],
+    [1.02, cintaClara],
+  ] as [number, string][]) {
+    trazar(pts); x.strokeStyle = col; x.lineWidth = w * k; x.stroke()
+  }
+  // sombra suave de la cadena sobre la cinta
+  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.18)'; x.lineWidth = w * 0.98; x.stroke()
+  x.lineCap = 'round'
+
+  // ── 2. La cadena. Cada diente es una barra que cruza el eje; van alternando
+  //    un poquito de lado, y ese desfasaje es el que se lee como encastre.
+  const paso  = w * 0.46          // de diente a diente
+  const largo = w * 0.34          // lo que ocupa el diente a lo largo
+  const medio = w * 0.52          // medio ancho del diente
+  const corr  = w * 0.045         // corrimiento alternado
+  let lado = 1
+
+  for (const q of recorrer(pts, paso)) {
+    const ang = Math.atan2(q.uy, q.ux)
+    x.save()
+    x.translate(q.x, q.y)
+    x.rotate(ang)
+    const off = lado * corr
+    const yA = -medio + off, yB = medio + off
+
+    // Metal: sombra en los cantos, una banda de luz fuerte y un segundo brillo.
+    // UNA luz dominante y corrida del centro: asi lee como una barra redondeada.
+    // Con muchas bandas el diente se veia rayado en vez de metalico.
+    const g = x.createLinearGradient(0, yA, 0, yB)
+    g.addColorStop(0.00, '#454b52')
+    g.addColorStop(0.16, '#a9b1b9')
+    g.addColorStop(0.38, '#ffffff')
+    g.addColorStop(0.55, '#dee4e9')
+    g.addColorStop(0.80, '#8b929a')
+    g.addColorStop(1.00, '#3f444a')
+    x.fillStyle = g
+    const r = Math.min(largo * 0.45, w * 0.13)
+    x.beginPath()
+    if ((x as any).roundRect) (x as any).roundRect(-largo / 2, yA, largo, yB - yA, r)
+    else x.rect(-largo / 2, yA, largo, yB - yA)
+    x.fill()
+
+    // canto oscuro: separa un diente del siguiente
+    x.strokeStyle = 'rgba(0,0,0,0.55)'
+    x.lineWidth = Math.max(0.35, w * 0.035)
+    x.stroke()
+
+    x.restore()
+    lado = -lado
+  }
+
+  // ── 3. La ranura del medio, donde encastra un lado con el otro.
+  trazar(pts); x.strokeStyle = 'rgba(0,0,0,0.30)'; x.lineWidth = w * 0.07; x.stroke()
+
+  return { el, left: x0, top: y0, sup: S }
+}
+
+// Costura (pespunte): la linea punteada con la que se marca una costura en un
+// dibujo tecnico. Las rayas se calculan sobre el recorrido, asi que siguen la
+// curva en vez de estirarse en las vueltas como haria un strokeDashArray.
+function seamPathStr(pts: fabric.Point[], width: number): string {
+  const w     = Math.max(1, width)
+  const raya  = w * 1.9
+  const hueco = w * 1.15
+  const out: string[] = []
+  let resto = 0            // lo que falta de la raya o del hueco en curso
+  let pintando = true
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-3) continue
+    const ux = dx / len, uy = dy / len
+    let d = 0
+    while (d < len) {
+      if (resto <= 0) { resto = pintando ? raya : hueco }
+      const paso = Math.min(resto, len - d)
+      if (pintando) {
+        const x1 = a.x + ux * d,          y1 = a.y + uy * d
+        const x2 = a.x + ux * (d + paso), y2 = a.y + uy * (d + paso)
+        out.push(`M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)}`)
+      }
+      d += paso
+      resto -= paso
+      if (resto <= 1e-6) { pintando = !pintando; resto = 0 }
+    }
+  }
+  return out.join(' ')
 }
 
 // Muestrea puntos densos a lo largo de un path de Fabric (comandos M/L/Q/C),
@@ -226,9 +432,34 @@ function samplePathCommands(path: any[], step = 4): fabric.Point[] {
 }
 
 // Datos del trazado especial a partir de una polilínea de puntos.
-function specialStrokeData(pts: fabric.Point[], style: StrokeStyle, width: number): { d: string; sw: number } | null {
+/**
+ * Devuelve los puntos de una curva SUAVE que pasa por esos puntos.
+ *
+ * El lapiz reduce los puntos del trazo (RDP) antes de dibujarlo: el trazo
+ * normal despues los pasa por una curva, pero los trazos especiales dibujaban
+ * la polilinea pelada. Con el pincel grueso el reductor deja pocos puntos, y
+ * entonces cada vuelta de una costura salia en ESQUINA en vez de curva.
+ *
+ * Aca se arma la misma curva que usa el trazo normal y se la vuelve a muestrear
+ * densa, asi las puntadas siguen la curva de verdad.
+ */
+function suavizarPuntos(pts: fabric.Point[], paso = 2): fabric.Point[] {
+  if (pts.length < 3) return pts
+  const d = catmullRomToBezier(pts)
+  if (!d) return pts
+  const cmds = (new fabric.Path(d) as any).path as any[] | undefined
+  if (!cmds?.length) return pts
+  const densos = samplePathCommands(cmds, paso)
+  return densos.length >= 2 ? densos : pts
+}
+
+function specialStrokeData(
+  pts: fabric.Point[], style: StrokeStyle, width: number,
+): { d: string; sw: number; relleno?: boolean } | null {
   if (style === 'bordado') return { d: satinStitchPathStr(pts, width), sw: Math.max(1.4, width * 0.34) }
-  if (style === 'cierre')  return { d: zipperPathStr(pts, width),      sw: Math.max(1.2, width * 0.3) }
+  // El cierre lleva relleno: los dientes y el cursor son formas cerradas, y sin
+  // relleno quedarian como un contorno hueco.
+  if (style === 'costura') return { d: seamPathStr(pts, width),   sw: Math.max(1, width * 0.5) }
   return null
 }
 
@@ -299,6 +530,53 @@ function pieceLabelFromId(id: string | undefined | null, fallback: string): stri
 }
 function pieceNameOf(obj: fabric.FabricObject, fallback = 'Pieza'): string {
   return ((obj as any)._pieceName as string) || fallback
+}
+
+// El gotero del navegador (Chrome/Edge). Deja tomar un color de CUALQUIER parte
+// de la pantalla, no solo del lienzo, con lupa incluida.
+interface EyeDropperCtor { new (): { open: () => Promise<{ sRGBHex: string }> } }
+const nativeEyeDropper = (): EyeDropperCtor | null =>
+  (window as unknown as { EyeDropper?: EyeDropperCtor }).EyeDropper ?? null
+
+/**
+ * Gotero al lado de la muestra de color, como en Illustrator: en vez de cambiar
+ * de herramienta, perder lo que estabas haciendo y volver, tomás el color ahí
+ * mismo y seguís.
+ *
+ * Donde el navegador no lo soporta cae en la herramienta gotero de siempre, que
+ * hace lo mismo pero solo sobre el lienzo.
+ */
+function PickColorBtn({ onPick, onFallback, title }: {
+  onPick: (hex: string) => void
+  onFallback: () => void
+  title: string
+}) {
+  return (
+    <button
+      title={title}
+      onClick={async () => {
+        const Ctor = nativeEyeDropper()
+        if (!Ctor) { onFallback(); return }
+        try {
+          const { sRGBHex } = await new Ctor().open()
+          if (sRGBHex) onPick(sRGBHex)
+        } catch { /* el usuario cancelo con Escape */ }
+      }}
+      style={{
+        display: 'grid', placeItems: 'center', width: 26, height: 26,
+        borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+        background: 'none', border: '1px solid var(--line)', color: 'var(--fg-2)',
+        transition: 'all 0.15s var(--ease)',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'var(--accent)' }}
+      onMouseLeave={e => { e.currentTarget.style.color = 'var(--fg-2)'; e.currentTarget.style.borderColor = 'var(--line)' }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m2 22 1-1h3l9-9" /><path d="M3 21v-3l9-9" />
+        <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
+      </svg>
+    </button>
+  )
 }
 const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón' }
 
@@ -890,38 +1168,53 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const undoHistory   = useRef<HistoryEntry[]>([])
   const redoHistory   = useRef<HistoryEntry[]>([])
   const clipboardBuf  = useRef<fabric.FabricObject | null>(null)
-  const colorRef      = useRef('#ff6b00')
-  const brushSizeRef  = useRef(8)
+  // Por defecto se dibuja en negro y fino: es lo que se espera de una ficha
+  // tecnica, que es linea sobre la prenda y no ilustracion.
+  const colorRef      = useRef('#000000')
+  const brushSizeRef  = useRef(1)
   const strokeStyleRef = useRef<StrokeStyle>('normal')
   const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
-  // Ultimo diseno serializado que quedo guardado: el autoguardado compara contra
-  // esto para no mandar a la base algo que no cambio.
-  const lastSavedJson = useRef<string | null>(null)
-  // false desde que el lienzo se destruye: al desmontar, la limpieza de la
-  // herramienta corre DESPUES del dispose() y no puede seguir tocando el lienzo.
-  const canvasAlive   = useRef(true)
   const snapPoints    = useRef<fabric.Point[]>([])
-  // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite que
-  // Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo anterior ya guardado.
+  // Borrador en curso de la pluma (trazo que todavia se esta dibujando): permite
+  // que Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo ya guardado.
   const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void; undoPoint: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
+  // false desde que el lienzo se destruye: al cerrar el editor, la limpieza de la
+  // herramienta corre DESPUES del dispose() y no puede seguir tocandolo.
+  const canvasAlive   = useRef(true)
+  // Cuando se movio por ultima vez con las flechas, para agrupar la rafaga en
+  // un solo paso de deshacer.
+  const ultimaFlecha = useRef(0)
   const mockupLockedRef = useRef(true)
   const measuresRef = useRef<Measures>(DEFAULT_MEASURES)
   const pxPerCmRef = useRef(0)
-  const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)  // escala fija: el tamaño refleja los cm
+  const teeFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
+  // Nombres de las piezas antes de rehacer la prenda, para reponer la pintura
+  // donde corresponde aunque cambie la cantidad de piezas.
+  const mockupPrevKeys = useRef<string[]>([])
+  // Los cortes con los que se partio la prenda, en coordenadas del DIBUJO
+  // (no del lienzo), asi se estiran junto con la prenda al cambiar medidas.
+  /**
+   * Un corte de la prenda.
+   *
+   * `piezas` guarda el alcance que eligio el disenador: las piezas que el corte
+   * parte. Se fija al dividir y no cambia despues, asi cambiar una medida no
+   * hace que el corte se meta en una pieza que el disenador no eligio.
+   */
+  type Corte = { pts: Punto[]; piezas?: string[]; id?: string }
+  const cortesRef = useRef<Corte[]>([])
+  const corteSeq = useRef(1)
+  // Mientras se arrastra la linea de division: el cuadro pedido y si hay que
+  // callar el panel de capas.
+  const corteEnVivo = useRef<number | null>(null)
+  const saltarCapas = useRef(false)
+  const [hayCortes, setHayCortes] = useState(false)  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
-  // El autoguardado corre dentro de un intervalo creado al montar: sin este ref se
-  // quedaria con el onSave de la primera renderizacion y guardaria contra un proyecto
-  // viejo (por ejemplo, con el nombre de antes de renombrarlo).
-  const onSaveRef = useRef(onSave)
-  useEffect(() => { onSaveRef.current = onSave }, [onSave])
-
   const [tool, setTool] = useState<Tool>('select')
-  const [autoSavedAt, setAutoSavedAt] = useState<number | null>(null)
   const [zoom,   setZoom]   = useState(1)
   const [panned, setPanned] = useState(false)
   const [rightTab,     setRightTab]     = useState<'props' | 'layers' | 'textures'>('props')
@@ -1011,8 +1304,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [exactW, setExactW] = useState(100)
   const [exactH, setExactH] = useState(100)
   const [propFill,      setPropFill]      = useState<string | null>(null)
-  const [propStroke,    setPropStroke]    = useState('#ff6b00')
-  const [propSWidth,    setPropSWidth]    = useState(8)
+  const [propStroke,    setPropStroke]    = useState('#000000')
+  const [propSWidth,    setPropSWidth]    = useState(1)
   const [propSWidthMixed, setPropSWidthMixed] = useState(false)  // selección múltiple con grosores distintos
   const [strokeStyle,   setStrokeStyle]   = useState<StrokeStyle>('normal')  // trazado especial para lápiz/pluma
   const [propX,         setPropX]         = useState(0)
@@ -1031,10 +1324,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
-  const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; isGroup: boolean; isMulti: boolean }>(null)
+  const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
+  // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
+  // color sin tener que mirar al panel de la derecha.
+  const [eyeProbe,       setEyeProbe]       = useState<null | { x: number; y: number; hex: string }>(null)
+  // Bordado: hacia dónde corren las puntadas y si está trabajando.
+  // La lupa se dibuja a mano en cada movimiento del mouse: si sus píxeles
+  // pasaran por el estado de React, repintaría el panel entero a 60 por segundo.
+  const loupeRef = useRef<HTMLCanvasElement>(null)
+  const [bordadoAngulo,  setBordadoAngulo]  = useState(70)
+  const [bordando,       setBordando]       = useState(false)
   const [measures,       setMeasures]       = useState<Measures>(DEFAULT_MEASURES)
+  // Medidas de las OTRAS prendas paramétricas (pantalón y chomba). Van aparte de
+  // las de la remera porque cada prenda tiene sus propias medidas: un pantalón
+  // no tiene ancho de cuello y una remera no tiene ruedo.
+  const prendaParam = PRENDAS_PARAM[project.mockupId]
+  const [medidas,        setMedidas]        = useState<Medidas>(() => ({ ...(prendaParam?.defaults ?? {}) }))
+  const medidasRef  = useRef<Medidas>(medidas)
+  const piezasRef   = useRef<PiezaSvg[]>([])            // el dibujo original, sin deformar
+  const prendaFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
+  // Separación original entre frente y espalda (chomba), medida una sola vez.
+  const huecoMitadesRef = useRef<number | null>(null)
+  useEffect(() => { medidasRef.current = medidas }, [medidas])
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
   const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
   const measureEditRef = useRef(false)
@@ -1191,6 +1504,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       c.getObjects().forEach(o => {
         if ((o as any)._userTex?.id === id) recomposeFill(o)
       })
+      markDirty()
       c.requestRenderAll()
     })
   }
@@ -1203,20 +1517,34 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function restoreGarmentPaint(garment: SavedGarment | null | undefined) {
     const pieces = garment?.pieces
     const objs = mockupObjects.current
-    if (!pieces || pieces.length !== objs.length) return
+    if (!pieces || !pieces.length) return
+
+    // Se busca por NOMBRE de pieza. Antes era por posicion, y con eso el dia que
+    // cambia la cantidad de piezas el color cae en la pieza equivocada -o no
+    // cae en ninguna, porque la funcion se cortaba entera.
+    const porNombre = new Map<string, SavedPiece>()
+    for (const p of pieces) if (p?.key) porNombre.set(p.key, p)
+
+    // Proyectos guardados antes de partir la remera: tenian UNA sola pieza de
+    // cuerpo, y ese color cubria tambien las mangas. Se reparte a las tres.
+    const formatoViejo = porNombre.size === 0
+    const pintuaViejaDelCuerpo = formatoViejo ? pieces[0] : undefined
 
     objs.forEach((o, i) => {
       if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
-      const p = pieces[i]
+      const clave = (o as any)._pieceKey as string | undefined
+      const esCuerpoOManga = clave === 'cuerpo' || clave === 'manga-izq' || clave === 'manga-der'
+      const p = formatoViejo
+        ? (esCuerpoOManga ? pintuaViejaDelCuerpo : pieces[i])
+        : (clave ? porNombre.get(clave) : pieces[i])
       if (!p) return
       if (p.tex)  (o as any)._texture   = p.tex
       if (p.eff)  (o as any)._effect    = p.eff
       if (p.uTex) (o as any)._userTex   = p.uTex
-      // Sin tela, el color liso que quedo dibujado manda sobre la base guardada:
-      // los disenos hechos antes de que el balde registrara la base traen las dos
-      // cosas desincronizadas y hay que creerle al color que el disenador veia.
-      const plainFill = !p.tex && !p.uTex && typeof p.fill === 'string' && p.fill !== ''
-      if (plainFill)   (o as any)._baseColor = p.fill
+      // Misma regla que al regenerar la prenda: sin tela, el color liso que quedo
+      // dibujado es la base, aunque venga una base vieja desincronizada.
+      const colorLiso = !p.tex && !p.uTex && typeof p.fill === 'string' && p.fill !== ''
+      if (colorLiso)   (o as any)._baseColor = p.fill
       else if (p.base) (o as any)._baseColor = p.base
       if ((o as any)._baseColor || p.tex || p.eff || p.uTex) recomposeFill(o)
       else if (p.fill) o.set({ fill: p.fill })
@@ -1286,6 +1614,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Deja listas las tipografías que usa un diseño y devuelve las que no están.
+   *
+   * Las de Google se bajan; las propias del diseñador viven en ESTE navegador
+   * (no viajan con el proyecto), así que en otro dispositivo no van a estar y
+   * hay que decirlo en vez de cambiar la fuente en silencio.
+   */
+  async function cargarFuentesDelDiseno(objs: fabric.FabricObject[]): Promise<string[]> {
+    const familias = new Set<string>()
+    for (const o of objs) {
+      const f = (o as any).fontFamily
+      if (typeof f === 'string' && f) familias.add(f)
+    }
+    if (!familias.size) return []
+    const propias = await restoreUserFonts().catch(() => [] as string[])
+    if (propias.length) setUserFonts(propias)
+    const faltan: string[] = []
+    for (const f of familias) {
+      if ((GOOGLE_FONTS as readonly string[]).includes(f)) { await loadGoogleFont(f); continue }
+      if ((SYSTEM_FONTS as readonly string[]).includes(f)) continue
+      if (propias.includes(f)) continue
+      faltan.push(f)
+    }
+    return faltan
+  }
 
   // ── Font picker handlers ─────────────────────────────────────────────────────
   async function handleFontSelect(family: string) {
@@ -1389,6 +1743,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.on('object:added',   refreshLayers)
     canvas.on('object:removed', refreshLayers)
     canvas.on('object:modified', refreshLayers)
+    // Mover o deformar la linea de division vuelve a cortar la prenda, y se ve
+    // mientras se arrastra: no hay que soltar para saber como queda.
+    canvas.on('object:moving',   e => corteEnMovimiento(e.target))
+    canvas.on('object:scaling',  e => corteEnMovimiento(e.target))
+    canvas.on('object:rotating', e => corteEnMovimiento(e.target))
+    canvas.on('object:modified', e => corteSoltado(e.target))
+    canvas.on('object:removed',  e => { if (e.target) quitarCorteDe(e.target) })
 
     const syncSelKind = () => {
       const a = canvas.getActiveObject()
@@ -1562,39 +1923,106 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.selectionLineWidth   = 1
     ;(canvas as any).selectionDashArray = []
     ;(canvas as any).uniformScaling     = false
-    // Modificadores al escalar:
-    //  - Shift = escalar SIMÉTRICO desde el centro (los dos lados crecen a la vez en ese eje).
-    //    Si agarrás el tirador del medio de un lado, crece "para los dos lados" de ese eje.
-    //  - Alt   = mantener proporción (lo que por defecto hacía Shift).
-    ;(canvas as any).centeredKey = 'shiftKey'
-    ;(canvas as any).uniScaleKey = 'altKey'
+    // Modificadores al escalar, como en Illustrator:
+    //  - Shift = mantener la proporción (no se deforma).
+    //  - Alt   = escalar desde el centro (los dos lados crecen a la vez).
+    //
+    // Estaban al revés. Shift para mantener proporción es el gesto que tiene
+    // aprendido cualquiera que use un editor gráfico, así que invertirlo se
+    // siente como que la tecla no anda.
+    ;(canvas as any).uniScaleKey = 'shiftKey'
+    ;(canvas as any).centeredKey = 'altKey'
     canvas.skipOffscreen = false
 
     // Lo guardado se lee ANTES de construir la prenda: las medidas tienen que
     // estar puestas cuando se dibuja, o saldría con el talle por defecto y
     // después habría que rehacerla entera.
+    autosaveListo.current = false
     const design = project.canvasJson ? parseDesign(project.canvasJson) : null
     if (design?.garment?.measures) {
       const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
       measuresRef.current = m
       setMeasures(m)
     }
+    // Ídem para el pantalón y la chomba. Se parte de los valores por defecto de
+    // ESTA prenda, así un proyecto viejo (guardado sin medidas) abre entero en
+    // vez de con medidas en blanco.
+    if (prendaParam) {
+      const md: Medidas = { ...prendaParam.defaults, ...convertirMedidas(design?.garment, prendaParam) }
+      medidasRef.current = md
+      setMedidas(md)
+    }
+    // Los cortes van ANTES de construir la prenda: si se pusieran despues,
+    // la prenda se armaria entera y habria que rehacerla.
+    const cortesGuardados = design?.garment?.cortes
+    cortesRef.current = Array.isArray(cortesGuardados)
+      // Los primeros proyectos guardaban solo los puntos: esos valen para toda
+      // la prenda, que era lo unico que se podia hacer.
+      ? (cortesGuardados as unknown[]).map(c =>
+          Array.isArray(c) ? { pts: c as Punto[] } : (c as Corte)
+        ).filter(c => c?.pts?.length)
+      : []
+    cortesRef.current = cortesRef.current.map((c, i) => c.id ? c : { ...c, id: 'c' + (i + 1) })
+    corteSeq.current = cortesRef.current.length + 1
+    setHayCortes(cortesRef.current.length > 0)
 
     // Restaura objetos del usuario guardados y conecta path:created (común a ambos mockups)
     const restoreAndWire = async () => {
       if (design) {
-        try {
-          const revived = await (fabric.util as any).enlivenObjects(design.objects) as fabric.FabricObject[]
-          if (cancelled) return
-          for (const obj of revived) {
-            obj.set({ strokeUniform: true })
-            if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
-            canvas.add(obj)
+        // Se revive UNO POR UNO a propósito. enlivenObjects falla entero si un
+        // solo objeto falla —por ejemplo una imagen cuyos datos quedaron rotos—,
+        // y el catch de afuera se tragaba el error: el proyecto abría sin NADA
+        // de lo dibujado, aunque la miniatura sí lo mostrara. Ahora un objeto
+        // roto se pierde solo él.
+        const revived: fabric.FabricObject[] = []
+        let fallados = 0
+        for (const raw of design.objects) {
+          try {
+            const [obj] = await (fabric.util as any).enlivenObjects([raw]) as fabric.FabricObject[]
+            if (cancelled) return
+            if (obj) revived.push(obj)
+          } catch (e) {
+            fallados++
+            console.warn('no se pudo restaurar un objeto del diseño', e)
           }
-          restoreGarmentPaint(design.garment)
-          preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
-        } catch (e) {
-          console.warn('canvas restore failed', e)
+        }
+        if (cancelled) return
+        // El recorte se recalcula ANTES de repartirlo. Es un grupo posicionado
+        // en absoluto y, si todavía no tiene sus coordenadas hechas, recorta
+        // contra un área vacía: el objeto entra al lienzo pero se dibuja en la
+        // nada. Ese era el trazo que "aparecía recién al tocar una herramienta",
+        // porque tocar una herramienta le cambia propiedades y lo obliga a
+        // redibujarse, ya con el recorte bien calculado.
+        clipPath.current?.setCoords()
+        for (const obj of revived) {
+          obj.set({ strokeUniform: true })
+          if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
+          canvas.add(obj)
+          obj.setCoords()
+          obj.dirty = true          // tira el dibujo cacheado y lo rehace
+        }
+        if (fallados > 0) {
+          onToast?.(`No se pudieron recuperar ${fallados} elemento${fallados > 1 ? 's' : ''} del diseño`)
+        }
+        restoreGarmentPaint(design.garment)
+        preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
+
+        // Las tipografías del diseño hay que CARGARLAS al abrirlo.
+        //
+        // Antes solo se cargaban al elegirlas del menú, así que al abrir un
+        // diseño ya hecho —y sobre todo en otro dispositivo, que nunca las
+        // pidió— el texto se dibujaba con la fuente de reemplazo del navegador.
+        // El diseño estaba bien guardado; se veía mal.
+        const faltantes = await cargarFuentesDelDiseno(revived)
+        if (cancelled) return
+        // Ya con la fuente de verdad, el texto se vuelve a medir y a dibujar.
+        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.dirty = true }
+        canvas.requestRenderAll()
+        if (faltantes.length) {
+          onToast?.(
+            `No están en este dispositivo: ${faltantes.join(', ')}. ` +
+            'Son tipografías propias y viven en la computadora donde las importaste.',
+          )
         }
       }
       canvas.on('path:created', (e: { path: fabric.Path }) => {
@@ -1604,16 +2032,52 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         redoHistory.current = []
         canvas.renderAll()
       })
+
+      // Desde acá en adelante, cualquier cambio dispara el guardado automático.
+      // Antes no: agregar la prenda y restaurar lo guardado también son cambios,
+      // y guardarlos apenas se abre el proyecto sería guardar lo mismo que se
+      // acaba de leer.
+      // Lo temporal no cuenta como cambio del diseno: los previews de la pluma se
+      // agregan y se sacan en cada movimiento del mouse, y marcaban sucio decenas
+      // de veces por segundo para terminar guardando siempre lo mismo.
+      const markDirtyReal = (e: any) => { if (!(e?.target as any)?._rawTemp) markDirty() }
+      canvas.on('object:added',    markDirtyReal)
+      canvas.on('object:removed',  markDirtyReal)
+      canvas.on('object:modified', markDirtyReal)
+      autosaveListo.current = true
+
       canvas.renderAll()
-      // Lo que quedo en pantalla ES lo ultimo guardado: el autoguardado arranca
-      // desde aca y no manda nada hasta que el diseno cambie de verdad.
-      lastSavedJson.current = buildDesignJson()
+
+      // Repintado forzado en el cuadro siguiente.
+      //
+      // Es, exactamente, lo que hacía tocar una herramienta: marcar todo para
+      // redibujar y volver a pintar. Ese era el truco que el diseñador
+      // encontró para que su trazo apareciera, y acá se hace solo.
+      //
+      // Va en el cuadro siguiente a propósito: recién ahí el lienzo tiene su
+      // tamaño definitivo y el recorte de la prenda sus coordenadas hechas.
+      // Pintar antes es pintar contra medidas que todavía no existen.
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        clipPath.current?.setCoords()
+        canvas.getObjects().forEach(o => { o.setCoords(); o.dirty = true })
+        canvas.requestRenderAll()
+      })
     }
 
     if (PARAMETRIC_TEE && project.mockupId === 'tshirt') {
       // Remera paramétrica generada por medidas
       placeTee(measuresRef.current)
       restoreAndWire()
+    } else if (prendaParam) {
+      // Pantalón y chomba: también por medidas. Se lee el dibujo una vez y a
+      // partir de ahí la prenda se rehace moviendo sus puntos.
+      leerPiezasSvg(prendaParam.svg).then(async piezas => {
+        if (cancelled) return
+        piezasRef.current = piezas
+        placePrenda(medidasRef.current)
+        await restoreAndWire()
+      })
     } else {
       // Mockups SVG (chomba, pants)
       const svgUrl = `/mockups/${project.mockupId}.svg`
@@ -1664,7 +2128,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (cancelled) return
         const clipObjs = (clipRaw.filter(Boolean) as fabric.FabricObject[])
           .filter(obj => obj.fill && obj.fill !== 'none' && obj.fill !== '')
-          .map(obj => { obj.set({ left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy, scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc }); return obj })
+          .map(obj => {
+            obj.set({
+              left: (obj.left ?? 0) * sc + ox, top: (obj.top ?? 0) * sc + oy,
+              scaleX: (obj.scaleX ?? 1) * sc, scaleY: (obj.scaleY ?? 1) * sc,
+              // Ídem: sin trazo queda una costura entre piezas pegadas.
+              stroke: '#000', strokeWidth: 2, strokeUniform: true,
+            })
+            return obj
+          })
         const cg = new fabric.Group(clipObjs)
         cg.absolutePositioned = true
         clipPath.current = cg
@@ -1795,9 +2267,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
       obj.set({
         evented:    tool === 'select' || tool === 'curve' || tool === 'pen' || tool === 'fill'
-                 || tool === 'eyedropper' || tool === 'gradient' || tool === 'cut' || (tool === 'text' && isIText),
+                 || tool === 'eyedropper' || (tool === 'text' && isIText),
         selectable: tool === 'select',
-        hoverCursor: (tool === 'fill' || tool === 'gradient') ? 'pointer' : drawnHoverCursor,
+        hoverCursor: tool === 'fill' ? 'pointer' : drawnHoverCursor,
         // El texto se selecciona por TODA la caja del renglon (como Illustrator): los espacios y
         // huecos entre letras tambien son seleccionables. El resto usa hit-test por pixel.
         perPixelTargetFind: !isIText,
@@ -1850,13 +2322,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // 1. Reducir puntos con RDP (epsilon según grosor)
         const epsilon = Math.max(2, brushSizeRef.current * 0.4)
         const simplified = rdp(rawPts, epsilon)
+        // Los trazos especiales (costura, bordado, cierre) dibujan SOBRE los
+        // puntos, no sobre una curva: hay que devolverles la curva que el
+        // reductor les saco, o cada vuelta sale en esquina.
+        const curva = suavizarPuntos(simplified)
 
         // 2. Según el trazado elegido: normal (bezier suave) o especial (bordado/cierre)
-        const special = specialStrokeData(simplified, strokeStyleRef.current, brushSizeRef.current)
+        // El cierre no es un trazo: es un pincel que estampa, y entra como imagen.
+        if (strokeStyleRef.current === 'cierre') {
+          const z = dibujarCierre(curva, brushSizeRef.current, colorRef.current)
+          if (z) {
+            const img = new fabric.FabricImage(z.el, {
+              left: z.left, top: z.top,
+              scaleX: 1 / z.sup, scaleY: 1 / z.sup,
+              selectable: false, evented: false,
+            })
+            if (clipPath.current) img.clipPath = clipPath.current
+            canvas.add(img)
+            undoHistory.current.push({ type: 'add', obj: img })
+            redoHistory.current = []
+          }
+          rawPts = []
+          canvas.requestRenderAll()
+          return
+        }
+        const special = specialStrokeData(curva, strokeStyleRef.current, brushSizeRef.current)
         const obj = special
           ? new fabric.Path(special.d, {
               stroke: colorRef.current, strokeWidth: special.sw,
-              strokeLineCap: 'round', fill: null,
+              strokeLineCap: 'round',
+              fill: special.relleno ? colorRef.current : null,
               selectable: false, evented: false, strokeUniform: true,
             })
           : new fabric.Path(catmullRomToBezier(simplified), {
@@ -1928,8 +2423,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       type PAnchor = { pt: fabric.Point; cp1: fabric.Point; cp2: fabric.Point }
       const anchors: PAnchor[] = []
       // El trazo en curso vive en el lienzo como un objeto REAL, no como preview.
-      // Asi lo que ya clickeaste existe (y entra en el guardado, manual o automatico)
-      // sin tener que confirmarlo con Enter.
+      // Asi lo que ya clickeaste existe (y entra en el guardado) sin tener que
+      // confirmarlo con Enter.
       let liveObj: fabric.Path | null = null
       let mouseIsDown    = false
       let draggingHandle = false
@@ -1939,6 +2434,29 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       let lastClickPos: fabric.Point | null = null
       const SNAP_RADIUS  = 14
       const ALIGN_THRESH = 8
+
+      /**
+       * El eje vertical por el centro de la prenda.
+       *
+       * Es el eje de simetría natural de una prenda: lo que está a un lado del
+       * cuello tiene que estar igual del otro. Se calcula en coordenadas del
+       * lienzo (no de la pantalla) para que no dependa del zoom.
+       */
+      const ejeSimetria = (): number | null => {
+        const objs = mockupObjects.current.filter(o => o.visible !== false)
+        if (!objs.length) return null
+        let x1 = Infinity, x2 = -Infinity
+        for (const o of objs) {
+          const l = o.left ?? 0
+          const w = (o.width ?? 0) * Math.abs(o.scaleX ?? 1)
+          x1 = Math.min(x1, l); x2 = Math.max(x2, l + w)
+        }
+        return Number.isFinite(x1) ? (x1 + x2) / 2 : null
+      }
+
+      /** El reflejo de cada punto del otro lado del eje. */
+      const reflejar = (pts: fabric.Point[], eje: number) =>
+        pts.map(p => new fabric.Point(2 * eje - p.x, p.y))
 
       // Point snap (exact node) overrides alignment snap.
       // Alignment snap nudges X/Y independently toward shared axes with other anchors.
@@ -1951,6 +2469,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           if (Math.hypot(raw.x - p.x, raw.y - p.y) < SNAP_RADIUS)
             return { snapped: new fabric.Point(p.x, p.y), nodeSnap: p, guides: [] }
         }
+
+        // Imantado al ESPEJO de lo ya dibujado.
+        //
+        // Sin esto no se puede hacer una figura simétrica: el imán enganchaba a
+        // los puntos propios en horizontal y vertical, pero nunca al reflejo del
+        // otro lado, que es justo lo que hace falta para que el lado derecho
+        // copie al izquierdo. Ahora, al dibujar la segunda mitad, cada punto cae
+        // exacto en el reflejo del que le corresponde, y se muestra el eje.
+        const eje = ejeSimetria()
+        if (eje != null) {
+          const propios = candidates.filter(p => anchors.some(a => a.pt === p))
+          for (const espejo of reflejar(propios.length ? propios : candidates, eje)) {
+            if (Math.hypot(raw.x - espejo.x, raw.y - espejo.y) < SNAP_RADIUS) {
+              return {
+                snapped: new fabric.Point(espejo.x, espejo.y),
+                nodeSnap: espejo,
+                guides: [{ axis: 'v', val: eje }],   // se ve por qué enganchó
+              }
+            }
+          }
+        }
         let sx = raw.x, sy = raw.y
         const guides: Array<{ axis: 'h' | 'v'; val: number }> = []
         // Include midpoints of all pairs so e.g. the apex of an equilateral triangle
@@ -1959,6 +2498,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         for (let i = 0; i < candidates.length; i++)
           for (let j = i + 1; j < candidates.length; j++)
             alignPts.push({ x: (candidates[i].x + candidates[j].x) / 2, y: (candidates[i].y + candidates[j].y) / 2 })
+        // El eje de la prenda también imanta: es donde hay que apoyar el punto
+        // de arriba y el de abajo de una figura simétrica (la punta y la base).
+        if (eje != null) alignPts.push({ x: eje, y: raw.y })
         let bestDx = ALIGN_THRESH + 1, bestDy = ALIGN_THRESH + 1
         for (const p of alignPts) {
           const dx = Math.abs(raw.x - p.x), dy = Math.abs(raw.y - p.y)
@@ -2176,7 +2718,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
 
-      // Quita del lienzo el objeto del trazo en curso (si lo hay).
+      // Saca del lienzo el objeto del trazo en curso (si lo hay).
       const dropLive = () => {
         if (!liveObj) return
         canvas.remove(liveObj)
@@ -2213,15 +2755,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const penPathStr = buildPenPath(anchors, closed)
           // Trazado especial (bordado/cierre): muestreo la curva en puntos y la
           // reemplazo por las puntadas; si es normal, dejo el path tal cual.
-          let special: { d: string; sw: number } | null = null
+          let special: { d: string; sw: number; relleno?: boolean } | null = null
+          let cierreImg: fabric.FabricImage | null = null
           if (strokeStyleRef.current !== 'normal') {
             const sampled = samplePathCommands((new fabric.Path(penPathStr)).path as any[], Math.max(3, brushSizeRef.current * 0.5))
-            special = specialStrokeData(sampled, strokeStyleRef.current, brushSizeRef.current)
+            if (strokeStyleRef.current === 'cierre') {
+              const z = dibujarCierre(sampled, brushSizeRef.current, colorRef.current)
+              if (z) cierreImg = new fabric.FabricImage(z.el, {
+                left: z.left, top: z.top,
+                scaleX: 1 / z.sup, scaleY: 1 / z.sup,
+                selectable: false, evented: true,
+              })
+            } else {
+              special = specialStrokeData(sampled, strokeStyleRef.current, brushSizeRef.current)
+            }
           }
-          const obj = special
+          const obj = cierreImg ? cierreImg : special
             ? new fabric.Path(special.d, {
                 stroke: colorRef.current, strokeWidth: special.sw,
-                strokeLineCap: 'round', fill: null,
+                strokeLineCap: 'round',
+                fill: special.relleno ? colorRef.current : null,
                 selectable: false, evented: true, strokeUniform: true,
               })
             : new fabric.Path(penPathStr, {
@@ -2251,8 +2804,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.requestRenderAll()
       }
       // Ctrl+Z mientras dibujas: se va el ULTIMO punto puesto, no el trazo entero
-      // ni lo ultimo que habias guardado antes de empezar a dibujar. Repetirlo
-      // desarma el trazo punto por punto hasta que no queda nada.
+      // ni lo ultimo que habias guardado antes de empezar. Repetirlo desarma el
+      // trazo punto por punto hasta que no queda nada.
       const undoPoint = () => {
         if (anchors.length === 0) return
         anchors.pop()
@@ -2459,9 +3012,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('mouse:up',   onUp)
         window.removeEventListener('keydown', onKey)
         canvas.defaultCursor = 'default'
-        // Cambiar de herramienta con un trazo a medias lo confirma en vez de tirarlo:
-        // lo dibujado es del disenador, no del estado interno de la pluma. Si el
-        // lienzo ya se destruyo (cerraron el editor) no hay nada que confirmar.
+        // Cambiar de herramienta con un trazo a medias lo confirma en vez de
+        // tirarlo: lo dibujado es del disenador, no del estado interno de la
+        // pluma. Si el lienzo ya se destruyo (cerraron el editor) no hay nada
+        // que confirmar.
         if (canvasAlive.current) {
           if (anchors.length >= 2) commit()
           else cancelDraft()
@@ -2490,9 +3044,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       // Al editar una pieza del mockup, el path se reconstruye: hay que mantener su
       // identidad de mockup (para que siga bloqueable y no quede huérfano al regenerar).
+      const PROPIAS = [
+        '_rawMockup', '_rawInner', '_rawBody', '_pieceKey', '_pieceName', '_piecePadre',
+        '_srcId', '_texture', '_effect', '_baseColor', '_userTex', '_locked', '_corte',
+      ]
       const inheritMockup = (oldO: fabric.FabricObject, newO: fabric.FabricObject) => {
+        // El trazado se rehace de cero en cada cuadro, asi que hay que pasarle
+        // TODO lo que el editor le colgo al objeto. Sin esto, editar con la
+        // pluma de curvatura una linea de division la dejaba de ser: el objeto
+        // nuevo salia pelado y la prenda se quedaba sin su corte.
+        for (const k of PROPIAS) {
+          const v = (oldO as any)[k]
+          if (v !== undefined) (newO as any)[k] = v
+        }
         if ((oldO as any)._rawMockup) {
-          ;(newO as any)._rawMockup = true
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
@@ -2667,6 +3232,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         ;(newObj as any).hoverCursor = CURVE_CURSOR
         canvas.remove(editObj); canvas.add(newObj)
         inheritMockup(editObj, newObj)
+        // Si es una linea de division, la prenda se vuelve a cortar en vivo
+        // mientras se curva, igual que cuando se la arrastra.
+        corteEnMovimiento(newObj)
         // History updated only on mouseUp via 'modify' entry, not during drag frames
         editObj = newObj
       }
@@ -2793,6 +3361,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       const onUp = () => {
         if (!dragging || !editObj) { dragging = false; draggingIdx = null; return }
+        corteSoltado(editObj)
         if (preDragObj && editObj !== preDragObj) {
           undoHistory.current.push({ type: 'modify', prev: preDragObj, next: editObj })
           redoHistory.current = []
@@ -2929,34 +3498,57 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        // Rellenar el objeto que realmente se clickeó: si es una prenda (mockup)
-        // se rellena la prenda; si es un item dibujado (forma/trazo) se rellena
-        // ese item, no la prenda que tiene detrás.
-        const target = e.target
-        if (!target || (target as any)._locked) return
-        const prevFill = target.fill as fabric.TFiller | string | null
-        const isPiece  = mockupObjects.current.includes(target)
-        // En una pieza de la prenda el color liso pasa a ser su BASE. La prenda se
-        // reconstruye desde las medidas y su relleno se recompone desde esa receta:
-        // sin registrar la base, tocar una medida (achicar/agrandar) devolvia la
-        // prenda al color anterior en vez de dejar el que el disenador acababa de dar.
-        const prevPaint = isPiece ? snapshotPaint(target) : null
-        if (isPiece) {
-          delete (target as any)._texture    // un color liso reemplaza a la tela
-          delete (target as any)._userTex
-          ;(target as any)._baseColor = colorRef.current
-          recomposeFill(target)              // el efecto de tela, si habia, se mantiene encima
-          syncInnerShade()
-        } else {
-          target.set({ fill: colorRef.current })
-        }
-        undoHistory.current.push({ type: 'fill', obj: target, prevFill, prevPaint })
+      // El balde deja la pieza en color liso: hay que BORRAR la tela que tuviera,
+      // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
+      // volvía por encima del color recién elegido.
+      const pintar = (objs: fabric.FabricObject[]) => {
+        const receta: PaintSnap = { fill: colorRef.current, base: colorRef.current }
+        const items = objs
+          .filter(o => o && !(o as any)._locked)
+          .map(o => ({ obj: o, prev: snapshotPaint(o) }))
+          // Lo que ya esta de ese color no se toca ni se anota.
+          .filter(it => !mismaPintura(it.prev, receta))
+        if (!items.length) return
+        for (const it of items) applyPaint(it.obj, receta)
+        // El hueco del cuello se lee como el reves de la tela: si el cuerpo
+        // cambia de color tiene que acompanar, aunque se pinte de a una pieza.
+        syncInnerShade()
+        undoHistory.current.push({ type: 'fillBatch', items })
         redoHistory.current = []
         canvas.requestRenderAll()
       }
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        // Un clic pinta SOLO la pieza que se tocó: si es una prenda se pinta esa
+        // pieza, y si es algo dibujado se pinta ese item y no la prenda de atrás.
+        //
+        // Ya NO se recalcula la sombra del escote. Antes se hacía siempre, y
+        // pintar el pecho de la chomba te tenía el escote de rojo oscuro sin
+        // haberlo tocado. Ahora el escote solo acompaña cuando se pinta la
+        // prenda ENTERA (doble clic o desde el panel de telas).
+        const target = e.target
+        if (!target || (target as any)._locked) return
+        pintar([target])
+      }
+
+      // Doble clic: toda la prenda de una. Ahí sí el escote acompaña, porque es
+      // el interior de la misma prenda que se acaba de pintar.
+      const onDouble = (e: fabric.TPointerEventInfo) => {
+        const target = e.target
+        if (!target) return
+        const esPrenda = mockupObjects.current.includes(target)
+        if (!esPrenda) return
+        pintar(mockupObjects.current.filter(o => !(o as any)._rawInner))
+        syncInnerShade()
+        canvas.requestRenderAll()
+      }
+
       canvas.on('mouse:down', onDown)
-      offs.push(() => canvas.off('mouse:down', onDown))
+      canvas.on('mouse:dblclick', onDouble)
+      offs.push(() => {
+        canvas.off('mouse:down', onDown)
+        canvas.off('mouse:dblclick', onDouble)
+      })
     }
 
     // ── Gotero ───────────────────────────────────────────────────────────────
@@ -2964,47 +3556,199 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.selection     = false
       canvas.defaultCursor = EYEDROPPER_CURSOR
 
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        const active  = canvas.getActiveObject()
-        const clicked = e.target
-        let pickedFill: string | null = null
-        let copied: Record<string, any> | null = null
-        // 1) Si clickeo sobre un objeto dibujado, copio TODA su apariencia
-        //    (relleno + trazo + grosor), como hace el gotero de Illustrator.
-        if (clicked && !mockupObjects.current.includes(clicked) && typeof clicked.fill === 'string') {
-          pickedFill = clicked.fill as string
-          copied = { fill: clicked.fill, stroke: clicked.stroke, strokeWidth: clicked.strokeWidth }
-        } else {
-          // 2) Si no, muestreo el pixel pintado (prenda, imagen, textura…)
-          const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
-          const p   = e.scenePoint
-          const px  = Math.round(vpt[0] * p.x + vpt[4])
-          const py  = Math.round(vpt[3] * p.y + vpt[5])
-          const ctx = (canvas as any).contextContainer as CanvasRenderingContext2D
-          if (!ctx) return
-          const [r, g, b, a] = ctx.getImageData(px, py, 1, 1).data
-          if (a < 10) return   // pixel transparente — ignorar
-          pickedFill = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
-        }
-        if (!pickedFill) return
-        // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
-        fillRef.current = pickedFill
-        setPropFill(pickedFill)
-        // Si hay un objeto dibujado seleccionado, le aplico la apariencia tomada
-        if (active && !mockupObjects.current.includes(active)) {
-          const patch = copied ?? { fill: pickedFill }
-          const prev: Record<string, any> = {}
-          for (const k of Object.keys(patch)) prev[k] = (active as any).get(k)
-          active.set(patch as any)
-          undoHistory.current.push({ type: 'props', obj: active, prev })
-          redoHistory.current = []
-          canvas.requestRenderAll()
-        }
+      // El gotero muestra el color ANTES de tomarlo.
+      //
+      // El problema no era tomar el color: era APUNTAR. Si le errabas al píxel
+      // ya estaba, y había que volver a probar a ciegas. Ahora, con solo pasar
+      // el mouse (sin apretar nada), aparece una lupa con los píxeles agrandados
+      // y el color exacto del centro. Se apunta mirando, se hace clic y listo.
+      //
+      // Además se puede mantener apretado y arrastrar: el color se va aplicando
+      // en vivo al objeto seleccionado y recién al soltar queda fijo.
+      let scrubbing  = false
+      let snapshot: ImageData | null = null   // el lienzo ANTES de la vista previa
+      let snapScale  = 1
+      let previewObj: fabric.FabricObject | null = null
+      let prevProps: Record<string, any> | null = null
+      let lastPatch: Record<string, any> | null = null
+
+      const ctxLienzo = () => (canvas as any).contextContainer as CanvasRenderingContext2D | undefined
+      const elLienzo  = () => (canvas as any).lowerCanvasEl as HTMLCanvasElement | undefined
+
+      // En pantallas retina el lienzo tiene más píxeles reales que los que mide
+      // en la página; sin esta escala se muestrea el color del lugar equivocado.
+      const escala = () => {
+        const el = elLienzo(), w = canvas.getWidth()
+        return (el && w) ? el.width / w : 1
       }
 
+      // Foto del lienzo al apretar. Sirve para que la vista previa no se muerda
+      // la cola: al pasar por encima del objeto que estoy pintando leería el
+      // color que le acabo de poner en vez del que había abajo.
+      const grabSnapshot = () => {
+        const ctx = ctxLienzo(), el = elLienzo()
+        if (!ctx || !el) return false
+        snapScale = escala()
+        try { snapshot = ctx.getImageData(0, 0, el.width, el.height) } catch { return false }
+        return true
+      }
+
+      /** El punto bajo el cursor, en píxeles reales del lienzo. */
+      const puntoLienzo = (e: fabric.TPointerEventInfo): [number, number] => {
+        const vpt = (canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]) as number[]
+        const p = e.scenePoint
+        const k = scrubbing ? snapScale : escala()
+        return [Math.round((vpt[0] * p.x + vpt[4]) * k), Math.round((vpt[3] * p.y + vpt[5]) * k)]
+      }
+
+      const aHexRgb = (r: number, g: number, b: number) =>
+        '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+
+      // Qué hay bajo el puntero. Si es un objeto dibujado copio TODA su apariencia
+      // (relleno + trazo + grosor), como el gotero de Illustrator; si no, el color
+      // del píxel pintado (prenda, imagen, textura…).
+      const sampleAt = (e: fabric.TPointerEventInfo): Record<string, any> | null => {
+        const over = e.target
+        if (over && over !== previewObj && !mockupObjects.current.includes(over)
+            && typeof over.fill === 'string') {
+          return { fill: over.fill, stroke: over.stroke, strokeWidth: over.strokeWidth }
+        }
+        const [px, py] = puntoLienzo(e)
+        if (scrubbing) {
+          if (!snapshot) return null
+          if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return null
+          const d = snapshot.data, i = (py * snapshot.width + px) * 4
+          if (d[i + 3] < 10) return null
+          return { fill: aHexRgb(d[i], d[i + 1], d[i + 2]) }
+        }
+        const ctx = ctxLienzo()
+        if (!ctx) return null
+        try {
+          const d = ctx.getImageData(px, py, 1, 1).data
+          if (d[3] < 10) return null
+          return { fill: aHexRgb(d[0], d[1], d[2]) }
+        } catch { return null }
+      }
+
+      /** Dibuja los píxeles de alrededor agrandados, con el del centro marcado. */
+      const CELDAS = 11
+      const pintarLupa = (e: fabric.TPointerEventInfo) => {
+        const lc = loupeRef.current
+        if (!lc) return
+        const g = lc.getContext('2d')
+        if (!g) return
+        const [px, py] = puntoLienzo(e)
+        const r = (CELDAS - 1) / 2
+        let datos: ImageData | null = null
+        if (scrubbing && snapshot) {
+          // Se recorta del snapshot a mano: pedirle los píxeles al lienzo ya no
+          // sirve, porque encima tiene la vista previa recién aplicada.
+          datos = new ImageData(CELDAS, CELDAS)
+          for (let fy = 0; fy < CELDAS; fy++) {
+            for (let fx = 0; fx < CELDAS; fx++) {
+              const sx = px - r + fx, sy = py - r + fy
+              if (sx < 0 || sy < 0 || sx >= snapshot.width || sy >= snapshot.height) continue
+              const o = (fy * CELDAS + fx) * 4, k = (sy * snapshot.width + sx) * 4
+              datos.data[o]     = snapshot.data[k]
+              datos.data[o + 1] = snapshot.data[k + 1]
+              datos.data[o + 2] = snapshot.data[k + 2]
+              datos.data[o + 3] = snapshot.data[k + 3]
+            }
+          }
+        } else {
+          const ctx = ctxLienzo()
+          if (!ctx) return
+          try { datos = ctx.getImageData(px - r, py - r, CELDAS, CELDAS) } catch { return }
+        }
+        if (!datos) return
+        const chico = document.createElement('canvas')
+        chico.width = CELDAS; chico.height = CELDAS
+        chico.getContext('2d')!.putImageData(datos, 0, 0)
+        g.imageSmoothingEnabled = false
+        g.clearRect(0, 0, lc.width, lc.height)
+        g.drawImage(chico, 0, 0, lc.width, lc.height)
+        // El recuadro del centro marca EXACTAMENTE el píxel que se va a tomar.
+        const z = lc.width / CELDAS
+        g.lineWidth = 2
+        g.strokeStyle = 'rgba(0,0,0,0.85)'
+        g.strokeRect(r * z - 1, r * z - 1, z + 2, z + 2)
+        g.lineWidth = 1
+        g.strokeStyle = 'rgba(255,255,255,0.95)'
+        g.strokeRect(r * z, r * z, z, z)
+      }
+
+      /** Mueve la muestra, dibuja la lupa y —si estoy arrastrando— aplica el color. */
+      const preview = (e: fabric.TPointerEventInfo) => {
+        const area = canvasAreaRef.current
+        const ev   = e.e as MouseEvent
+        if (area && ev && typeof ev.clientX === 'number') {
+          const rc = area.getBoundingClientRect()
+          setEyeProbe(prev => ({
+            x: ev.clientX - rc.left, y: ev.clientY - rc.top,
+            hex: prev?.hex ?? fillRef.current ?? '#000000',
+          }))
+        }
+        pintarLupa(e)
+        const patch = sampleAt(e)
+        if (!patch) return
+        const hex = patch.fill as string
+        setEyeProbe(prev => prev && { ...prev, hex })
+        if (!scrubbing) return          // solo mirando: todavía no se toma nada
+        lastPatch = patch
+        // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
+        fillRef.current = hex
+        setPropFill(hex)
+        if (previewObj) { previewObj.set(patch as any); canvas.requestRenderAll() }
+      }
+
+      const onDown = (e: fabric.TPointerEventInfo) => {
+        if (!grabSnapshot()) return
+        const active = canvas.getActiveObject()
+        previewObj = active && !mockupObjects.current.includes(active) ? active : null
+        prevProps  = previewObj
+          ? { fill: previewObj.fill, stroke: previewObj.stroke, strokeWidth: previewObj.strokeWidth }
+          : null
+        scrubbing = true
+        lastPatch = null
+        preview(e)
+      }
+
+      const onMove = (e: fabric.TPointerEventInfo) => { preview(e) }
+
+      const finish = () => {
+        if (!scrubbing) return
+        scrubbing = false
+        snapshot  = null   // que no quede una copia del lienzo entero en memoria
+        // El registro para deshacer se guarda recién acá: todo el arrastre es UNA
+        // sola acción, no una por cada píxel que toqué en el camino.
+        if (previewObj && prevProps && lastPatch) {
+          const prev: Record<string, any> = {}
+          for (const k of Object.keys(lastPatch)) prev[k] = prevProps[k]
+          undoHistory.current.push({ type: 'props', obj: previewObj, prev })
+          redoHistory.current = []
+        }
+        previewObj = null; prevProps = null; lastPatch = null
+      }
+
+      // La muestra se va cuando el mouse SALE del lienzo, no al soltar: el gotero
+      // sigue activo y hay que poder seguir apuntando sin volver a apretar.
+      const salir = () => { if (!scrubbing) setEyeProbe(null) }
+
       canvas.on('mouse:down', onDown)
+      canvas.on('mouse:move', onMove)
+      canvas.on('mouse:up', finish)
+      canvas.on('mouse:out', salir)
+      // Si se suelta el botón fuera del lienzo el canvas no se entera, y el
+      // gotero se quedaba aplicando color sin estar apretado.
+      window.addEventListener('mouseup', finish)
       offs.push(() => {
         canvas.off('mouse:down', onDown)
+        canvas.off('mouse:move', onMove)
+        canvas.off('mouse:up', finish)
+        canvas.off('mouse:out', salir)
+        window.removeEventListener('mouseup', finish)
+        finish()
+        setEyeProbe(null)
         canvas.defaultCursor = 'default'
       })
     }
@@ -3046,7 +3790,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         moved = false
         const stroke = colorRef.current
         const sw     = brushSizeRef.current
-        const fill   = fillRef.current ?? colorRef.current
+        // Sin relleno es SIN relleno. Antes caia en el color del trazo, asi que
+        // una figura nueva salia maciza en vez de ser solo contorno.
+        const fill   = fillRef.current
         const common = { strokeWidth: sw, strokeUniform: true, selectable: false, evented: false } as const
         if (tool === 'line') {
           shape = new fabric.Line([start.x, start.y, start.x, start.y],
@@ -3122,8 +3868,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.setActiveObject(shape)
         canvas.requestRenderAll()
         shape = null; start = null
-        // La figura recién dibujada queda seleccionada, pero la herramienta NO
-        // cambia: seguís con rectángulo/elipse/línea para dibujar otra.
+        // Dibujada la figura, se vuelve a Seleccionar. Lo normal después de
+        // dibujar es acomodar lo que dibujaste, no dibujar otra igual; quedarse
+        // en la herramienta hacía que el primer clic para moverla creara una
+        // figura nueva encima.
+        setTool('select')
       }
 
       canvas.on('mouse:down', onDown)
@@ -3134,142 +3883,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('mouse:move', onMove)
         canvas.off('mouse:up',   onUp)
         if (shape && !moved) canvas.remove(shape)
-        canvas.defaultCursor = 'default'
-      })
-    }
-
-    // ── Degradado (relleno lineal sobre el objeto, arrastrando la dirección) ──
-    if (tool === 'gradient') {
-      canvas.selection     = false
-      canvas.defaultCursor = 'crosshair'
-      let target: fabric.FabricObject | null = null
-      let downPt: fabric.Point | null = null
-
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        const t = e.target
-        if (!t || mockupObjects.current.includes(t) || (t as any)._locked) { target = null; return }
-        target = t
-        downPt = e.scenePoint
-      }
-      const onUp = (e: fabric.TPointerEventInfo) => {
-        if (!target || !downPt) { target = null; downPt = null; return }
-        const up = e.scenePoint ?? downPt
-        const dx = up.x - downPt.x, dy = up.y - downPt.y
-        const w = target.width ?? 1, h = target.height ?? 1
-        // La dirección del arrastre define horizontal / vertical (y el sentido).
-        let coords: { x1: number; y1: number; x2: number; y2: number }
-        if (Math.abs(dx) >= Math.abs(dy)) {
-          coords = dx >= 0 ? { x1: 0, y1: 0, x2: w, y2: 0 } : { x1: w, y1: 0, x2: 0, y2: 0 }
-        } else {
-          coords = dy >= 0 ? { x1: 0, y1: 0, x2: 0, y2: h } : { x1: 0, y1: h, x2: 0, y2: 0 }
-        }
-        // Dos paradas: color de relleno → color de trazado (ambos los controlás en el panel).
-        const c1 = fillRef.current ?? '#ffffff'
-        const c2 = colorRef.current ?? '#000000'
-        const prevFill = target.fill
-        const grad = new (fabric.Gradient as any)({
-          type: 'linear', gradientUnits: 'pixels', coords,
-          colorStops: [ { offset: 0, color: c1 }, { offset: 1, color: c2 } ],
-        })
-        target.set({ fill: grad })
-        ;(target as any).dirty = true
-        undoHistory.current.push({ type: 'fill', obj: target, prevFill: prevFill as fabric.TFiller | string | null })
-        redoHistory.current = []
-        canvas.requestRenderAll()
-        target = null; downPt = null
-      }
-      canvas.on('mouse:down', onDown)
-      canvas.on('mouse:up',   onUp)
-      offs.push(() => {
-        canvas.off('mouse:down', onDown)
-        canvas.off('mouse:up',   onUp)
-        canvas.defaultCursor = 'default'
-      })
-    }
-
-    // ── Cortar (cuchilla): parte objetos en dos con una línea recta ───────────
-    if (tool === 'cut') {
-      canvas.selection     = false
-      canvas.defaultCursor = 'crosshair'
-      let p0: fabric.Point | null = null
-      let guide: fabric.Line | null = null
-
-      const onDown = (e: fabric.TPointerEventInfo) => {
-        p0 = e.scenePoint
-        guide = new fabric.Line([p0.x, p0.y, p0.x, p0.y], {
-          stroke: '#ff3b3b', strokeWidth: 1, strokeDashArray: [4, 4],
-          selectable: false, evented: false, strokeUniform: true,
-        })
-        ;(guide as any)._rawTemp = true
-        canvas.add(guide)
-      }
-      const onMove = (e: fabric.TPointerEventInfo) => {
-        if (!p0 || !guide) return
-        const p = e.scenePoint
-        guide.set({ x2: p.x, y2: p.y })
-        canvas.requestRenderAll()
-      }
-      const onUp = async (e: fabric.TPointerEventInfo) => {
-        const start = p0
-        if (guide) { canvas.remove(guide); guide = null }
-        p0 = null
-        if (!start) return
-        const end = e.scenePoint ?? start
-        const ax = start.x, ay = start.y, bx = end.x, by = end.y
-        if (Math.hypot(bx - ax, by - ay) < 5) { canvas.requestRenderAll(); return }  // trazo muy corto
-        const dirx = bx - ax, diry = by - ay
-        const sideOf = (px: number, py: number) => dirx * (py - ay) - diry * (px - ax)  // signo = lado de la línea
-        // Objetos que la línea realmente atraviesa (esquinas a ambos lados)
-        const crossed = canvas.getObjects().filter(o => {
-          if (mockupObjects.current.includes(o) || (o as any)._locked) return false
-          const b = o.getBoundingRect()
-          const corners: [number, number][] = [
-            [b.left, b.top], [b.left + b.width, b.top],
-            [b.left, b.top + b.height], [b.left + b.width, b.top + b.height],
-          ]
-          let pos = false, neg = false
-          for (const [cx, cy] of corners) { const s = sideOf(cx, cy); if (s > 0) pos = true; else if (s < 0) neg = true }
-          return pos && neg
-        })
-        if (!crossed.length) { canvas.requestRenderAll(); return }
-        const angleDeg = Math.atan2(diry, dirx) * 180 / Math.PI
-        const mid = { x: (ax + bx) / 2, y: (ay + by) / 2 }
-        const L = 20000
-        const nrad = Math.atan2(diry, dirx) + Math.PI / 2
-        const nx = Math.cos(nrad), ny = Math.sin(nrad)
-        const removed: fabric.FabricObject[] = []
-        const added: fabric.FabricObject[] = []
-        for (const o of crossed) {
-          const half1 = await o.clone()
-          const half2 = await o.clone()
-          half1.clipPath = new fabric.Rect({
-            width: L, height: L, originX: 'center', originY: 'center',
-            left: mid.x + nx * L / 2, top: mid.y + ny * L / 2, angle: angleDeg, absolutePositioned: true,
-          })
-          half2.clipPath = new fabric.Rect({
-            width: L, height: L, originX: 'center', originY: 'center',
-            left: mid.x - nx * L / 2, top: mid.y - ny * L / 2, angle: angleDeg, absolutePositioned: true,
-          })
-          half1.set({ selectable: true, evented: true })
-          half2.set({ selectable: true, evented: true })
-          canvas.remove(o)
-          canvas.add(half1, half2)
-          removed.push(o)
-          added.push(half1, half2)
-        }
-        undoHistory.current.push({ type: 'erase', removed, added })
-        redoHistory.current = []
-        canvas.discardActiveObject()
-        canvas.requestRenderAll()
-      }
-      canvas.on('mouse:down', onDown)
-      canvas.on('mouse:move', onMove)
-      canvas.on('mouse:up',   onUp)
-      offs.push(() => {
-        canvas.off('mouse:down', onDown)
-        canvas.off('mouse:move', onMove)
-        canvas.off('mouse:up',   onUp)
-        if (guide) canvas.remove(guide)
         canvas.defaultCursor = 'default'
       })
     }
@@ -3366,9 +3979,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
         // Si el objeto ya tiene una textura, abrir su editor de colores con su paleta
+        // Si la textura guardada ya no existe (proyecto viejo), no se abre su
+        // editor: pedirle la paleta a una textura borrada rompía el panel.
         const tex = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
-        if (tex) { setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors })) }
-        else setActiveTexKind(null)
+        if (tex && esTexturaValida(tex.kind)) {
+          setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
+        } else setActiveTexKind(null)
         setPropX(Math.round(obj.left ?? 0))
         setPropY(Math.round(obj.top  ?? 0))
         setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
@@ -3413,6 +4029,49 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
       }
 
+      // Mover, escalar y rotar NO se anotaban en el historial: las entradas de
+      // tipo 'transform' solo se creaban dentro del propio Ctrl+Z, así que no
+      // había nada que deshacer y el atajo se saltaba el movimiento y borraba lo
+      // anterior. Acá se anota cada transformación cuando termina.
+      const onModified = (e: any) => {
+        const target = e?.target as fabric.FabricObject | undefined
+        if (!target) return
+        // Fabric guarda en la propia transformación cómo estaba el objeto al
+        // empezar a arrastrarlo: es exactamente el "antes" que hace falta.
+        const antes = e?.transform?.original
+        if (!antes) return
+
+        if (target.type === 'activeselection') {
+          const dx = (target.left ?? 0) - (antes.left ?? 0)
+          const dy = (target.top ?? 0) - (antes.top ?? 0)
+          if (dx === 0 && dy === 0) return   // se escaló o rotó el grupo: no se cubre
+          undoHistory.current.push({
+            type: 'moveDelta',
+            objs: (target as fabric.ActiveSelection).getObjects(),
+            dx, dy,
+          })
+        } else {
+          undoHistory.current.push({
+            type: 'transform',
+            items: [{
+              obj: target,
+              left: antes.left ?? 0, top: antes.top ?? 0,
+              scaleX: antes.scaleX ?? 1, scaleY: antes.scaleY ?? 1,
+              angle: antes.angle ?? 0,
+            }],
+          })
+        }
+        redoHistory.current = []
+
+        // Si lo que se movió es parte de la prenda, el recorte tiene que seguirla.
+        // Si no, el diseño se recorta contra el molde viejo y desaparece.
+        const tocoLaPrenda = mockupObjects.current.includes(target) ||
+          (target.type === 'activeselection' &&
+            (target as fabric.ActiveSelection).getObjects().some(o => mockupObjects.current.includes(o))) ||
+          !!(target as any)._garmentGroup
+        if (tocoLaPrenda) void rebuildGarmentClip()
+      }
+
       canvas.on('mouse:down', onDownMockup)
       canvas.on('selection:created', onCreated)
       canvas.on('selection:updated', onUpdated)
@@ -3420,6 +4079,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.on('object:scaling',    onScaled)
       canvas.on('object:moving',    onMoved)
       canvas.on('object:rotating',  onRotated)
+      canvas.on('object:modified',  onModified)
 
       offs.push(() => {
         canvas.off('mouse:down', onDownMockup)
@@ -3429,6 +4089,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('object:scaling',    onScaled)
         canvas.off('object:moving',    onMoved)
         canvas.off('object:rotating',  onRotated)
+        canvas.off('object:modified',  onModified)
         setHasSel(false)
         setIsText(false)
       })
@@ -3462,6 +4123,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.setActiveObject(text)
         ;(text as fabric.IText).enterEditing()
         ;(text as fabric.IText).selectAll()
+        // Al terminar de escribir se vuelve a Seleccionar, no antes: cambiar la
+        // herramienta con el cursor todavía dentro del texto cortaría la edición.
+        text.on('editing:exited', () => setTool('select'))
         canvas.requestRenderAll()
       }
 
@@ -3475,6 +4139,78 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return () => offs.forEach(fn => fn())
   }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
+
+  /**
+   * Con qué ajustes calcar cada imagen.
+   *
+   * Antes se usaban los mismos para todo: 8 colores y descartar las formas
+   * chicas. Eso rompe justo los logos con fondo, que es el caso más común.
+   *
+   * Por qué: un logo blanco y negro sobre fondo tiene los bordes suavizados, o
+   * sea una franja de grises entre el negro y el blanco. Repartidos en 8 colores,
+   * esos grises se vuelven bandas propias y el contorno sale carcomido y
+   * manchado. Y descartar las formas chicas se come los detalles finos.
+   *
+   * Sin fondo no pasaba porque el borde suavizado se va en transparencia en vez
+   * de convertirse en grises.
+   *
+   * Entonces primero se mira cuántos colores tiene de verdad la imagen, y si son
+   * pocos —un logo, un dibujo plano— se la calca con esa cantidad exacta.
+   */
+  function opcionesDeCalco(data: ImageData, coloresPreparados?: number) {
+    // Si la imagen ya vino limpia (colores planos y borde nítido), se le dice al
+    // calcador cuántos colores hay y se le saca el desenfoque: en una imagen ya
+    // plana, desenfocar solo redondea las esquinas y se come los detalles finos.
+    if (coloresPreparados && coloresPreparados <= 8) {
+      return {
+        numberofcolors: Math.max(2, coloresPreparados),
+        colorsampling: 0,        // paleta fija: no se inventa nada
+        ltres: 0.1, qtres: 0.1,  // pega el contorno lo más posible al original
+        pathomit: 1,             // casi no descarta formas: sobrevive el detalle fino
+        rightangleenhance: true,
+        blurradius: 0,           // la imagen YA está limpia: desenfocar la arruina
+      }
+    }
+    const px = data.data
+    const total = data.width * data.height
+    // Se agrupan los colores en cubos gruesos: los bordes suavizados no son
+    // colores de la imagen, son la transición entre dos, y no deben contarse.
+    const cubos = new Map<number, number>()
+    const paso = Math.max(1, Math.floor(total / 40000))   // como mucho 40k muestras
+    let visibles = 0
+    for (let i = 0; i < total; i += paso) {
+      const p = i * 4
+      if (px[p + 3] < 128) continue
+      visibles++
+      const k = (px[p] >> 5 << 10) | (px[p + 1] >> 5 << 5) | (px[p + 2] >> 5)
+      cubos.set(k, (cubos.get(k) ?? 0) + 1)
+    }
+    // Solo cuentan los colores con presencia real; el resto son bordes.
+    const minimo = Math.max(1, visibles * 0.01)
+    const dominantes = [...cubos.values()].filter(n => n >= minimo).length
+
+    if (dominantes <= 6) {
+      // Arte plano: logos, siluetas, dibujos. Se calca con sus colores justos.
+      return {
+        numberofcolors: Math.max(2, dominantes),
+        colorsampling: 0,        // paleta fija, no muestreada: sin bandas inventadas
+        ltres: 0.5, qtres: 0.5,  // sigue el contorno de cerca
+        pathomit: 2,             // casi no descarta formas: los detalles finos sobreviven
+        rightangleenhance: true, // endereza los ángulos rectos, típicos de un logo
+        blurradius: 1,           // funde el borde suavizado antes de decidir el color
+      }
+    }
+    // Fotos e ilustraciones con degradados: hace falta más paleta, y descartar
+    // las formas minúsculas para que no salgan miles de manchitas.
+    return {
+      numberofcolors: 16,
+      colorsampling: 2,
+      ltres: 1, qtres: 1,
+      pathomit: 8,
+      rightangleenhance: false,
+      blurradius: 0,
+    }
+  }
 
   // ── Importar y vectorizar PNG ────────────────────────────────────────────────
   async function handleImportPng(file: File) {
@@ -3492,29 +4228,38 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
       URL.revokeObjectURL(url)
 
-      const tmp = document.createElement('canvas')
-      tmp.width  = img.width
-      tmp.height = img.height
-      const ctx = tmp.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-      const imageData = ctx.getImageData(0, 0, img.width, img.height)
+      // La imagen se limpia ANTES de calcarla: se aplana la transparencia, se
+      // agranda si es chica y cada píxel se pega al color más cercano de la
+      // paleta real. Calcar el PNG crudo era lo que hacía que un logo simple
+      // saliera hecho un desastre. Ver utils/calco.ts.
+      const preparada = prepararParaCalco(img)
+      const imageData = preparada.data
 
-      // Vectorizar con imagetracerjs
+      // Vectorizar con imagetracerjs, con ajustes según qué clase de imagen es.
       const { default: ImageTracer } = await import('imagetracerjs')
-      const svgStr: string = ImageTracer.imagedataToSVG(imageData, {
-        numberofcolors: 8,
-        colorsampling: 2,
-        ltres: 1,
-        qtres: 1,
-        pathomit: 16,
-        rightangleenhance: false,
-        blurradius: 0,
-      })
+      const svgStr: string = ImageTracer.imagedataToSVG(imageData, opcionesDeCalco(imageData, preparada.paleta.length))
 
       // Cargar el SVG en Fabric
       const { objects } = await fabric.loadSVGFromString(svgStr)
-      const validObjs = objects.filter(Boolean) as fabric.FabricObject[]
+      let validObjs = objects.filter(Boolean) as fabric.FabricObject[]
       if (!validObjs.length) return
+
+      // Fuera el fondo. El calcador devuelve el fondo como relleno, no como
+      // vacío: sin esto el logo venía con un cuadrado atrás tapando la prenda, y
+      // los huecos de adentro (el aire entre el brazo y el cuerpo) salían como
+      // manchas blancas macizas.
+      //
+      // Si el PNG venía con fondo transparente, NADA de ese color es dibujo: se
+      // descarta todo, y los huecos quedan huecos. Si el fondo era un color de
+      // verdad, solo se descarta el rectángulo que tapa todo, porque una pieza
+      // del logo puede ser justo de ese color.
+      const areaTotal = (imageData.width * imageData.height) * 0.92
+      const sinFondo = validObjs.filter(o => {
+        if (!esColorDeFondo(o.fill, preparada.fondo)) return true
+        if (preparada.fondoTransparente) return false
+        return (o.width ?? 0) * (o.height ?? 0) < areaTotal
+      })
+      if (sinFondo.length) validObjs = sinFondo
 
       // Agrupar y escalar para que entre en el canvas
       const group = new fabric.Group(validObjs, { selectable: true, evented: true })
@@ -3607,6 +4352,360 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }
 
+  // ── Dividir la prenda con un trazo ─────────────────────────────────────────
+
+  /** El encuadre de la prenda que se esta editando. */
+  function encuadreActual() {
+    return project.mockupId === 'tshirt' ? teeFitRef.current : prendaFitRef.current
+  }
+
+  /** Los puntos de un trazo, en coordenadas del LIENZO. */
+  function puntosDelTrazo(obj: fabric.FabricObject): Punto[] {
+    const m = obj.calcTransformMatrix()
+    const llevar = (x: number, y: number): Punto => {
+      const q = fabric.util.transformPoint(new fabric.Point(x, y), m)
+      return [q.x, q.y]
+    }
+    const path = (obj as any).path
+    if (path) {
+      const off = (obj as any).pathOffset ?? { x: 0, y: 0 }
+      return samplePathCommands(path, 3).map(q => llevar(q.x - off.x, q.y - off.y))
+    }
+    if (obj.type === 'line') {
+      const l = obj as fabric.Line
+      const cx = (l.x1! + l.x2!) / 2, cy = (l.y1! + l.y2!) / 2
+      return [llevar(l.x1! - cx, l.y1! - cy), llevar(l.x2! - cx, l.y2! - cy)]
+    }
+    return []
+  }
+
+  /**
+   * ¿Este trazo sirve para dividir? Solo si cruza alguna pieza de lado a lado.
+   * Se usa para no ofrecer la opción cuando no va a hacer nada.
+   */
+  function trazoDivide(obj: fabric.FabricObject): Punto[] | null {
+    const fit = encuadreActual()
+    if (!fit || !mockupObjects.current.length) return null
+    const enLienzo = puntosDelTrazo(obj)
+    if (enLienzo.length < 2) return null
+    // Del lienzo al dibujo: así el corte se estira junto con la prenda cuando se
+    // cambia una medida, en vez de quedarse clavado donde se dibujó.
+    const corte: Punto[] = enLienzo.map(([x, y]) => [(x - fit.ox) / fit.sc, (y - fit.oy) / fit.sc])
+    const alguna = mockupObjects.current.some(o => {
+      if ((o as any)._rawInner) return false
+      const d = (o as any).path ? pathDeObjeto(o) : ''
+      return d ? !!partirPoligono(aplanarTrazado(d), corte) : false
+    })
+    return alguna ? corte : null
+  }
+
+  /** Las piezas que parte ese trazo, por nombre. */
+  function piezasQueDivide(corte: Punto[]): string[] {
+    return mockupObjects.current.filter(o => {
+      if ((o as any)._rawInner) return false
+      const d = (o as any).path ? pathDeObjeto(o) : ''
+      return d ? !!partirPoligono(aplanarTrazado(d), corte) : false
+    }).map(o => (o as any)._pieceKey as string).filter(Boolean)
+  }
+
+  /**
+   * Alarga el trazo por las dos puntas.
+   *
+   * El corte se guarda en coordenadas del dibujo, y al agrandar una medida la
+   * pieza crece por los costados: un trazo que llegaba justo de borde a borde
+   * se quedaba corto y la division desaparecia sola. Estirandolo bien lejos
+   * sigue cruzando pase lo que pase, y como el alcance ya esta fijado por
+   * nombre de pieza, el sobrante no toca nada que no corresponda.
+   */
+  function estirarTrazo(pts: Punto[]): Punto[] {
+    if (pts.length < 2) return pts
+    const largo = 4000
+    const prolongar = (a: Punto, b: Punto): Punto => {
+      const dx = b[0] - a[0], dy = b[1] - a[1]
+      const n = Math.hypot(dx, dy)
+      if (n < 1e-6) return b
+      return [b[0] + (dx / n) * largo, b[1] + (dy / n) * largo]
+    }
+    return [prolongar(pts[1], pts[0]), ...pts, prolongar(pts[pts.length - 2], pts[pts.length - 1])]
+  }
+
+  /** La pieza de la prenda que esta debajo de ese punto. */
+  function piezaEn(pt: fabric.Point | undefined): fabric.FabricObject | null {
+    if (!pt) return null
+    const piezas = mockupObjects.current
+    for (let i = piezas.length - 1; i >= 0; i--) {
+      const o = piezas[i]
+      if ((o as any)._rawInner) continue
+      if (o.visible === false) continue
+      if (o.containsPoint(pt)) return o
+    }
+    return null
+  }
+
+  /** El trazado de una pieza, en coordenadas del dibujo. */
+  function pathDeObjeto(o: fabric.FabricObject): string {
+    const path = (o as any).path as any[] | undefined
+    if (!path) return ''
+    let d = ''
+    for (const c of path) {
+      const cmd = c[0]
+      d += cmd + ' ' + c.slice(1).map((n: number) => n.toFixed(2)).join(' ') + ' '
+    }
+    return d
+  }
+
+  /**
+   * El trazo dibujado que pasa por ese punto.
+   *
+   * No se usa el buscador de Fabric porque los trazos del lápiz se crean sin
+   * eventos —para poder seguir dibujando encima— y nunca los encontraría.
+   */
+  function trazoEn(pt: fabric.Point | undefined): fabric.FabricObject | null {
+    const canvas = fc.current
+    if (!canvas || !pt) return null
+    const objs = canvas.getObjects()
+    for (let i = objs.length - 1; i >= 0; i--) {
+      const o = objs[i]
+      if (mockupObjects.current.includes(o)) continue
+      if (o instanceof fabric.IText) continue
+      if (!(o as any).path && o.type !== 'line') continue
+      if (o.visible === false) continue
+      o.setCoords()
+      if (o.containsPoint(pt)) return o
+    }
+    return null
+  }
+
+  /** Parte la prenda con ese trazo y se queda con el corte. */
+  function dividirPrendaCon(obj: fabric.FabricObject, soloPieza?: string) {
+    const corte = trazoDivide(obj)
+    if (!corte) {
+      onToast?.('Ese trazo no cruza la prenda de lado a lado, así que no la divide.')
+      return
+    }
+    const piezas = soloPieza ? [soloPieza] : piezasQueDivide(corte)
+    const id = 'c' + (corteSeq.current++)
+    cortesRef.current = [...cortesRef.current, { pts: estirarTrazo(corte), piezas, id }]
+    setHayCortes(true)
+    // La linea NO se borra: queda como la linea de division, que se puede
+    // mover, pintar y borrar. Al moverla, la division la sigue.
+    ;(obj as any)._corte = id
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
+    onToast?.('Prenda dividida. La línea se puede mover, y cada parte se pinta aparte.')
+  }
+
+  /**
+   * Reapunta los pasos de deshacer a las piezas nuevas de la prenda.
+   *
+   * La prenda se REHACE entera con cada cambio de medida: las piezas viejas se
+   * tiran y se arman otras. Los pasos de deshacer guardaban la pieza vieja, asi
+   * que pintar algo, tocar una medida y hacer Ctrl+Z no hacia nada: le devolvia
+   * el color a un objeto que ya no estaba en el lienzo.
+   *
+   * Se empareja por NOMBRE de pieza, con los mismos respaldos que usa la
+   * pintura: si la pieza se partio (`cuerpo` -> `cuerpo#1`) o al reves, igual
+   * se encuentra.
+   */
+  function remapearHistorial(viejos: fabric.FabricObject[], nuevos: fabric.FabricObject[]) {
+    if (!viejos.length || !nuevos.length) return
+    const porClave = new Map<string, fabric.FabricObject>()
+    for (const o of nuevos) {
+      const k = (o as any)._pieceKey as string | undefined
+      if (k && !porClave.has(k)) porClave.set(k, o)
+    }
+    const mapa = new Map<fabric.FabricObject, fabric.FabricObject>()
+    for (const v of viejos) {
+      const k = (v as any)._pieceKey as string | undefined
+      if (!k) continue
+      const n = porClave.get(k) ?? porClave.get(k.split('#')[0]) ?? porClave.get(k + '#1')
+      if (n && n !== v) mapa.set(v, n)
+    }
+    if (!mapa.size) return
+    const cambiar = (o: fabric.FabricObject) => mapa.get(o) ?? o
+    const arreglar = (h: HistoryEntry[]) => h.forEach(e => {
+      if (e.type === 'fill' || e.type === 'props' || e.type === 'opacity') e.obj = cambiar(e.obj)
+      else if (e.type === 'fillBatch' || e.type === 'transform') e.items.forEach(it => { it.obj = cambiar(it.obj) })
+      else if (e.type === 'moveDelta') e.objs = e.objs.map(cambiar)
+    })
+    arreglar(undoHistory.current)
+    arreglar(redoHistory.current)
+  }
+
+  /** Rehace la prenda con las medidas que tiene puestas. */
+  function rehacerPrenda() {
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
+  }
+
+  /**
+   * La linea de division se movio: la division la sigue.
+   *
+   * Los rellenos van con ella porque las piezas se vuelven a cortar desde cero
+   * con el trazo en su lugar nuevo, y cada pedazo se queda con la pintura que
+   * tenia (se busca por nombre de pieza, no por posicion).
+   */
+  function actualizarCorte(obj: fabric.FabricObject) {
+    const id = (obj as any)._corte as string | undefined
+    if (!id) return
+    const i = cortesRef.current.findIndex(c => c.id === id)
+    if (i < 0) return
+    const pts = trazoDivide(obj)
+    if (!pts) {
+      onToast?.('Ahi el trazo ya no cruza la prenda: la division se quedo donde estaba.')
+      return
+    }
+    const copia = [...cortesRef.current]
+    copia[i] = { ...copia[i], pts: estirarTrazo(pts) }
+    cortesRef.current = copia
+    rehacerPrenda()
+  }
+
+  /**
+   * La linea se esta moviendo AHORA: la division la sigue sin soltar el mouse.
+   *
+   * Se rehace como mucho una vez por cuadro. Rehacer la prenda en cada
+   * movimiento del mouse la trababa, porque cada vez hay que volver a cortar
+   * todas las piezas.
+   */
+  function corteEnMovimiento(obj: fabric.FabricObject | undefined) {
+    const id = obj && (obj as any)._corte as string | undefined
+    if (!id) return
+    saltarCapas.current = true
+    if (corteEnVivo.current !== null) return
+    corteEnVivo.current = requestAnimationFrame(() => {
+      corteEnVivo.current = null
+      // Se busca por id y no se usa el objeto capturado: con la pluma de
+      // curvatura, para cuando llega el cuadro ese objeto ya fue reemplazado.
+      const vivo = fc.current?.getObjects().find(o => (o as any)._corte === id)
+      if (vivo) actualizarCorte(vivo)
+    })
+  }
+
+  /** Se solto la linea: ultimo recorte y se vuelve a habilitar el panel. */
+  function corteSoltado(obj: fabric.FabricObject | undefined) {
+    if (corteEnVivo.current !== null) {
+      cancelAnimationFrame(corteEnVivo.current)
+      corteEnVivo.current = null
+    }
+    saltarCapas.current = false
+    const id = obj && (obj as any)._corte as string | undefined
+    if (!id) return
+    const vivo = fc.current?.getObjects().find(o => (o as any)._corte === id) ?? obj
+    actualizarCorte(vivo)
+    refreshLayersNow()
+  }
+
+  /**
+   * Se borro la linea: se va tambien su division.
+   *
+   * Ojo: sacar el objeto del lienzo NO siempre quiere decir borrarlo. La pluma
+   * de curvatura rehace el trazado en cada cuadro —saca el viejo y agrega uno
+   * nuevo— y asi la division se perdia apenas se tocaba la linea. Por eso se
+   * espera a que termine lo que se este haciendo y recien ahi se mira: si
+   * quedo OTRO objeto con el mismo corte, es un reemplazo y no hay que sacar
+   * nada.
+   */
+  function quitarCorteDe(obj: fabric.FabricObject) {
+    const id = (obj as any)._corte as string | undefined
+    if (!id) return
+    queueMicrotask(() => {
+      const sigue = fc.current?.getObjects().some(o => (o as any)._corte === id)
+      if (sigue) return
+      const quedan = cortesRef.current.filter(c => c.id !== id)
+      if (quedan.length === cortesRef.current.length) return
+      cortesRef.current = quedan
+      setHayCortes(quedan.length > 0)
+      rehacerPrenda()
+    })
+  }
+
+  /** Vuelve la prenda a sus piezas originales. */
+  function quitarCortes() {
+    // Las lineas vuelven a ser dibujos comunes; no se borran, son del usuario.
+    fc.current?.getObjects().forEach(o => { delete (o as any)._corte })
+    cortesRef.current = []
+    setHayCortes(false)
+    if (project.mockupId === 'tshirt') placeTee(measuresRef.current, true)
+    else placePrenda(medidasRef.current, true)
+  }
+
+  // ── Bordado ────────────────────────────────────────────────────────────────
+  /**
+   * Pasa lo seleccionado (un vector, una forma o un texto) a bordado.
+   *
+   * Queda como imagen y no como vector a propósito: el bordado es hilo, y el
+   * hilo no tiene "relleno" ni "trazo" que se puedan seguir editando. Deshacer
+   * devuelve el original de una sola vez.
+   */
+  async function convertirEnBordado() {
+    const canvas = fc.current
+    if (!canvas) return
+    const activos = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
+    if (!activos.length) return
+
+    setBordando(true)
+    try {
+      const nuevos: fabric.FabricObject[] = []
+      for (const obj of activos) {
+        // El hilo saca el color del objeto: primero el relleno, y si no tiene
+        // (una figura que es solo contorno) el trazo.
+        const f = obj.fill, st = obj.stroke
+        const hilo = (typeof f === 'string' && f) ? f
+                   : (typeof st === 'string' && st) ? st
+                   : '#c8402f'
+
+        // Se dibuja SIN rotación y el ángulo se le devuelve después a la imagen:
+        // si no, el hilo sale escalonado en vez de derecho.
+        const angulo = obj.angle ?? 0
+        const centro = obj.getCenterPoint()
+        // El recorte a la remera está en coordenadas del lienzo. Al dibujar el
+        // objeto solo, ese recorte cae fuera y se lo come entero: la silueta
+        // salía vacía y el bordado invisible. Se saca y se devuelve después.
+        const recorte = obj.clipPath
+        obj.clipPath = undefined
+        obj.set({ angle: 0 }); obj.setCoords()
+        let silueta: HTMLCanvasElement
+        try {
+          // Techo de resolución: un objeto muy grande haría un canvas enorme y
+          // el bordado tardaría de más sin verse mejor.
+          const lado = Math.max(obj.getScaledWidth(), obj.getScaledHeight()) || 1
+          const mult = Math.min(BORDADO_MULT, Math.max(1, 1400 / lado))
+          silueta = obj.toCanvasElement({ multiplier: mult })
+          ;(silueta as any)._mult = mult
+        } finally {
+          obj.set({ angle: angulo }); obj.clipPath = recorte; obj.setCoords()
+        }
+
+        const mult = (silueta as any)._mult as number
+        const bordado = renderBordado(silueta, hilo, bordadoAngulo)
+        const img = await fabric.FabricImage.fromURL(bordado.toDataURL())
+        img.set({
+          originX: 'center', originY: 'center',
+          left: centro.x, top: centro.y, angle: angulo,
+          scaleX: 1 / mult, scaleY: 1 / mult,
+          opacity: obj.opacity ?? 1, selectable: true, evented: true,
+        })
+        ;(img as any)._bordado = true
+        if (clipEnabledRef.current && clipPath.current) img.clipPath = clipPath.current
+        img.setCoords()
+        canvas.remove(obj)
+        canvas.add(img)
+        nuevos.push(img)
+      }
+      canvas.discardActiveObject()
+      if (nuevos.length === 1) { canvas.setActiveObject(nuevos[0]); setSelectedObj(nuevos[0]) }
+      undoHistory.current.push({ type: 'erase', removed: activos, added: nuevos })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      refreshLayersNow()
+    } catch (err) {
+      console.error('No se pudo bordar:', err)
+    } finally {
+      setBordando(false)
+    }
+  }
+
   // ── Texturas ─────────────────────────────────────────────────────────────────
   // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
   // recolorearla después sin perder la textura.
@@ -3625,7 +4724,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   //   efecto → desgaste/grunge/vintage (_effect), dibujado ENCIMA
   // Se rehace desde cero cada vez, así cambiar uno no pisa al otro.
   function recomposeFill(obj: fabric.FabricObject) {
-    const tex    = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+    const texGuardada = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
+    // Una textura que ya no existe (proyecto viejo con cuadrillé, lunares,
+    // camuflado o animal) se descarta: la pieza queda con su color liso.
+    const tex    = texGuardada && esTexturaValida(texGuardada.kind) ? texGuardada : undefined
     const eff    = (obj as any)._effect  as { kind: EffectKind; intensity: number } | undefined
     const baseCol = (obj as any)._baseColor as string | undefined
     const uTex   = (obj as any)._userTex as { id: string; widthCm: number } | undefined
@@ -3722,6 +4824,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const t = userTextures.find(x => x.id === id)
       if (t) updateUserTexture({ ...t, widthCm })
     }
+    markDirty()
     canvas.requestRenderAll()
   }
 
@@ -3768,14 +4871,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // por el que entra cualquier pintura, así que blindarlo una vez alcanza.
     targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
-    const items = targets.map(o => ({ obj: o, prevFill: o.fill as fabric.TFiller | string | null }))
+    const items = targets.map(o => ({ obj: o, prev: snapshotPaint(o) }))
     targets.forEach(mut)
     syncInnerShade()
+    // Si no cambio nada, no se anota: un paso vacio hace que el Ctrl+Z
+    // siguiente parezca que no hizo nada.
+    if (items.every(it => mismaPintura(it.prev, snapshotPaint(it.obj)))) {
+      canvas.requestRenderAll()
+      return
+    }
     undoHistory.current.push(items.length === 1
-      ? { type: 'fill', obj: items[0].obj, prevFill: items[0].prevFill }
+      ? { type: 'fill', obj: items[0].obj, prev: items[0].prev }
       : { type: 'fillBatch', items })
     redoHistory.current = []
     canvas.requestRenderAll()
+    markDirty()
     onToast?.(`${verb} a ${label}`)
   }
 
@@ -4100,8 +5210,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           case 'z': case 'Z': setTool('zoom');       return
           case 'i': case 'I': setTool('eyedropper'); return
           case 'k': case 'K': setTool('fill');       return   // K — balde (relleno)
-          case 'g': case 'G': setTool('gradient');   return   // G — degradado
-          case 'c': case 'C': setTool('cut');        return   // C — cortar (tijera)
         }
       }
 
@@ -4173,6 +5281,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         return
       }
 
+      // Flechas — mover lo seleccionado de a un píxel (10 con Shift).
+      // Es la forma de acomodar algo con precisión: a mano el mouse nunca cae
+      // justo, y con esto se ajusta sin pelear con el pulso.
+      // Con Alt las flechas cambian de pestana (lo maneja App), no mueven nada.
+      if (!ctrl && !e.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        const activo = canvas.getActiveObject()
+        if (!activo) return
+        e.preventDefault()
+        const paso = e.shiftKey ? 10 : 1
+        const dx = e.key === 'ArrowLeft' ? -paso : e.key === 'ArrowRight' ? paso : 0
+        const dy = e.key === 'ArrowUp'   ? -paso : e.key === 'ArrowDown'  ? paso : 0
+
+        const movidos = activo.type === 'activeselection'
+          ? (activo as fabric.ActiveSelection).getObjects()
+          : [activo]
+
+        activo.set({ left: (activo.left ?? 0) + dx, top: (activo.top ?? 0) + dy })
+        activo.setCoords()
+
+        // Un solo paso de deshacer por rafaga: mantener la flecha apretada
+        // genera decenas de eventos, y tener que deshacer cincuenta veces para
+        // volver atras un ajuste seria peor que no poder deshacerlo.
+        const ultima = undoHistory.current[undoHistory.current.length - 1]
+        const mismaRafaga = ultima?.type === 'moveDelta' &&
+          ultima.objs.length === movidos.length &&
+          ultima.objs.every((o, i) => o === movidos[i]) &&
+          Date.now() - ultimaFlecha.current < 900
+        if (mismaRafaga && ultima.type === 'moveDelta') {
+          ultima.dx += dx; ultima.dy += dy
+        } else {
+          undoHistory.current.push({ type: 'moveDelta', objs: movidos, dx, dy })
+          redoHistory.current = []
+        }
+        ultimaFlecha.current = Date.now()
+
+        if (mockupObjects.current.includes(activo) ||
+            movidos.some(o => mockupObjects.current.includes(o))) void rebuildGarmentClip()
+        markDirty()
+        canvas.requestRenderAll()
+        return
+      }
+
       if (!ctrl) return
 
       // Ignorar el auto-repeat del teclado: mantener apretado Ctrl+Z (o Ctrl+Shift+Z)
@@ -4184,6 +5334,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         e.preventDefault()
         const entry = redoHistory.current.pop()
         if (!entry) return
+        // Se suelta la seleccion ANTES de tocar nada. Mientras hay una seleccion
+        // multiple activa, las coordenadas de cada objeto son relativas al centro
+        // de esa seleccion: mover uno ahi adentro lo manda a cualquier lado. Al
+        // soltarla, Fabric vuelve a dejar todo en coordenadas absolutas.
+        canvas.discardActiveObject()
         if (entry.type === 'add') {
           canvas.add(entry.obj)
           undoHistory.current.push(entry)
@@ -4209,25 +5364,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           dissolveGroup(entry.group)                // rehacer la disolución
           undoHistory.current.push(entry)
         } else if (entry.type === 'transform') {
-          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
-          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          const cur = entry.items.map(it => snapGeom(it.obj))
+          entry.items.forEach(applyGeom)
           undoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'moveDelta') {
+          const signo = 1    // rehacer: se vuelve a aplicar el desplazamiento
+          entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
+          undoHistory.current.push(entry)
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
           entry.obj.set(entry.prev as any); entry.obj.setCoords()
           undoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
-          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
-          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          const cur = entry.items.map(it => ({ obj: it.obj, prev: snapshotPaint(it.obj) }))
+          entry.items.forEach(it => applyPaint(it.obj, it.prev))
+          syncInnerShade()
           undoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill  = entry.obj.fill
-          const curPaint = entry.prevPaint ? snapshotPaint(entry.obj) : null
-          entry.obj.set({ fill: entry.prevFill as string, dirty: true })
-          if (entry.prevPaint) { restorePaint(entry.obj, entry.prevPaint); syncInnerShade() }
-          undoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null, prevPaint: curPaint })
+          const cur = snapshotPaint(entry.obj)
+          applyPaint(entry.obj, entry.prev)
+          syncInnerShade()
+          undoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
+        markDirty()   // deshacer y rehacer tambien cambian el diseño
         canvas.discardActiveObject()
         canvas.requestRenderAll()
         return
@@ -4242,6 +5402,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (penDraftRef.current?.hasDraft()) { penDraftRef.current.undoPoint(); return }
         const entry = undoHistory.current.pop()
         if (!entry) return
+        // Se suelta la seleccion ANTES de tocar nada. Mientras hay una seleccion
+        // multiple activa, las coordenadas de cada objeto son relativas al centro
+        // de esa seleccion: mover uno ahi adentro lo manda a cualquier lado. Al
+        // soltarla, Fabric vuelve a dejar todo en coordenadas absolutas.
+        canvas.discardActiveObject()
         if (entry.type === 'add') {
           canvas.remove(entry.obj)
           redoHistory.current.push(entry)
@@ -4267,25 +5432,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.group = makeGroup(entry.children)   // deshacer: rehacer el grupo
           redoHistory.current.push(entry)
         } else if (entry.type === 'transform') {
-          const cur = entry.items.map(it => ({ obj: it.obj, left: it.obj.left ?? 0, top: it.obj.top ?? 0 }))
-          entry.items.forEach(it => { it.obj.set({ left: it.left, top: it.top }); it.obj.setCoords() })
+          const cur = entry.items.map(it => snapGeom(it.obj))
+          entry.items.forEach(applyGeom)
           redoHistory.current.push({ type: 'transform', items: cur })
+        } else if (entry.type === 'moveDelta') {
+          const signo = -1   // deshacer: se resta el desplazamiento
+          entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
+          redoHistory.current.push(entry)
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
           entry.obj.set(entry.prev as any); entry.obj.setCoords()
           redoHistory.current.push({ type: 'props', obj: entry.obj, prev: cur })
         } else if (entry.type === 'fillBatch') {
-          const cur = entry.items.map(it => ({ obj: it.obj, prevFill: it.obj.fill as fabric.TFiller | string | null }))
-          entry.items.forEach(it => it.obj.set({ fill: it.prevFill as string, dirty: true }))
+          const cur = entry.items.map(it => ({ obj: it.obj, prev: snapshotPaint(it.obj) }))
+          entry.items.forEach(it => applyPaint(it.obj, it.prev))
+          syncInnerShade()
           redoHistory.current.push({ type: 'fillBatch', items: cur })
         } else {
-          const curFill  = entry.obj.fill
-          const curPaint = entry.prevPaint ? snapshotPaint(entry.obj) : null
-          entry.obj.set({ fill: entry.prevFill as string, dirty: true })
-          if (entry.prevPaint) { restorePaint(entry.obj, entry.prevPaint); syncInnerShade() }
-          redoHistory.current.push({ type: 'fill', obj: entry.obj, prevFill: curFill as fabric.TFiller | string | null, prevPaint: curPaint })
+          const cur = snapshotPaint(entry.obj)
+          applyPaint(entry.obj, entry.prev)
+          syncInnerShade()
+          redoHistory.current.push({ type: 'fill', obj: entry.obj, prev: cur })
         }
+        markDirty()   // deshacer y rehacer tambien cambian el diseño
         canvas.discardActiveObject()
         canvas.requestRenderAll()
       }
@@ -4327,23 +5497,100 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }, [])
 
-  // Serializa el diseño entero (lo dibujado + la prenda). Lo comparten el guardado
-  // manual y el automático, así los dos guardan exactamente lo mismo.
-  function buildDesignJson(): string | null {
+  // La imagen que se ve en la tarjeta del proyecto.
+  //
+  // Antes se sacaba una foto de la pantalla tal cual estaba: si el diseñador
+  // había hecho zoom o movido el lienzo, la tarjeta quedaba con un pedazo de la
+  // prenda o directamente con el vacío de al lado. Y aunque no tocara el zoom,
+  // la prenda ocupaba una parte chica de un lienzo grande y la tarjeta salía
+  // casi toda fondo.
+  //
+  // Ahora se recorta la PRENDA: se apaga el zoom un instante, se mide dónde
+  // está y se fotografía solo eso. El resultado no depende de cómo el diseñador
+  // dejó la vista.
+  function garmentThumbnail(canvas: fabric.Canvas): string {
+    const objs = mockupObjects.current
+    const vpt = canvas.viewportTransform
+    try {
+      if (objs.length) {
+        canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+        let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+        for (const o of objs) {
+          const r = o.getBoundingRect()
+          x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+          x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+        }
+        if (Number.isFinite(x1) && x2 > x1 && y2 > y1) {
+          const pad = Math.max(x2 - x1, y2 - y1) * 0.04
+          const w = x2 - x1 + pad * 2, h = y2 - y1 + pad * 2
+          // ~320 px de alto: el doble de lo que mide la tarjeta, para que no se
+          // vea borrosa en pantallas retina sin guardar una imagen enorme.
+          return canvas.toDataURL({
+            format: 'png', multiplier: Math.min(2, 320 / h),
+            left: x1 - pad, top: y1 - pad, width: w, height: h,
+          })
+        }
+      }
+      return canvas.toDataURL({ format: 'png', multiplier: 0.3 })
+    } finally {
+      if (vpt) canvas.viewportTransform = vpt
+      canvas.requestRenderAll()
+    }
+  }
+
+  // ── Guardado automático ────────────────────────────────────────────────────
+  // Guardar a mano es una cosa más que el diseñador tiene que acordarse de
+  // hacer, y la única consecuencia de olvidarse es perder el trabajo.
+  //
+  // No se guarda en cada trazo: se espera a que pare de hacer cosas. Cada cambio
+  // reinicia el reloj, así dibujar diez líneas seguidas es UN guardado y no diez.
+  const AUTOSAVE_MS = 2000
+  const autosaveListo = useRef(false)     // no guardar mientras se abre el proyecto
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const guardando     = useRef(false)
+
+  function markDirty() {
+    if (!autosaveListo.current) return
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => { void autoSave() }, AUTOSAVE_MS)
+  }
+
+  async function autoSave() {
+    const payload = buildSavePayload()
+    if (!payload) return
+    // Si ya hay un guardado en vuelo, se reintenta después en vez de mandar dos
+    // versiones a la vez y que gane la que conteste última.
+    if (guardando.current) { markDirty(); return }
+    guardando.current = true
+    try { await onSave(payload.thumbnail, payload.canvasJson) }
+    finally { guardando.current = false }
+  }
+
+  useEffect(() => () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }, [])
+
+  // Lo que se manda a guardar. Lo usan el guardado a mano y el automático: si
+  // fueran dos armados distintos, tarde o temprano guardarían cosas distintas.
+  function buildSavePayload(): { thumbnail: string; canvasJson: string } | null {
     const canvas = fc.current
     if (!canvas) return null
     const userObjs = canvas.getObjects()
       // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
-      // tiradores, guias y previews del dibujo en curso no son parte del diseno,
-      // y con el autoguardado corriendo cada 15 s tarde o temprano caian adentro.
+      // los tiradores de anclaje y los previews del lapiz y de la pluma son
+      // objetos reales del lienzo, y el guardado automatico saltaba a los 2 s de
+      // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
+      // circulitos azules y lineas punteadas como si fueran parte del diseno.
       .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
     const garment: SavedGarment = {
       measures: measuresRef.current,
+      medidas:  medidasRef.current,
+      medidasV: 2,
+      cortes:   cortesRef.current,
       pieces: mockupObjects.current.map(o => ({
+        key:  (o as any)._pieceKey as string | undefined,
         fill: typeof o.fill === 'string' ? o.fill : undefined,
         tex:  (o as any)._texture,
         eff:  (o as any)._effect,
@@ -4351,42 +5598,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         uTex: (o as any)._userTex,
       })),
     }
-    return JSON.stringify({ v: 2, objects: userObjs, garment })
+    return {
+      canvasJson: JSON.stringify({ v: 2, objects: userObjs, garment }),
+      thumbnail: garmentThumbnail(canvas),
+    }
   }
 
-  function handleSave() {
-    const canvas = fc.current
-    const canvasJson = buildDesignJson()
-    if (!canvas || canvasJson == null) return
-    const thumbnail = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
-    lastSavedJson.current = canvasJson
-    onSaveRef.current(thumbnail, canvasJson)
-    onSaveComplete()
+  async function handleSave() {
+    const payload = buildSavePayload()
+    if (!payload) return
+    // El guardado a mano cancela el automático pendiente: si no, guardaría dos
+    // veces lo mismo con dos segundos de diferencia.
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
+    // Se espera al guardado de verdad. Avisar "Guardado ✓" antes de que la base
+    // conteste hacía que el cartel de error y el de éxito salieran juntos, y el
+    // diseñador se iba pensando que su trabajo estaba a salvo.
+    if (await onSave(payload.thumbnail, payload.canvasJson)) onSaveComplete()
   }
-
-  // ── Guardado automático ────────────────────────────────────────────
-  // Cada AUTOSAVE_MS compara el diseño con lo último guardado y, si cambió, lo guarda
-  // solo. No dispara el toast de «Guardado ✓»: avisa con el cartelito de abajo a la
-  // izquierda y listo. Ctrl+S sigue funcionando igual que siempre.
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      const canvas = fc.current
-      if (!canvas) return
-      const json = buildDesignJson()
-      if (json == null || json === lastSavedJson.current) return
-      lastSavedJson.current = json
-      onSaveRef.current(canvas.toDataURL({ format: 'png', multiplier: 0.3 }), json)
-      setAutoSavedAt(Date.now())
-    }, AUTOSAVE_MS)
-    return () => window.clearInterval(id)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // El cartel de «guardado solo» se muestra un rato y se va
-  useEffect(() => {
-    if (autoSavedAt == null) return
-    const id = window.setTimeout(() => setAutoSavedAt(null), 2600)
-    return () => window.clearTimeout(id)
-  }, [autoSavedAt])
 
   function handleExport() {
     const canvas = fc.current
@@ -4429,6 +5657,120 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // ── Remera paramétrica: (re)genera el mockup desde las medidas en cm ─────────
+  /**
+   * Rehace el recorte a partir de dónde está la prenda AHORA.
+   *
+   * El recorte es lo que hace que el diseño no se salga de la prenda, y está
+   * anclado a coordenadas absolutas. Al mover la prenda, el recorte se quedaba
+   * donde estaba: el diseño pasaba a recortarse contra un molde que ya no
+   * coincidía con nada y desaparecía. Por eso solo se veía con la prenda en su
+   * posición original.
+   */
+  async function rebuildGarmentClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const piezas = mockupObjects.current.filter(o => {
+      if (o.visible === false) return false
+      if ((o as any)._rawInner) return false    // el hueco del cuello no define la silueta
+      const f = (o as any).fill
+      return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
+    })
+    if (!piezas.length) return
+
+    const copias = await Promise.all(piezas.map(p => p.clone()))
+    const cg = new fabric.Group(copias)
+    cg.absolutePositioned = true
+    clipPath.current = cg
+
+    canvas.getObjects().forEach(o => {
+      if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+      o.clipPath = clipEnabledRef.current ? cg : undefined
+      o.dirty = true
+    })
+    canvas.requestRenderAll()
+  }
+
+  /** Devuelve la prenda al centro del lienzo. */
+  // Cuando el encuadre lo puso el programa (y no el diseñador a mano), se puede
+  // deshacer solo al volver la prenda a un tamaño que entra.
+  const encuadreAuto = useRef(false)
+
+  /**
+   * Aleja la vista lo justo para que la prenda entre entera en el lienzo.
+   *
+   * La escala del DIBUJO es fija a propósito: así alargar una prenda se ve más
+   * larga y no más chica, y los cm significan algo. El costo era que una prenda
+   * larga o muy ancha se salía del lienzo. Lo que se mueve acá es la VISTA, no
+   * la prenda: el zoom baja hasta que entra, y vuelve a 1 cuando deja de hacer
+   * falta. Nunca se acerca más allá de 1, y si el diseñador movió o acercó la
+   * vista a mano no se le pisa.
+   */
+  function encuadrarPrenda() {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = mockupObjects.current
+    if (!objs.length) return
+    if (panned && !encuadreAuto.current) return
+
+    // Se mide con el zoom apagado: la caja de la prenda es del DIBUJO, no de lo
+    // que se ve ahora.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const o of objs) {
+      if (o.visible === false) continue
+      const r = o.getBoundingRect()
+      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+    }
+    if (vpt) canvas.viewportTransform = vpt
+    if (!isFinite(x1) || x2 <= x1 || y2 <= y1) return
+
+    const W = canvas.getWidth(), H = canvas.getHeight()
+    const margen = 0.94                       // un respiro contra los bordes
+    const z = Math.min(1, (W * margen) / (x2 - x1), (H * margen) / (y2 - y1))
+
+    if (z >= 0.999 && !encuadreAuto.current) return   // entra sola y nadie tocó nada
+    encuadreAuto.current = z < 0.999
+    const cxG = (x1 + x2) / 2, cyG = (y1 + y2) / 2
+    canvas.setViewportTransform([z, 0, 0, z, W / 2 - cxG * z, H / 2 - cyG * z])
+    canvas.requestRenderAll()
+    setZoom(z)
+    setPanned(false)
+  }
+
+  function centrarPrenda() {
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = mockupObjects.current
+    if (!objs.length) return
+
+    // Se mide con el zoom apagado: si no, "el centro" sería el centro de lo que
+    // se ve ahora y la prenda quedaría centrada en otro lado al alejar.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const o of objs) {
+      const r = o.getBoundingRect()
+      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+    }
+    const dx = canvas.getWidth() / 2 - (x1 + x2) / 2
+    const dy = canvas.getHeight() / 2 - (y1 + y2) / 2
+    if (vpt) canvas.viewportTransform = vpt
+
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) { onToast?.('La prenda ya está centrada'); return }
+
+    const antes = objs.map(snapGeom)
+    objs.forEach(o => { o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy }); o.setCoords() })
+    undoHistory.current.push({ type: 'transform', items: antes })
+    redoHistory.current = []
+    void rebuildGarmentClip()
+    markDirty()
+    canvas.requestRenderAll()
+    onToast?.('Prenda centrada')
+  }
+
   function placeTee(m: Measures, reassignClip = false) {
     const canvas = fc.current
     if (!canvas) return
@@ -4444,36 +5786,68 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // relleno se rehace desde cero y _userTex no viajaba en la copia.
       uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
     }))
+    mockupPrevKeys.current = mockupObjects.current.map(o => (o as any)._pieceKey as string ?? '')
+    const piezasViejas = mockupObjects.current
     mockupObjects.current.forEach(o => canvas.remove(o))
 
-    const shapes = buildTeeShapes(m)
+    const shapes = aplicarCortes(buildTeeShapes(m), cortesRef.current)
+    let objsConCuerpo = false
     const objs = shapes.map(s => {
       const p = new fabric.Path(s.d, {
         fill: s.fill ?? null, stroke: s.stroke, strokeWidth: s.strokeWidth,
         selectable: false,
-        // El interior no se pinta, así que tampoco se hace clic: el clic lo
-        // atraviesa y cae en el cuerpo, que es lo que el diseñador quiso tocar.
-        evented: s.role !== 'inner',
+        // El interior y las lineas de detalle no se pintan, asi que tampoco
+        // reciben el clic: lo atraviesa y cae en la pieza de abajo, que es la
+        // que el disenador quiso tocar. Sin esto el balde rellenaba de golpe
+        // el contorno del cuello o una costura y la prenda quedaba manchada.
+        evented: s.role !== 'inner' && !(s.role === 'detail' && !s.fill),
         hoverCursor: 'crosshair', strokeUniform: true,
       })
       ;(p as any)._rawMockup = true
-      if (s.role === 'inner') { (p as any)._rawInner = true; (p as any)._pieceName = 'Interior del cuello' }
-      if (s.role === 'piece') (p as any)._rawBody  = true
+      ;(p as any)._pieceKey = s.key
+      if (s.nombre) (p as any)._pieceName = s.nombre
+      if (s.padre) (p as any)._piecePadre = s.padre
+      if (s.role === 'inner') (p as any)._rawInner = true
+      // _rawBody marca de donde saca el color el interior del cuello: es el
+      // CUERPO, no las mangas, asi el escote acompana a lo que se ve detras.
+      // Si el cuerpo esta dividido, el que manda es el primer pedazo: el de
+      // arriba, que es el que se ve por el hueco.
+      if (s.key === 'cuerpo' || s.key.startsWith('cuerpo#')) {
+        if (!objsConCuerpo) { (p as any)._rawBody = true; objsConCuerpo = true }
+      }
       return p
     })
-    // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar medidas)
-    if (prevPaint.length === objs.length) {
+    // Restaurar tela/color/efecto por pieza (la remera se reconstruye al cambiar
+    // medidas). Se busca por NOMBRE de pieza y no por posicion: si algun dia
+    // cambia la cantidad de piezas, la pintura sigue cayendo donde corresponde.
+    const porNombre = new Map<string, typeof prevPaint[number]>()
+    prevPaint.forEach((pp, i) => {
+      const k = (mockupPrevKeys.current[i] ?? '') as string
+      if (k) porNombre.set(k, pp)
+    })
+    if (prevPaint.length) {
       objs.forEach((o, i) => {
         if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
-        const pp = prevPaint[i]
+        const clave = (o as any)._pieceKey as string | undefined
+        // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
+        // la que salio, asi dividir no cambia como se ve la prenda.
+        const padre = (o as any)._piecePadre as string | undefined
+        const pp = (clave ? porNombre.get(clave) : undefined)
+          ?? (clave ? porNombre.get(clave.split('#')[0]) : undefined)
+          // Una pieza que antes no existia (el ruedo, los punos, el cuello)
+          // arranca con la pintura de la pieza de la que se separo.
+          ?? (padre ? porNombre.get(padre) : undefined)
+          ?? (prevPaint.length === objs.length ? prevPaint[i] : undefined)
         if (!pp) return
         if (pp.tex)  (o as any)._texture   = pp.tex
         if (pp.eff)  (o as any)._effect    = pp.eff
         if (pp.uTex) (o as any)._userTex   = pp.uTex
-        // Misma regla que al abrir el proyecto: sin tela, el color liso que estaba
-        // dibujado es la base, aunque venga una base vieja desincronizada.
-        const plainFill = !pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== ''
-        if (plainFill)    (o as any)._baseColor = pp.fill
+        // Sin tela, el color liso que estaba dibujado MANDA sobre la base: los
+        // disenos guardados antes de que el balde registrara la base traen las
+        // dos cosas desincronizadas, y tocar una medida los devolvia al color
+        // viejo en vez de dejar el que se veia en pantalla.
+        const colorLiso = !pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== ''
+        if (colorLiso)    (o as any)._baseColor = pp.fill
         else if (pp.base) (o as any)._baseColor = pp.base
         if ((o as any)._baseColor || pp.tex || pp.eff || pp.uTex) recomposeFill(o)
         else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
@@ -4495,11 +5869,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
+    remapearHistorial(piezasViejas, objs)
     syncInnerShade()
 
-    // Clip = unión de todas las piezas (cuerpo + mangas)
+    // Clip = unión de todas las piezas.
+    //
+    // Cada pieza lleva un trazo de 2 px: SIN eso, dos piezas pegadas (el cuerpo
+    // y el ruedo, o los dos lados de una división) dejan entre sí una costura
+    // de píxeles a medio pintar, y lo que el diseñador dibuje encima aparece
+    // cortado justo ahí. El trazo las hace pisarse un pelo y la costura
+    // desaparece.
     const clipObjs = shapes.filter(s => s.role === 'piece').map(s => {
-      const p = new fabric.Path(s.d, { fill: '#000' })
+      const p = new fabric.Path(s.d, { fill: '#000', stroke: '#000', strokeWidth: 2, strokeUniform: true })
       p.set({ left: (p.left ?? 0) * sc + ox, top: (p.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc })
       return p
     })
@@ -4518,7 +5899,225 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     }
     canvas.requestRenderAll()
+    encuadrarPrenda()
     refreshLayersNow()
+  }
+
+  /**
+   * Arma el pantalón o la chomba con las medidas dadas.
+   *
+   * Mismo criterio que la remera: la prenda se REHACE moviendo los puntos del
+   * dibujo, no se escala. Por eso alargar no ensancha.
+   *
+   * La escala de pantalla se calcula UNA vez, con las medidas por defecto, y
+   * después no se toca: si se recalculara en cada cambio, agrandar una medida
+   * volvería a encuadrar la prenda y se vería del mismo tamaño que antes — o
+   * sea, no se notaría nada.
+   */
+  function placePrenda(m: Medidas, reassignClip = false) {
+    const canvas = fc.current
+    const piezas = piezasRef.current
+    if (!canvas || !prendaParam || !piezas.length) return
+    const CW = canvas.getWidth(), CH = canvas.getHeight()
+
+    // Guardar la tela/color de cada pieza antes de rehacerla (mismo motivo que
+    // en la remera: el relleno se reconstruye de cero y si no se pierde).
+    const prevPaint = mockupObjects.current.map(o => ({
+      fill: (o as any).fill,
+      tex:  (o as any)._texture as { kind: TextureKind; colors: string[] } | undefined,
+      eff:  (o as any)._effect  as { kind: EffectKind; intensity: number } | undefined,
+      base: (o as any)._baseColor as string | undefined,
+      uTex: (o as any)._userTex as { id: string; widthCm: number } | undefined,
+      key:  (o as any)._pieceKey as string | undefined,
+    }))
+    const piezasViejas = mockupObjects.current
+    mockupObjects.current.forEach(o => canvas.remove(o))
+
+    // Las piezas, ya con los cortes aplicados. Se devuelve tambien de que pieza
+    // del archivo salio cada una, porque la correccion de la segunda mitad y el
+    // recorte trabajan sobre esa lista.
+    const expandir = (mm: Medidas) => {
+      const out: { pz: PiezaSvg; d: string; key: string; nombre: string }[] = []
+      for (const pz of piezas) {
+        const d = transformPath(pz.d, prendaParam.warp(mm, pz.id))
+        const nombre = pieceLabelFromId(pz.id, pz.id)
+        if (pz.id.startsWith('inner-') || !cortesRef.current.length) {
+          out.push({ pz, d, key: pz.id, nombre }); continue
+        }
+        let trozos = [{ d, key: pz.id, nombre }]
+        for (const corte of cortesRef.current) {
+          const nuevos: typeof trozos = []
+          for (const t of trozos) {
+            if (!alcanzaA(corte, t.key)) { nuevos.push(t); continue }
+            const partes = partirPoligono(aplanarTrazado(t.d), corte.pts)
+            if (!partes) { nuevos.push(t); continue }
+            const centro = (q: Punto[]) => q.reduce((a, b) => a + b[1], 0) / q.length
+            const ord = centro(partes[0]) <= centro(partes[1]) ? partes : [partes[1], partes[0]]
+            ord.forEach((q, i) => nuevos.push({
+              d: poligonoAPath(q),
+              key: `${t.key}#${i + 1}`,
+              nombre: `${t.nombre} · ${i === 0 ? 'arriba' : 'abajo'}`,
+            }))
+          }
+          trozos = nuevos
+        }
+        for (const t of trozos) out.push({ pz, d: t.d, key: t.key, nombre: t.nombre })
+      }
+      return out
+    }
+
+    const construir = (mm: Medidas) => expandir(mm).map(({ pz, d, key, nombre }) => {
+      const esInterior = pz.id.startsWith('inner-')
+      const p = new fabric.Path(d, {
+        fill: pz.fill, stroke: pz.stroke, strokeWidth: pz.strokeWidth,
+        selectable: false, evented: !esInterior,
+        hoverCursor: 'crosshair', strokeUniform: true,
+      })
+      ;(p as any)._rawMockup = true
+      ;(p as any)._pieceKey = key
+      ;(p as any)._pieceName = nombre
+      // De que pieza del molde salio. Al dividir hay mas trazados que piezas,
+      // asi que la separacion frente/espalda no puede ir por posicion.
+      ;(p as any)._srcId = pz.id
+      if (esInterior) { (p as any)._rawInner = true }
+      else if (pz.id.startsWith('body')) { (p as any)._rawBody = true }
+      return p
+    })
+
+    // Separación entre frente y espalda: se mide en el dibujo original y se
+    // mantiene siempre. Sin esto, al ensanchar el pecho cada mitad crecía hacia
+    // la otra hasta encimarse (la manga del frente se metía en la espalda).
+    const esB = prendaParam.segundaMitad
+    /** Cuánto hay que correr la segunda mitad para que el hueco no cambie. */
+    const correccion = (lista: fabric.Path[]) => {
+      if (!esB) return 0
+      const a = lista.filter(o => !esB((o as any)._srcId))
+      const b = lista.filter(o =>  esB((o as any)._srcId))
+      if (!a.length || !b.length) return 0
+      const finA = Math.max(...a.map(o => (o.left ?? 0) + (o.width ?? 0)))
+      const iniB = Math.min(...b.map(o => o.left ?? 0))
+      if (huecoMitadesRef.current === null) { huecoMitadesRef.current = iniB - finA; return 0 }
+      return (finA + huecoMitadesRef.current) - iniB
+    }
+    const aplicarCorreccion = (lista: fabric.Path[], delta: number) => {
+      if (!esB || !delta) return
+      lista.forEach(o => { if (esB((o as any)._srcId)) o.set({ left: (o.left ?? 0) + delta }) })
+    }
+
+    // El hueco se calibra una sola vez, con las medidas por defecto.
+    if (huecoMitadesRef.current === null && esB) correccion(construir(prendaParam.defaults))
+
+    const objs = construir(m)
+    const deltaB = correccion(objs)
+    aplicarCorreccion(objs, deltaB)
+
+    // La pintura se busca por NOMBRE de pieza, no por posicion: al dividir una
+    // pieza cambia la cantidad, y comparando posiciones la prenda se despintaba
+    // entera de golpe.
+    const porNombre = new Map<string, typeof prevPaint[number]>()
+    for (const pp of prevPaint) if (pp.key) porNombre.set(pp.key, pp)
+    if (prevPaint.length) {
+      objs.forEach((o, i) => {
+        if ((o as any)._rawInner) return
+        const clave = (o as any)._pieceKey as string | undefined
+        // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
+        // la que salio, asi dividir no cambia como se ve la prenda.
+        const pp = (clave ? porNombre.get(clave) : undefined)
+          ?? (clave ? porNombre.get(clave.split('#')[0]) : undefined)
+          ?? (prevPaint.length === objs.length ? prevPaint[i] : undefined)
+        if (!pp) return
+        if (pp.tex)  (o as any)._texture   = pp.tex
+        if (pp.eff)  (o as any)._effect    = pp.eff
+        if (pp.uTex) (o as any)._userTex   = pp.uTex
+        // Sin tela, el color liso que estaba dibujado MANDA sobre la base: los
+        // disenos guardados antes de que el balde registrara la base traen las
+        // dos cosas desincronizadas, y tocar una medida los devolvia al color
+        // viejo en vez de dejar el que se veia en pantalla.
+        const colorLiso = !pp.tex && !pp.uTex && typeof pp.fill === 'string' && pp.fill !== ''
+        if (colorLiso)    (o as any)._baseColor = pp.fill
+        else if (pp.base) (o as any)._baseColor = pp.base
+        if ((o as any)._baseColor || pp.tex || pp.eff || pp.uTex) recomposeFill(o)
+        else if (typeof pp.fill === 'string' && pp.fill !== '') o.set({ fill: pp.fill })
+      })
+    }
+
+    if (!prendaFitRef.current) {
+      const base = construir(prendaParam.defaults)
+      aplicarCorreccion(base, correccion(base))
+      const bx = Math.min(...base.map(o => o.left ?? 0))
+      const by = Math.min(...base.map(o => o.top  ?? 0))
+      const bw = Math.max(...base.map(o => (o.left ?? 0) + (o.width  ?? 0))) - bx
+      const bh = Math.max(...base.map(o => (o.top  ?? 0) + (o.height ?? 0))) - by
+      const pad = Math.min(CW, CH) * 0.12
+      const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
+      prendaFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
+    }
+    const { sc, ox, oy } = prendaFitRef.current
+    objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
+    objs.forEach(o => canvas.add(o))
+    mockupObjects.current = objs
+    remapearHistorial(piezasViejas, objs)
+    syncInnerShade()
+
+    // El recorte es la unión de las piezas que se pintan (no el cuello ni los
+    // detalles): lo que el diseñador dibuje encima se corta contra la prenda.
+    // Se recorre `objs` y no `piezas`: al dividir hay mas trazados que piezas del
+    // molde, y emparejandolos por posicion el recorte quedaba corrido.
+    const porId = new Map(piezas.map(pz => [pz.id, pz]))
+    const clipObjs = objs
+      .filter(o => {
+        const pz = porId.get((o as any)._srcId as string)
+        return !!pz?.fill && !pz.id.startsWith('inner-')
+      })
+      // Se clona del objeto ya construido y ya corrido: si se rehiciera aparte,
+      // el recorte no llevaría la corrección y quedaría movido respecto de la
+      // prenda (lo dibujado encima se cortaría en el lugar equivocado).
+      // El trazo es lo que evita la costura de píxeles entre dos piezas pegadas
+      // (ver el comentario del mismo recorte en la remera).
+      .map(obj => {
+        const p = new fabric.Path((obj as any).path, {
+          fill: '#000', stroke: '#000', strokeWidth: 2, strokeUniform: true,
+        })
+        p.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
+        return p
+      })
+    const cg = new fabric.Group(clipObjs); cg.absolutePositioned = true
+    clipPath.current = cg
+    pxPerCmRef.current = sc * prendaParam.unidadesPorCm
+
+    for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    if (reassignClip) {
+      canvas.getObjects().forEach(o => {
+        if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+        o.clipPath = clipEnabledRef.current ? cg : undefined
+        o.dirty = true
+      })
+    }
+    canvas.requestRenderAll()
+    encuadrarPrenda()
+    refreshLayersNow()
+  }
+
+  /** Cambiar una medida del pantalón o la chomba: rehace la prenda. */
+  function aplicarMedidas(next: Medidas) {
+    const limpio: Medidas = { ...next }
+    for (const c of prendaParam?.campos ?? []) {
+      const v = limpio[c.key]
+      limpio[c.key] = Math.max(c.min, Math.min(c.max, Number.isFinite(v) ? v : (prendaParam?.defaults[c.key] ?? 0)))
+    }
+    medidasRef.current = limpio
+    setMedidas(limpio)
+    placePrenda(limpio, true)
+  }
+
+  /** Editar un grupo plegado: mueve todas sus medidas a la par. */
+  function aplicarGrupoMedidas(keys: string[], valorPrincipal: number) {
+    const main = keys[0]
+    const anterior = medidasRef.current[main] || 1
+    const razon = valorPrincipal / anterior
+    const next: Medidas = { ...medidasRef.current }
+    for (const k of keys) next[k] = Math.round((k === main ? valorPrincipal : medidasRef.current[k] * razon) * 10) / 10
+    aplicarMedidas(next)
   }
 
   function applyMeasures(next: Measures) {
@@ -4653,7 +6252,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas || !d) return
     const stroke = colorRef.current
     const sw     = brushSizeRef.current
-    const fill   = fillRef.current ?? colorRef.current
+    // Sin relleno es SIN relleno (ver el mismo criterio al dibujar a mano).
+    const fill   = fillRef.current
     const common = { strokeWidth: sw, strokeUniform: true } as const
     const w = Math.max(1, exactW), h = Math.max(1, exactH)
     let shape: fabric.FabricObject
@@ -4671,6 +6271,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.setActiveObject(shape)
     canvas.requestRenderAll()
     setExactDialog(null)
+    setTool('select')
   }
 
   // Reflejar (espejar) lo seleccionado en horizontal o vertical — útil para prendas simétricas.
@@ -4787,6 +6388,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     setCtxMenu({
       x: e.clientX, y: e.clientY, target,
+      escena: canvas.getScenePoint(e.nativeEvent),
       isGroup: !!target && target.type === 'group',
       isMulti: !!target && target.type === 'activeselection',
     })
@@ -4795,6 +6397,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // ── Acciones del panel de capas ─────────────────────────────────────────────
   function refreshLayersNow() {
+    // Mientras se arrastra la linea de division la prenda se rehace en cada
+    // cuadro; repintar el panel de capas ahi es tirar trabajo a la basura.
+    if (saltarCapas.current) return
     const canvas = fc.current
     if (canvas) setLayers([...canvas.getObjects()])
     setLayersVersion(v => v + 1)
@@ -4896,10 +6501,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <ShapeToolGroup tool={tool} setTool={setTool} />
           <ToolDivider />
           <ToolBtn icon={<IconBucket />} label="Relleno (K)"      active={tool === 'fill'}        onClick={() => setTool('fill')} />
-          <ToolBtn icon={<IconGradient />} label="Degradado (G)"  active={tool === 'gradient'}   onClick={() => setTool('gradient')} />
           <ToolBtn icon={<IconEyedropper />} label="Gotero (I)"   active={tool === 'eyedropper'} onClick={() => setTool('eyedropper')} />
           <ToolBtn icon={<IconEraser />} label="Goma (Shift+E)"   active={tool === 'eraser'} onClick={() => setTool('eraser')} />
-          <ToolBtn icon={<IconScissors />} label="Cortar (C)"     active={tool === 'cut'}    onClick={() => setTool('cut')} />
           <div style={{ marginTop: 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <ToolDivider />
             <ToolBtn icon={<IconHand />} label="Mano · pan (H · Espacio)" active={tool === 'hand'} onClick={() => setTool('hand')} />
@@ -4928,6 +6531,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           }} />
           <canvas ref={canvasEl} />
           <div ref={cursorRef} className="editor-size-cursor" />
+
+          {/* Gotero: lupa con los píxeles de alrededor y el color del centro.
+              Se ve con solo pasar el mouse, antes de tocar nada, así se puede
+              apuntar al píxel exacto en vez de clickear a ciegas. */}
+          <div style={{
+            position: 'absolute',
+            left: (eyeProbe?.x ?? 0) + 20, top: (eyeProbe?.y ?? 0) + 20,
+            zIndex: 45, pointerEvents: 'none',
+            visibility: eyeProbe ? 'visible' : 'hidden',
+            display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
+            borderRadius: 10, overflow: 'hidden',
+            background: 'rgb(0 0 0 / 0.78)', border: '1px solid rgb(255 255 255 / 0.22)',
+            boxShadow: '0 6px 18px rgb(0 0 0 / 0.45)',
+          }}>
+            <canvas ref={loupeRef} width={110} height={110}
+              style={{ display: 'block', width: 110, height: 110 }} />
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
+              borderTop: '1px solid rgb(255 255 255 / 0.18)',
+            }}>
+              <div style={{
+                width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                background: eyeProbe?.hex ?? '#000',
+                border: '1px solid rgb(255 255 255 / 0.5)',
+              }} />
+              <span className="mono" style={{ fontSize: 11, color: '#fff', letterSpacing: '.02em' }}>
+                {eyeProbe?.hex ?? ''}
+              </span>
+            </div>
+          </div>
 
           {/* Overlay al arrastrar una imagen */}
           {dragActive && (
@@ -4993,20 +6626,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <span>{Math.round(zoom * 100)}%</span>
               <span style={{ color: 'var(--muted)', marginLeft: 2 }}>· restablecer</span>
             </button>
-          )}
-          {autoSavedAt !== null && (
-            <div style={{
-              position: 'absolute', bottom: 16, left: 16,
-              display: 'flex', alignItems: 'center', gap: 7,
-              background: 'var(--bg)', border: '1px solid var(--line)',
-              borderRadius: 8, padding: '6px 12px',
-              fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)',
-              boxShadow: 'var(--shadow-lg)', pointerEvents: 'none',
-              animation: 'rise 0.2s var(--ease) both',
-            }}>
-              <span style={{ fontSize: 12, color: 'var(--accent)' }}>✓</span>
-              <span>Guardado automático</span>
-            </div>
           )}
           {(tool === 'pen' || tool === 'curve' || tool === 'text') && (
             <div style={{
@@ -5126,14 +6745,81 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </div>
               <button
                 className="btn btn-ghost"
-                onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
+                onClick={centrarPrenda}
                 style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}
+              >
+                ⊕  Centrar prenda
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => { measuresRef.current = DEFAULT_MEASURES; setMeasures(DEFAULT_MEASURES); placeTee(DEFAULT_MEASURES, true) }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}
               >
                 Restablecer medidas
               </button>
             </div>
             )
           })()}
+          {/* Medidas del pantalón y de la chomba. Mismo panel que la remera, con
+              las medidas que corresponden a cada prenda. */}
+          {prendaParam && !hasSel && (() => {
+            const cmInput = (val: number, min: number, max: number, onCh: (v: number) => void) => (
+              <div onClick={e => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+                <NumberField value={val} onChange={onCh} min={min} max={max} step={0.5} suffix="cm" width={60} />
+              </div>
+            )
+            const campo = (k: string) => prendaParam.campos.find(c => c.key === k)!
+            return (
+              <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+                <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {prendaParam.grupos.map(g => {
+                    const unica = g.keys.length === 1
+                    const open  = !!openGroups[g.id]
+                    const main  = campo(g.keys[0])
+                    return (
+                      <div key={g.id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, overflow: 'hidden' }}>
+                        <div
+                          onClick={() => { if (!unica) setOpenGroups(p => ({ ...p, [g.id]: !p[g.id] })) }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+                            cursor: unica ? 'default' : 'pointer', background: 'var(--surface)' }}
+                        >
+                          {!unica && <span style={{ fontSize: 9, width: 10, transition: 'transform 0.15s', transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>}
+                          <span style={{ flex: 1, fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--ui)' }}>{g.label}</span>
+                          {(unica || !open) && cmInput(medidas[g.keys[0]], main.min, main.max,
+                            v => unica ? aplicarMedidas({ ...medidasRef.current, [g.keys[0]]: v })
+                                       : aplicarGrupoMedidas(g.keys, v))}
+                        </div>
+                        {!unica && open && (
+                          <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {g.keys.map(k => {
+                              const f = campo(k)
+                              return (
+                                <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--ui)' }}>{f.label}</span>
+                                  {cmInput(medidas[k], f.min, f.max, v => aplicarMedidas({ ...medidasRef.current, [k]: v }))}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+                <button className="btn btn-ghost" onClick={centrarPrenda}
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                  ⊕  Centrar prenda
+                </button>
+                <button className="btn btn-ghost"
+                  onClick={() => aplicarMedidas({ ...prendaParam.defaults })}
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 11 }}>
+                  Restablecer medidas
+                </button>
+              </div>
+            )
+          })()}
+
           {/* Agrupar / Desagrupar — botones con especificación clara */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {selKind === 'multi' && (
@@ -5356,19 +7042,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
           )}
 
-          {/* Ayuda del degradado */}
-          {tool === 'gradient' && (
-            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
-              <div className="label" style={{ marginBottom: 8 }}>Degradado</div>
-              <p style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
-                Arrastrá sobre un objeto para aplicar un degradado lineal. Va del
-                <b style={{ color: 'var(--fg-2)' }}> color de relleno</b> al
-                <b style={{ color: 'var(--fg-2)' }}> color de trazado</b> (los elegís abajo).
-                La dirección del arrastre define horizontal o vertical.
-              </p>
-            </div>
-          )}
-
           {/* Símbolos (sellos) */}
           {tool === 'symbol' && (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
@@ -5412,15 +7085,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {propFill !== null ? (
                 <>
-                  <label style={{ position: 'relative', cursor: 'pointer' }}>
-                    <input type="color" value={propFill} onChange={e => applyFill(e.target.value)}
-                      style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                    <div style={{
-                      width: 32, height: 32, borderRadius: 8, background: propFill,
-                      border: '2px solid var(--line)', cursor: 'pointer',
-                    }} />
-                  </label>
+                  <ColorPicker value={propFill} onChange={applyFill} title="Color de relleno" />
                   <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propFill}</span>
+                  <PickColorBtn title="Tomar un color de la pantalla"
+                    onPick={applyFill} onFallback={() => setTool('eyedropper')} />
                   <button onClick={() => applyFill(null)} style={{
                     background: 'none', border: 'none', color: 'var(--muted)',
                     cursor: 'pointer', fontSize: 12, padding: 4,
@@ -5438,15 +7106,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
             <div className="label" style={{ marginBottom: 8 }}>Trazado</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <label style={{ position: 'relative', cursor: 'pointer' }}>
-                <input type="color" value={propStroke} onChange={e => applyStroke(e.target.value)}
-                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                <div style={{
-                  width: 32, height: 32, borderRadius: 8, background: propStroke,
-                  border: '2px solid var(--line)', cursor: 'pointer',
-                }} />
-              </label>
+              <ColorPicker value={propStroke} onChange={applyStroke} title="Color del trazado" />
               <span className="mono" style={{ fontSize: 11, flex: 1, color: 'var(--fg-2)' }}>{propStroke}</span>
+              <PickColorBtn title="Tomar un color de la pantalla"
+                onPick={applyStroke} onFallback={() => setTool('eyedropper')} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span className="label">Grosor</span>
@@ -5462,6 +7125,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   { id: 'normal',   label: 'Normal',  icon: <StrokeStyleIcon kind="normal" /> },
                   { id: 'bordado',  label: 'Bordado', icon: <StrokeStyleIcon kind="bordado" /> },
                   { id: 'cierre',   label: 'Cierre',  icon: <StrokeStyleIcon kind="cierre" /> },
+                  { id: 'costura',  label: 'Costura', icon: <StrokeStyleIcon kind="costura" /> },
                 ] as const).map(opt => (
                   <button
                     key={opt.id}
@@ -5483,10 +7147,38 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </div>
               {strokeStyle !== 'normal' && (
                 <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7, lineHeight: 1.4 }}>
-                  Dibujá con el lápiz o la pluma y el trazo se reemplaza por {strokeStyle === 'bordado' ? 'puntadas de bordado' : 'un cierre'}.
+                  Dibujá con el lápiz o la pluma y el trazo se reemplaza por {
+                    strokeStyle === 'bordado' ? 'puntadas de bordado'
+                    : strokeStyle === 'cierre' ? 'un cierre'
+                    : 'una línea de costura'}.
                 </p>
               )}
             </div>
+          </div>
+
+          {/* Pasar a bordado: un dibujo, una figura o un texto → hilo de verdad */}
+          <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+            <div className="label" style={{ marginBottom: 6 }}>Bordado</div>
+            <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
+              Convierte lo seleccionado en bordado. Toma el color del objeto como
+              color del hilo. Queda como imagen: el hilo ya no se edita como vector.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }}>
+              <span className="label">Dirección del hilo</span>
+              <NumberField value={bordadoAngulo} onChange={v => setBordadoAngulo(Math.max(0, Math.min(180, Math.round(v))))}
+                min={0} max={180} step={5} suffix="°" />
+            </div>
+            <button className="btn btn-primary btn-block"
+              disabled={!hasSel || bordando}
+              onClick={convertirEnBordado}
+              style={{ opacity: (!hasSel || bordando) ? 0.5 : 1, cursor: (!hasSel || bordando) ? 'default' : 'pointer' }}>
+              {bordando ? 'Bordando…' : 'Convertir en bordado'}
+            </button>
+            {!hasSel && (
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7 }}>
+                Seleccioná primero un dibujo, una figura o un texto.
+              </p>
+            )}
           </div>
 
           {hasSel && (
@@ -5544,105 +7236,64 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </button>
               )}
 
-              <div className="label" style={{ marginBottom: 8 }}>Texturas de tela</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {TEXTURES.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => applyTexture(t.id)}
-                    title={`Aplicar ${t.label}`}
-                    style={{
-                      display: 'flex', flexDirection: 'column', gap: 6, padding: 0,
-                      background: 'none', border: 'none', cursor: 'pointer',
-                    }}
-                  >
-                    <div style={{
-                      width: '100%', aspectRatio: '1', borderRadius: 8,
-                      backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
-                      backgroundSize: '56px 56px',
-                      border: '1px solid ' + (activeTexKind === t.id ? 'var(--accent)' : 'var(--line)'),
-                      outline: activeTexKind === t.id ? '1px solid var(--accent)' : 'none',
-                    }} />
-                    <span style={{ fontSize: 11, color: 'var(--fg-2)', fontFamily: 'var(--ui)', textAlign: 'center' }}>{t.label}</span>
-                  </button>
-                ))}
-              </div>
+              {/* ── Telas, todas juntas ───────────────────────────────────────
+                  Antes estaban repartidas en tres listas (los estampados que
+                  genera el programa, las telas que vienen con él y las que
+                  importa el diseñador). Eran tres grillas separadas para lo
+                  mismo: elegir con qué está hecha la prenda. Ahora es una sola,
+                  en el orden en que se usan. Lo que cambia de cada clase —los
+                  colores del estampado, el ancho de la muestra— aparece abajo
+                  cuando hay una elegida. */}
+              <div className="label" style={{ marginBottom: 4 }}>Telas</div>
+              <p className="sec-hint">
+                Las telas con foto se aplican a escala real; los estampados se
+                pueden recolorear.
+              </p>
+              <div key={paletteVersion} className="swatches">
+                {/* Estampados que dibuja el programa: se recolorean */}
+                {TEXTURES.map(t => {
+                  const on = activeTexKind === t.id
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => applyTexture(t.id)}
+                      title={`${t.label} · se puede cambiar de color`}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                        background: 'none', border: 'none', cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{
+                        width: '100%', aspectRatio: '1', borderRadius: 8,
+                        backgroundImage: `url(${makeTextureCanvas(t.id, texColors[t.id]).toDataURL()})`,
+                        backgroundSize: '56px 56px',
+                        border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                        outline: on ? '1px solid var(--accent)' : 'none',
+                      }} />
+                      <span style={{
+                        fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
+                        fontFamily: 'var(--ui)', textAlign: 'center',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{t.label}</span>
+                    </button>
+                  )
+                })}
 
-              {/* Editor de colores de la textura aplicada */}
-              {activeTexKind && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
-                  <div className="label" style={{ marginBottom: 10 }}>
-                    Color · {TEXTURES.find(t => t.id === activeTexKind)?.label}
-                  </div>
-
-                  {/* Color principal (los demás se ajustan solos) */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <label style={{ position: 'relative', cursor: 'pointer' }}>
-                      <input type="color" value={texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}
-                        onChange={e => setTexPrimary(activeTexKind, e.target.value)}
-                        style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                      <div style={{ width: 32, height: 32, borderRadius: 8, background: texColors[activeTexKind][TEX_PRIMARY[activeTexKind]], border: '2px solid var(--line)' }} />
-                    </label>
-                    <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}</span>
-                  </div>
-
-                  {/* Opciones avanzadas: editar cada color por separado */}
-                  {TEXTURE_COLORS[activeTexKind].length > 1 && (
-                    <>
-                      <button onClick={() => setTexAdvanced(v => !v)}
-                        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none',
-                          color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: '6px 0', fontFamily: 'var(--ui)' }}>
-                        <span style={{ display: 'inline-block', transform: texAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
-                        Opciones avanzadas
-                      </button>
-                      {texAdvanced && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
-                          {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
-                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <label style={{ position: 'relative', cursor: 'pointer' }}>
-                                <input type="color" value={texColors[activeTexKind][i]}
-                                  onChange={e => updateTexColor(activeTexKind, i, e.target.value)}
-                                  style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                                <div style={{ width: 26, height: 26, borderRadius: 6, background: texColors[activeTexKind][i], border: '2px solid var(--line)' }} />
-                              </label>
-                              <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
-                              <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  <button onClick={() => resetTexColors(activeTexKind)}
-                    className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
-                    Restablecer colores
-                  </button>
-                </div>
-              )}
-
-              {/* ── Telas RAW (vienen con el programa) ───────────────────────
-                  Fotos y vectores de telas reales. No se recolorean como los
-                  estampados de arriba: se ven como la tela que son. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
-                <div className="label" style={{ marginBottom: 4 }}>Telas RAW</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
-                  Telas reales. Se aplican a escala: ajustá el ancho de la muestra abajo.
-                </p>
-                <div key={paletteVersion} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  {userTextures.filter(t => t.builtIn).map(t => {
-                    const on = activeUserTex === t.id
-                    // Si la tela ya se usó, la miniatura sale de la imagen que
-                    // está en memoria, que es la que tiene los colores elegidos.
-                    // Si no, la versión chica: abrir esta pestaña no tiene por
-                    // qué bajar los archivos grandes.
-                    const thumb = userTexImages.current.get(t.id)?.src
-                      ?? rawTextureById(t.id)?.thumb
-                      ?? t.dataUrl
-                    return (
+                {/* Telas de verdad: las que vienen con el programa primero y las
+                    importadas después, que es el orden en que se buscan. Solo
+                    las importadas se pueden borrar. */}
+                {[...userTextures.filter(t => t.builtIn), ...userTextures.filter(t => !t.builtIn)].map(t => {
+                  const on = activeUserTex === t.id
+                  // Si la tela ya se usó, la miniatura sale de la imagen que está
+                  // en memoria, que es la que tiene los colores elegidos. Si no,
+                  // la versión chica: abrir esta pestaña no tiene por qué bajar
+                  // los archivos grandes.
+                  const thumb = userTexImages.current.get(t.id)?.src
+                    ?? (t.builtIn ? rawTextureById(t.id)?.thumb : undefined)
+                    ?? t.dataUrl
+                  return (
+                    <div key={t.id} style={{ position: 'relative' }}>
                       <button
-                        key={t.id}
                         onClick={() => applyUserTexture(t)}
                         title={`${t.name} · muestra de ${t.widthCm} cm`}
                         style={{
@@ -5662,83 +7313,89 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>{t.name}</span>
                       </button>
-                    )
-                  })}
-                </div>
+                      {!t.builtIn && (
+                        <span
+                          role="button"
+                          title="Eliminar de mi biblioteca"
+                          onClick={e => { e.stopPropagation(); handleTextureDelete(t.id) }}
+                          style={{
+                            position: 'absolute', top: 4, right: 4, width: 18, height: 18,
+                            borderRadius: '50%', cursor: 'pointer', fontSize: 10,
+                            background: 'rgb(0 0 0 / 0.55)', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}
+                        >✕</span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
-              {/* ── Mis texturas (subidas por el usuario) ────────────────────
-                  El diseñador importa la foto/escaneo de una tela real. Lo
-                  importante no es el formato sino la ESCALA: declara cuánto
-                  mide la muestra y se dibuja a esos cm sobre la prenda. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
-                <div className="label" style={{ marginBottom: 4 }}>Mis texturas</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
-                  Importá una foto o escaneo de tela. PNG, JPG, WebP o SVG.
-                </p>
-
-                <button
-                  onClick={() => texFileRef.current?.click()}
-                  disabled={texImporting}
-                  className="btn btn-ghost"
-                  style={{ width: '100%', justifyContent: 'center', fontSize: 11.5, marginBottom: 10 }}
-                >
-                  {texImporting ? 'Importando…' : '+  Importar tela'}
-                </button>
-
-                {texError && (
-                  <div style={{
-                    fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginBottom: 10,
-                    padding: '7px 9px', borderRadius: 6,
-                    background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
-                    border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
-                  }}>{texError}</div>
-                )}
-
-                {userTextures.some(t => !t.builtIn) && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    {userTextures.filter(t => !t.builtIn).map(t => {
-                      const on = activeUserTex === t.id
-                      return (
-                        <div key={t.id} style={{ position: 'relative' }}>
-                          <button
-                            onClick={() => applyUserTexture(t)}
-                            title={`${t.name} · muestra de ${t.widthCm} cm`}
-                            style={{
-                              display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
-                              background: 'none', border: 'none', cursor: 'pointer', width: '100%',
-                            }}
-                          >
-                            <div style={{
-                              width: '100%', aspectRatio: '1', borderRadius: 8,
-                              backgroundImage: `url(${t.dataUrl})`, backgroundSize: 'cover',
-                              border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
-                              outline: on ? '1px solid var(--accent)' : 'none',
-                            }} />
-                            <span style={{
-                              fontSize: 10, color: on ? 'var(--accent)' : 'var(--fg-2)',
-                              fontFamily: 'var(--ui)', textAlign: 'center',
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>{t.name}</span>
-                          </button>
-                          <span
-                            role="button"
-                            title="Eliminar de mi biblioteca"
-                            onClick={e => { e.stopPropagation(); handleTextureDelete(t.id) }}
-                            style={{
-                              position: 'absolute', top: 4, right: 4, width: 18, height: 18,
-                              borderRadius: '50%', cursor: 'pointer', fontSize: 10,
-                              background: 'rgb(0 0 0 / 0.55)', color: '#fff',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}
-                          >✕</span>
-                        </div>
-                      )
-                    })}
+              <button
+                onClick={() => texFileRef.current?.click()}
+                disabled={texImporting}
+                className="btn btn-ghost"
+                style={{ width: '100%', justifyContent: 'center', fontSize: 11.5, margin: '10px 0 2px' }}
+              >
+                {texImporting ? 'Importando…' : '+  Importar mi tela'}
+              </button>
+              {texError && (
+                <div style={{
+                  fontSize: 10.5, color: 'var(--danger)', lineHeight: 1.4, marginTop: 8,
+                  padding: '7px 9px', borderRadius: 6,
+                  background: 'color-mix(in oklch, var(--danger) 10%, transparent)',
+                  border: '1px solid color-mix(in oklch, var(--danger) 28%, transparent)',
+                }}>{texError}</div>
+              )}
+              {/* Editor de colores de la textura aplicada */}
+              {activeTexKind && (
+                <div className="sec">
+                  <div className="label" style={{ marginBottom: 10 }}>
+                    Color · {TEXTURES.find(t => t.id === activeTexKind)?.label}
                   </div>
-                )}
 
-              </div>
+                  {/* Color principal (los demás se ajustan solos) */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <ColorPicker
+                      value={texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}
+                      onChange={c => setTexPrimary(activeTexKind, c)}
+                      title="Color principal de la tela" />
+                    <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][TEX_PRIMARY[activeTexKind]]}</span>
+                  </div>
+
+                  {/* Opciones avanzadas: editar cada color por separado */}
+                  {TEXTURE_COLORS[activeTexKind].length > 1 && (
+                    <>
+                      <button onClick={() => setTexAdvanced(v => !v)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none',
+                          color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: '6px 0', fontFamily: 'var(--ui)' }}>
+                        <span style={{ display: 'inline-block', transform: texAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
+                        Opciones avanzadas
+                      </button>
+                      {texAdvanced && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
+                          {TEXTURE_COLORS[activeTexKind].map((slot, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <ColorPicker
+                                value={texColors[activeTexKind][i]}
+                                onChange={c => updateTexColor(activeTexKind, i, c)}
+                                size={26} title={slot.label} />
+                              <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>{slot.label}</span>
+                              <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{texColors[activeTexKind][i]}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  <button onClick={() => resetTexColors(activeTexKind)}
+                    className="btn btn-ghost btn-block" style={{ marginTop: 8 }}>
+                    Restablecer colores
+                  </button>
+                </div>
+              )}
 
               {/* ── Color de una tela de fábrica ─────────────────────────────
                   Un SVG trae los colores adentro, así que se editan uno por
@@ -5752,19 +7409,17 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 const porColor = def.kind === 'svg' && src.colors.length > 1
 
                 return (
-                  <div key={paletteVersion} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                  <div key={paletteVersion} className="sec">
                     <div className="label" style={{ marginBottom: 10 }}>Color · {def.name}</div>
 
                     {/* Color principal: el que más tela ocupa. Al cambiarlo, el
                         resto de los hilos lo acompañan, así el tartán sigue
                         siendo el mismo tartán en otro color. */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <label style={{ position: 'relative', cursor: 'pointer' }}>
-                        <input type="color" value={cur[0]}
-                          onChange={e => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, e.target.value))}
-                          style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                        <div style={{ width: 32, height: 32, borderRadius: 8, background: cur[0], border: '2px solid var(--line)' }} />
-                      </label>
+                      <ColorPicker
+                        value={cur[0]}
+                        onChange={c => setRawPalette(activeUserTex, shiftPalette(src.colors, 0, c))}
+                        title="Color principal de la tela" />
                       <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>Color principal</span>
                       <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{cur[0]}</span>
                     </div>
@@ -5781,16 +7436,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4, marginTop: 2 }}>
                             {src.colors.map((_, i) => (
                               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <label style={{ position: 'relative', cursor: 'pointer' }}>
-                                  <input type="color" value={cur[i]}
-                                    onChange={e => {
-                                      const next = [...cur]
-                                      next[i] = e.target.value
-                                      setRawPalette(activeUserTex, next)
-                                    }}
-                                    style={{ opacity: 0, position: 'absolute', inset: 0, cursor: 'pointer' }} />
-                                  <div style={{ width: 26, height: 26, borderRadius: 6, background: cur[i], border: '2px solid var(--line)' }} />
-                                </label>
+                                <ColorPicker
+                                  value={cur[i]}
+                                  onChange={c => {
+                                    const next = [...cur]
+                                    next[i] = c
+                                    setRawPalette(activeUserTex, next)
+                                  }}
+                                  size={26} />
                                 <span style={{ fontSize: 12, color: 'var(--fg-2)', flex: 1 }}>
                                   {i === 0 ? 'Color principal' : `Color ${i + 1}`}
                                 </span>
@@ -5803,7 +7456,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     )}
 
                     {def.kind === 'photo' && (
-                      <p style={{ fontSize: 10, color: 'var(--muted)', margin: '2px 0 0', lineHeight: 1.4 }}>
+                      <p className="sec-hint">
                         Es una foto, así que se tiñe entera desde un solo color. Los negros
                         y los blancos no se mueven.
                       </p>
@@ -5811,7 +7464,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
                     {tocada && (
                       <button onClick={() => setRawPalette(activeUserTex, null)}
-                        className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', marginTop: 10, fontSize: 11 }}>
+                        className="btn btn-ghost btn-block" style={{ marginTop: 8 }}>
                         Volver al color original
                       </button>
                     )}
@@ -5826,7 +7479,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 const t = userTextures.find(x => x.id === activeUserTex)
                 if (!t) return null
                 return (
-                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft)' }}>
+                  <div className="sec">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <span className="label">Ancho real · {t.name}</span>
                       <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>{t.widthCm} cm</span>
@@ -5837,7 +7490,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                       onChange={e => setUserTexScale(t.id, Number(e.target.value))}
                       style={{ marginTop: 4, ['--fill' as string]: `${((t.widthCm - 2) / 78) * 100}%` }}
                     />
-                    <p style={{ fontSize: 10, color: 'var(--muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
+                    <p className="sec-hint">
                       Cuánto mide en la realidad el ancho de la muestra. Ajustalo para que
                       el estampado quede del tamaño correcto sobre la prenda.
                     </p>
@@ -5848,9 +7501,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {/* ── Efectos de tela ──────────────────────────────────────────
                   Van ENCIMA del color o del estampado, no lo reemplazan:
                   denim + desgaste = jean gastado. */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+              <div className="sec">
                 <div className="label" style={{ marginBottom: 4 }}>Efectos de tela</div>
-                <p style={{ fontSize: 10.5, color: 'var(--muted)', margin: '0 0 10px', lineHeight: 1.45 }}>
+                <p className="sec-hint">
                   Se suman al color o estampado que ya tenga la prenda.
                 </p>
 
@@ -6014,6 +7667,41 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </>
               )}
 
+              {/* Dividir con este trazo: solo aparece si el trazo cruza alguna
+                  pieza de lado a lado, o sea si de verdad la parte en dos. */}
+              {(() => {
+                // El trazo puede ser el objeto seleccionado o simplemente el que
+                // pasa por donde se hizo clic derecho.
+                const trazo = (t && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup))
+                  ? t : trazoEn(ctxMenu.escena)
+                if (!trazo) return null
+                const corte = trazoDivide(trazo)
+                if (!corte) return null
+                // Si el trazo cruza varias piezas hay que preguntar el alcance:
+                // no es lo mismo partir toda la remera que solo el cuerpo.
+                const varias = piezasQueDivide(corte).length > 1
+                const pieza = varias ? piezaEn(ctxMenu.escena) : null
+                const keyPieza = pieza ? (pieza as any)._pieceKey as string | undefined : undefined
+                return (
+                  <>
+                    <CtxDivider />
+                    <CtxItem label={varias ? 'Dividir toda la prenda acá' : 'Dividir la prenda acá'}
+                      hint="para pintar cada lado"
+                      onClick={() => { dividirPrendaCon(trazo); closeCtx() }} />
+                    {varias && keyPieza && (
+                      <CtxItem label={`Dividir solo ${(pieza as any)._pieceName ?? 'esta pieza'}`}
+                        hint="el resto queda entero"
+                        onClick={() => { dividirPrendaCon(trazo, keyPieza); closeCtx() }} />
+                    )}
+                  </>
+                )
+              })()}
+              {hayCortes && (
+                <>
+                  <CtxDivider />
+                  <CtxItem label="Quitar las divisiones" onClick={() => { quitarCortes(); closeCtx() }} />
+                </>
+              )}
               {t && !ctxMenu.isMulti && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup) && (
                 <>
                   <CtxDivider />
@@ -6053,27 +7741,28 @@ function CtxDivider() {
 // ── Layers panel ─────────────────────────────────────────────────────────────
 
 // ── Texturas de tela ─────────────────────────────────────────────────────────
-type TextureKind = 'rayas' | 'cuadrille' | 'lunares' | 'denim' | 'camuflado' | 'animal'
+// Quedaron las dos que valen como tela: rayas y denim. Cuadrillé, lunares,
+// camuflado y animal print eran dibujitos planos que no leían como género y
+// ensuciaban el panel. Las telas de verdad van por "Telas RAW" (fotos).
+type TextureKind = 'rayas' | 'denim'
 
 const TEXTURES: { id: TextureKind; label: string }[] = [
-  { id: 'rayas',     label: 'Rayas' },
-  { id: 'cuadrille', label: 'Cuadrillé' },
-  { id: 'lunares',   label: 'Lunares' },
-  { id: 'denim',     label: 'Denim' },
-  { id: 'camuflado', label: 'Camuflado' },
-  { id: 'animal',    label: 'Animal print' },
+  { id: 'rayas', label: 'Rayas' },
+  { id: 'denim', label: 'Denim' },
 ]
 
 // Slots de color editables por textura (color principal = primero, secundario = segundo, etc.)
 const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
-  rayas:     [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
-  cuadrille: [{ label: 'Fondo', def: '#ffffff' }, { label: 'Cuadros', def: '#c41e3a' }],
-  lunares:   [{ label: 'Fondo', def: '#e8c5d0' }, { label: 'Lunares', def: '#7a2a45' }],
-  denim:     [{ label: 'Base', def: '#3b5b8c' }],
-  camuflado: [{ label: 'Color 1', def: '#4b5320' }, { label: 'Color 2', def: '#6b6b3a' }, { label: 'Color 3', def: '#3a3f24' }, { label: 'Color 4', def: '#8a8559' }],
-  animal:    [{ label: 'Fondo', def: '#d9a441' }, { label: 'Manchas', def: '#3a2410' }],
+  rayas: [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
+  denim: [{ label: 'Base', def: '#3b5b8c' }],
 }
 const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
+
+// Un diseño guardado puede traer una textura que ya no existe (cuadrillé,
+// lunares, camuflado, animal). Se ignora y la pieza queda con su color liso,
+// en vez de abrir el proyecto roto o pintado de cualquier cosa.
+const esTexturaValida = (k: unknown): k is TextureKind =>
+  k === 'rayas' || k === 'denim'
 
 // ── Efectos de tela (grunge / vintage / desgaste) ────────────────────────────
 // A diferencia de los estampados, un efecto NO reemplaza el relleno: se dibuja
@@ -6115,39 +7804,84 @@ function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: numb
   x.save()
 
   if (kind === 'desgaste') {
-    // Abrasión real: la fibra se afina (zonas MÁS claras) pero además quedan
-    // sombras y suciedad en el roce (zonas MÁS oscuras). Se usan las dos capas
-    // para que el efecto se lea tanto en telas oscuras como en telas claras
-    // (si fuera solo aclarado, sobre una prenda blanca no se vería nada).
-    x.globalCompositeOperation = 'multiply'
-    for (let i = 0; i < Math.round(70 * amount); i++) {
-      const px = rnd(i + 500) * s, py = rnd(i + 531) * s
-      const len = 8 + rnd(i + 505) * 30, ang = -1.0 + rnd(i + 509) * 2.0
-      x.strokeStyle = `rgba(120,115,110,${0.05 + rnd(i + 502) * 0.14 * amount})`
-      x.lineWidth = 0.5 + rnd(i + 503) * 1.4
-      x.beginPath(); x.moveTo(px, py)
-      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
+    // Una tela NO se gasta en rayas cruzadas al azar. Eso era lo que estaba
+    // antes —trazos claros y oscuros en diagonales random, más ruido de un
+    // píxel— y leía como plástico arrugado, tipo bolsa ziploc, no como género.
+    //
+    // El desgaste de verdad tiene dos cosas, y las dos siguen al TEJIDO:
+    //   1. el color se va de a manchones suaves, sin bordes;
+    //   2. donde el hilo se pela aparece el alma clara, en trazos cortos
+    //      alineados a la trama y la urdimbre (horizontales y verticales).
+
+    // 1) Pérdida de color: manchones suaves. Se hace pixel a pixel con ondas de
+    //    período entero sobre el tile, así el degradé CIERRA al repetirse y no
+    //    aparece la cuadrícula de la unión.
+    // Cuánto está rozada la tela en cada punto, de 0 (intacta) a 1 (pelada).
+    // Es UNA sola función para las dos capas: así los hilos pelados caen donde
+    // la tela ya perdió color, que es lo que pasa de verdad. Repartidos parejo
+    // por toda la prenda se leían como ruido tirado encima.
+    //
+    // Las ondas tienen período entero sobre el tile, así el degradé CIERRA al
+    // repetirse y no aparece la cuadrícula de la unión.
+    const TAU = Math.PI * 2
+    const roce = (u: number, v: number) => Math.max(0, (
+      Math.sin(TAU * (u + 0.13)) * Math.cos(TAU * (v + 0.41)) +
+      0.6 * Math.sin(TAU * (2 * u - v + 0.27)) +
+      0.4 * Math.cos(TAU * (3 * u + 2 * v + 0.66))
+    ) / 2)
+
+    // 1) Pérdida de color: manchones suaves, sin bordes.
+    // Leer los píxeles puede fallar si la tela vino de una imagen de otro
+    // dominio (el navegador lo prohíbe). En ese caso se saltea el manchado y
+    // quedan los hilos pelados, en vez de romperse y dejar la prenda sin pintar.
+    const lado = Math.max(1, Math.round(s))
+    let img: ImageData | null = null
+    try { img = x.getImageData(0, 0, lado, lado) } catch { img = null }
+    if (img) {
+      const d = img.data
+      for (let py = 0; py < lado; py++) {
+        const v = py / lado
+        for (let px = 0; px < lado; px++) {
+          const gasto = roce(px / lado, v) * amount * 0.55
+          if (gasto <= 0.001) continue
+          const i = (py * lado + px) * 4
+          // Perder tinte lleva al gris del hilo crudo, no al blanco puro: por
+          // eso se ve igual sobre una prenda negra que sobre una clara.
+          d[i]     += (214 - d[i])     * gasto
+          d[i + 1] += (210 - d[i + 1]) * gasto
+          d[i + 2] += (203 - d[i + 2]) * gasto
+        }
+      }
+      x.putImageData(img, 0, 0)
     }
-    x.globalCompositeOperation = 'screen'
-    for (let i = 0; i < Math.round(110 * amount); i++) {
-      const px = rnd(i) * s, py = rnd(i + 31) * s
-      const len = 6 + rnd(i + 5) * 26, ang = -1.0 + rnd(i + 9) * 2.0
-      x.strokeStyle = `rgba(255,255,255,${0.07 + rnd(i + 2) * 0.22 * amount})`
-      x.lineWidth = 0.5 + rnd(i + 3) * 1.3
-      x.beginPath(); x.moveTo(px, py)
-      x.lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len); x.stroke()
-    }
-    // Nota: el desgaste se dibuja SOLO con detalle fino (rayas + grano).
-    // Las manchas grandes se leían como wallpaper al repetirse el tile; el
-    // desgaste localizado (rodilla, codo) es otra cosa y va por zonas, no acá.
+
+    // 2) Hilos pelados, siguiendo la trama. Cada trazo se dibuja también
+    //    corrido un tile hacia atrás, para que el que se pasa del borde entre
+    //    por el otro lado y la repetición no se note.
     x.globalCompositeOperation = 'source-over'
-    for (let i = 0; i < Math.round(2600 * amount); i++) {
-      const px = rnd(i + 900) * s, py = rnd(i + 950) * s
-      const light = rnd(i + 17) > 0.45
-      x.fillStyle = light
-        ? `rgba(255,255,255,${0.06 + rnd(i + 21) * 0.16 * amount})`
-        : `rgba(110,105,100,${0.04 + rnd(i + 23) * 0.11 * amount})`
-      x.fillRect(px, py, 1, 1)
+    x.lineCap = 'round'
+    for (let i = 0; i < Math.round(420 * amount); i++) {
+      const px = rnd(i + 11) * s, py = rnd(i + 29) * s
+      // Solo donde ya hay roce, y con más densidad cuanto más gastado está.
+      const z = roce(px / s, py / s)
+      if (z < 0.15 || rnd(i + 97) > z) continue
+      // Se pela sobre todo la trama (horizontal). Antes salía mitad y mitad y
+      // los cruces formaban crucecitas que no existen en una tela gastada.
+      const horizontal = rnd(i + 71) > 0.22
+      const len = 3 + rnd(i + 5) * 13
+      const claro = rnd(i + 43) > 0.25
+      x.strokeStyle = claro
+        ? `rgba(228,224,216,${(0.10 + rnd(i + 2) * 0.24) * amount * z})`
+        : `rgba(118,111,102,${(0.04 + rnd(i + 3) * 0.10) * amount * z})`
+      x.lineWidth = 0.6 + rnd(i + 13) * 0.7
+      const dx = horizontal ? len : 0
+      const dy = horizontal ? 0   : len
+      for (const [ox, oy] of [[0, 0], [-s, 0], [0, -s]]) {
+        x.beginPath()
+        x.moveTo(px + ox, py + oy)
+        x.lineTo(px + ox + dx, py + oy + dy)
+        x.stroke()
+      }
     }
 
   } else if (kind === 'grunge') {
@@ -6187,11 +7921,206 @@ function paintEffect(x: CanvasRenderingContext2D, kind: EffectKind, amount: numb
 
   x.restore()
 }
-// Convierte #rrggbb + alpha → rgba() (para el efecto translúcido del cuadrillé)
-function hexA(hex: string, a: number): string {
-  const h = hex.replace('#', '')
-  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
-  return `rgba(${r},${g},${b},${a})`
+
+// ── Bordado ──────────────────────────────────────────────────────────────────
+// Convierte la silueta de un vector o un texto en bordado de verdad: hilo sobre
+// hilo, no un filtro encima del dibujo.
+//
+// Lo que hace que se lea como bordado y no como "relleno con rayitas":
+//   · las puntadas son CORTAS y van todas en la misma dirección (como sale de
+//     una máquina), no un degradé ni un ruido;
+//   · cada puntada tiene brillo arriba y sombra abajo, porque el hilo es un
+//     cilindro y la luz le pega de un lado;
+//   · las uniones entre puntadas van trabadas fila a fila (si quedaran
+//     alineadas se verían canaletas, que es el error clásico);
+//   · el conjunto está levantado de la tela: sombra abajo y borde propio.
+//
+// La separación está elegida para que se VEA. A escala real una puntada mide
+// menos de medio milímetro: en pantalla no existiría.
+
+/** Resolución interna del bordado (el doble, para que el hilo no salga dentado). */
+const BORDADO_MULT = 2
+const BORDADO_MARGEN = 10    // lugar para la sombra y el relieve
+// La separación y el largo de puntada NO son fijos: se calculan según el tamaño
+// del objeto, adentro de renderBordado. Ver ahí el porqué.
+
+/**
+ * `silueta` es el objeto ya dibujado (con su color) sobre un canvas.
+ * Devuelve un canvas más grande (por el margen) con el bordado.
+ */
+/**
+ * Cualquier color de CSS → `#rrggbb`.
+ *
+ * Los objetos del lienzo no guardan el color en un formato solo: un texto llega
+ * como `rgb(0,0,0)` y una figura como `#ff0000`. Las cuentas de color trabajan
+ * con hex, y al pasarles `rgb(...)` devolvían NaN: el bordado salía invisible.
+ */
+function aHex(color: string): string {
+  const c = document.createElement('canvas'); c.width = c.height = 1
+  const x = c.getContext('2d')
+  if (!x) return '#000000'
+  x.fillStyle = '#000000'
+  try { x.fillStyle = color } catch { /* color inválido: queda el negro */ }
+  const v = String(x.fillStyle)
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v
+  const n = v.match(/[\d.]+/g)
+  if (n && n.length >= 3) {
+    return '#' + n.slice(0, 3)
+      .map(t => Math.max(0, Math.min(255, Math.round(Number(t)))).toString(16).padStart(2, '0'))
+      .join('')
+  }
+  return '#000000'
+}
+
+function renderBordado(silueta: HTMLCanvasElement, hiloCrudo: string, anguloGrados: number): HTMLCanvasElement {
+  const hilo = aHex(hiloCrudo)
+  const w = silueta.width, h = silueta.height
+  const M = BORDADO_MARGEN
+  const out = document.createElement('canvas')
+  out.width = w + M * 2; out.height = h + M * 2
+  const o = out.getContext('2d')!
+
+  // Máscara: qué píxeles son parte del dibujo.
+  const sctx = silueta.getContext('2d')!
+  let datos: Uint8ClampedArray
+  try { datos = sctx.getImageData(0, 0, w, h).data } catch { return out }
+  const dentro = (px: number, py: number) => {
+    const ix = Math.round(px), iy = Math.round(py)
+    if (ix < 0 || iy < 0 || ix >= w || iy >= h) return false
+    return datos[(iy * w + ix) * 4 + 3] > 70
+  }
+
+  // El brillo y la sombra del hilo se calculan CONTRA el color, no con una
+  // cantidad fija: con hilo negro, restarle luz no hace nada y el bordado
+  // quedaba un manchón plano. Con hilo blanco pasa lo mismo al revés.
+  const [hh, ss, ll] = hexToHsl(hilo)
+  const claro  = hslToHex(hh, ss * 0.85, clamp01(ll + (ll > 0.55 ? 0.13 : 0.28)))
+  const oscuro = hslToHex(hh, Math.min(1, ss * 1.15), clamp01(ll - (ll < 0.30 ? 0.09 : 0.22)))
+  const fondo  = hslToHex(hh, ss, clamp01(ll - (ll < 0.25 ? 0.03 : 0.12)))
+
+  // Tamaño de puntada. Se adapta al objeto: en algo chico una puntada fija
+  // quedaba por debajo del píxel y no se veía nada; en algo grande quedaba
+  // ridículamente fina. El techo y el piso evitan los dos extremos.
+  const escala = ((silueta as any)._mult as number) || 1
+  const PASO  = Math.max(3 * escala, Math.min(9 * escala, Math.min(w, h) / 16))
+  const LARGO = PASO * 3.5
+  const rnd = (n: number) => { const v = Math.sin(n * 91.7 + 13.3) * 43758.5453; return v - Math.floor(v) }
+
+  // 1) Sombra: el bordado tiene espesor y se despega de la tela.
+  o.save()
+  o.globalAlpha = 0.34
+  o.filter = 'blur(3px)'
+  o.drawImage(silueta, M + 1.5, M + 3)
+  o.restore()
+
+  // 2) Base: sin esto se vería la tela entre hilo e hilo y el bordado quedaría
+  //    transparente. Va más oscura que el hilo para que las puntadas resalten.
+  const capa = document.createElement('canvas')
+  capa.width = out.width; capa.height = out.height
+  const c = capa.getContext('2d')!
+  c.drawImage(silueta, M, M)
+  c.globalCompositeOperation = 'source-in'
+  c.fillStyle = fondo
+  c.fillRect(0, 0, capa.width, capa.height)
+  c.globalCompositeOperation = 'source-over'
+
+  // 3) Las puntadas. Se recorre la silueta en un sistema girado: `u` avanza a lo
+  //    largo del hilo y `v` salta de una pasada a la siguiente.
+  const th = anguloGrados * Math.PI / 180
+  const cos = Math.cos(th), sin = Math.sin(th)
+  const aXY = (u: number, v: number): [number, number] => [u * cos - v * sin, u * sin + v * cos]
+  // Caja que cubre todo el dibujo ya girado.
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity
+  for (const [ex, ey] of [[0, 0], [w, 0], [0, h], [w, h]]) {
+    const u =  ex * cos + ey * sin
+    const v = -ex * sin + ey * cos
+    if (u < uMin) uMin = u; if (u > uMax) uMax = u
+    if (v < vMin) vMin = v; if (v > vMax) vMax = v
+  }
+
+  c.lineCap = 'butt'
+  let fila = 0
+  for (let v = vMin; v <= vMax; v += PASO, fila++) {
+    // Las uniones se traban: media puntada de corrimiento en las filas impares.
+    const salto = (fila % 2) * (LARGO / 2)
+    let u = uMin
+    while (u <= uMax) {
+      // Buscar dónde empieza el hilo (primer píxel del dibujo).
+      let [px, py] = aXY(u, v)
+      if (!dentro(px, py)) { u += 1; continue }
+      // Y hasta dónde llega, sin pasarse del largo máximo.
+      const tope = u + LARGO - (u === uMin ? salto : 0)
+      let fin = u
+      while (fin + 1 <= uMax && fin + 1 <= tope) {
+        const [qx, qy] = aXY(fin + 1, v)
+        if (!dentro(qx, qy)) break
+        fin += 1
+      }
+      if (fin - u < 1.5) { u = fin + 1; continue }
+
+      const [x0, y0] = aXY(u, v)
+      const [x1, y1] = aXY(fin, v)
+      const n = rnd(fila * 131 + u)
+      // Perpendicular al hilo: por ahí se corren el brillo y la sombra.
+      const nx = -sin, ny = cos
+
+      c.lineWidth = PASO * 0.92
+      c.strokeStyle = hslToHex(hh, ss, clamp01(ll + (n - 0.5) * 0.07))
+      c.beginPath(); c.moveTo(M + x0, M + y0); c.lineTo(M + x1, M + y1); c.stroke()
+
+      // El hilo es redondo: brillo de un lado, sombra del otro.
+      c.lineWidth = PASO * 0.30
+      c.strokeStyle = claro
+      c.globalAlpha = 0.55
+      c.beginPath()
+      c.moveTo(M + x0 - nx * PASO * 0.26, M + y0 - ny * PASO * 0.26)
+      c.lineTo(M + x1 - nx * PASO * 0.26, M + y1 - ny * PASO * 0.26)
+      c.stroke()
+      c.strokeStyle = oscuro
+      c.globalAlpha = 0.5
+      c.beginPath()
+      c.moveTo(M + x0 + nx * PASO * 0.34, M + y0 + ny * PASO * 0.34)
+      c.lineTo(M + x1 + nx * PASO * 0.34, M + y1 + ny * PASO * 0.34)
+      c.stroke()
+      c.globalAlpha = 1
+
+      u = fin + 1
+    }
+  }
+
+  // 4) Recortar a la silueta: las puntadas se pasaron del borde a propósito,
+  //    porque un hilo cortado al ras da el canto parejo del bordado real.
+  c.globalCompositeOperation = 'destination-in'
+  c.drawImage(silueta, M, M)
+  c.globalCompositeOperation = 'source-over'
+
+  // 5) Canto: un borde apenas más oscuro, para que el bordado tenga filo propio
+  //    y no parezca recortado con tijera. Es la silueta MENOS la misma silueta
+  //    encogida un píxel, o sea el anillo del borde.
+  const encogida = document.createElement('canvas')
+  encogida.width = out.width; encogida.height = out.height
+  const e = encogida.getContext('2d')!
+  e.drawImage(silueta, M, M)
+  e.globalCompositeOperation = 'destination-in'
+  for (const [dx, dy] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) e.drawImage(silueta, M + dx, M + dy)
+
+  const canto = document.createElement('canvas')
+  canto.width = out.width; canto.height = out.height
+  const k = canto.getContext('2d')!
+  k.drawImage(silueta, M, M)
+  k.globalCompositeOperation = 'destination-out'
+  k.drawImage(encogida, 0, 0)          // silueta − encogida = anillo del borde
+  k.globalCompositeOperation = 'source-in'
+  k.fillStyle = oscuro
+  k.fillRect(0, 0, canto.width, canto.height)
+
+  c.save()
+  c.globalAlpha = 0.55
+  c.drawImage(canto, 0, 0)
+  c.restore()
+
+  o.drawImage(capa, 0, 0)
+  return out
 }
 
 // ── Color principal: ajusta el resto de la paleta automáticamente (manipulación HSL) ──
@@ -6231,16 +8160,12 @@ const withL = (hex: string, l: number, sMul = 1) => { const [h, s] = hexToHsl(he
 const adjL   = (hex: string, d: number)          => { const [h, s, l] = hexToHsl(hex); return hslToHex(h, s, clamp01(l + d)) }
 
 // Índice del slot que actúa como "color principal" en cada textura
-const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, cuadrille: 1, lunares: 1, denim: 0, camuflado: 0, animal: 0 }
+const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, denim: 0 }
 // Dada la elección de color principal, deriva toda la paleta de la textura
 function deriveTexPalette(kind: TextureKind, p: string): string[] {
   switch (kind) {
-    case 'rayas':     return [withL(p, 0.92, 0.5), p]
-    case 'cuadrille': return [withL(p, 0.97, 0.35), p]
-    case 'lunares':   return [withL(p, 0.85, 0.6), p]
-    case 'denim':     return [p]
-    case 'camuflado': return [p, adjL(p, 0.10), adjL(p, -0.13), adjL(p, -0.26)]
-    case 'animal':    return [p, adjL(p, -0.45)]
+    case 'rayas': return [withL(p, 0.92, 0.5), p]
+    case 'denim': return [p]
   }
 }
 
@@ -6256,18 +8181,7 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
     x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     x.fillStyle = col[1]
     for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
-  } else if (kind === 'cuadrille') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = hexA(col[1], 0.55)
-    x.fillRect(0, 0, s / 2, s); x.fillRect(0, 0, s, s / 2)
-    x.fillStyle = hexA(col[1], 0.55)
-    x.fillRect(0, 0, s / 2, s / 2); x.fillRect(s / 2, s / 2, s / 2, s / 2)
-  } else if (kind === 'lunares') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = col[1]
-    const dot = (cx: number, cy: number) => { x.beginPath(); x.arc(cx, cy, 5, 0, Math.PI * 2); x.fill() }
-    dot(s * 0.25, s * 0.25); dot(s * 0.75, s * 0.75); dot(s * 0.75, s * 0.25); dot(s * 0.25, s * 0.75); dot(s * 0.5, s * 0.5)
-  } else if (kind === 'denim') {
+  } else {   // denim
     x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
     for (let i = 0; i < 1400; i++) {
       const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
@@ -6276,24 +8190,6 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
     }
     x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
     for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
-  } else if (kind === 'camuflado') {
-    const cols = [col[0], col[1], col[2], col[3]]
-    x.fillStyle = cols[0]; x.fillRect(0, 0, s, s)
-    for (let i = 0; i < 22; i++) {
-      x.fillStyle = cols[Math.floor(rnd(i) * cols.length)]
-      const cx = rnd(i + 1) * s, cy = rnd(i + 2) * s, r = 6 + rnd(i + 3) * 10
-      x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill()
-    }
-  } else { // animal (leopardo)
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    const spot = (cx: number, cy: number) => {
-      x.strokeStyle = col[1]; x.lineWidth = 2.5
-      for (let a = 0; a < 3; a++) {
-        x.beginPath()
-        x.arc(cx + (a - 1) * 5, cy + (a - 1) * 3, 4 + a, a, a + 2.4); x.stroke()
-      }
-    }
-    spot(s * 0.25, s * 0.3); spot(s * 0.7, s * 0.6); spot(s * 0.5, s * 0.85); spot(s * 0.85, s * 0.2)
   }
   return c
 }
@@ -6343,7 +8239,10 @@ const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
-const TEE_BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
+// La silueta entera, de una sola pieza. Ya no se dibuja: quedan las tres de
+// abajo, que juntas dan exactamente esto. Se conserva como referencia.
+// @ts-expect-error se deja a proposito aunque no se use
+const _TEE_SILUETA_ORIGINAL = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z"
 
 // El hueco del cuello: lo que se ve del OTRO lado de la remera al mirarla de frente.
 // No es una pieza más, es un agujero, y por eso nunca lleva el estampado: la tela
@@ -6359,11 +8258,35 @@ const TEE_INNER = "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25C22
 // Color del interior cuando el cuerpo tiene estampado (ahí no hay color liso del
 // que derivarlo). Gris apagado: tiene que leerse como sombra, no como una pieza.
 const TEE_INNER_FALLBACK = '#8f8f8f'
+// La remera partida en CUERPO y dos MANGAS, para poder pintar cada parte por
+// separado con el balde y darle su propia tela.
+//
+// El corte va por la costura de la sisa, que NO es una linea recta inventada:
+// son las mismas curvas que ya se dibujaban como detalle (las dos que estaban
+// en TEE_DETAILS y ahora se sacaron de ahi). Asi la costura de la pieza cae
+// exactamente sobre la que el dibujo ya tenia.
+//
+// Los vertices compartidos entre piezas no abren hueco al cambiar las medidas
+// porque la deformacion depende solo de la posicion del punto: un mismo punto
+// se mueve igual, sea de la manga o del cuerpo.
+const TEE_CUERPO =
+  "M292.24,4.64 L392.43,31.46 " +
+  "C392.43,31.46 367.17,77.13 400.96,173.24 " +      // sisa derecha, bajando
+  "L408.98,357.27 L80.85,356.20 L92.49,173.16 " +
+  "C126.28,77.06 101.36,26.21 101.36,26.21 " +       // sisa izquierda, subiendo
+  "L205.89,1.08 s22.26,16.91 86.35,3.56 Z"
+
+const TEE_MANGA_DER =
+  "M392.43,31.46 L493.43,58.94 L470.28,177.99 L400.96,173.24 " +
+  "C367.17,77.13 392.43,31.46 392.43,31.46 Z"
+
+const TEE_MANGA_IZQ =
+  "M101.36,26.21 L1.14,50.05 L22.58,178.06 L92.49,173.16 " +
+  "C126.28,77.06 101.36,26.21 101.36,26.21 Z"
+
 const TEE_DETAILS = [
   "M208.82,15.39s38.5,12.6,80.07,2.15",
   "M194.91,3.44s8.06,61.75,52.53,61.75,49.54-52.07,52.99-58.06",
-  "M101.36,26.21s24.92,50.85-8.87,146.95",
-  "M392.43,31.46s-25.26,45.67,8.53,141.78",
   "M462.27,174.84L485.7,56.86",
   "M207.82,10.09s39.45,12.6,82.06,2.15",
   "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25",
@@ -6372,57 +8295,55 @@ const TEE_DETAILS = [
 ]
 
 // Transforma un path SVG aplicando W a cada coordenada (convierte todo a absoluto).
-function transformPath(d: string, W: (x: number, y: number) => [number, number]): string {
-  const toks = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:e-?\d+)?/g)
-  if (!toks) return d
-  let i = 0, cur: [number, number] = [0, 0], start: [number, number] = [0, 0], cmd = '', pc: [number, number] | null = null
-  const out: string[] = []
-  const num = () => parseFloat(toks[i++])
-  const isCmd = (t: string) => /[a-zA-Z]/.test(t)
-  const e = (p: [number, number]) => { const q = W(p[0], p[1]); return `${q[0].toFixed(2)} ${q[1].toFixed(2)}` }
-  while (i < toks.length) {
-    if (isCmd(toks[i])) cmd = toks[i++]
-    const rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase()
-    if (C === 'M') {
-      let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; start = [x, y]; out.push('M ' + e(cur)); pc = null
-      while (i < toks.length && !isCmd(toks[i])) { let x2 = num(), y2 = num(); if (rel) { x2 += cur[0]; y2 += cur[1] } cur = [x2, y2]; out.push('L ' + e(cur)) }
-    } else if (C === 'L') { let x = num(), y = num(); if (rel) { x += cur[0]; y += cur[1] } cur = [x, y]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'H') { let x = num(); if (rel) x += cur[0]; cur = [x, cur[1]]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'V') { let y = num(); if (rel) y += cur[1]; cur = [cur[0], y]; out.push('L ' + e(cur)); pc = null }
-    else if (C === 'C') { while (i < toks.length && !isCmd(toks[i])) { let c1: [number, number] = [num(), num()], c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c1 = [c1[0] + cur[0], c1[1] + cur[1]]; c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
-    else if (C === 'S') { while (i < toks.length && !isCmd(toks[i])) { let c2: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } const c1: [number, number] = pc ? [2 * cur[0] - pc[0], 2 * cur[1] - pc[1]] : [cur[0], cur[1]]; out.push('C ' + e(c1) + ' ' + e(c2) + ' ' + e(en)); pc = c2; cur = en } }
-    else if (C === 'Q') { while (i < toks.length && !isCmd(toks[i])) { let c: [number, number] = [num(), num()], en: [number, number] = [num(), num()]; if (rel) { c = [c[0] + cur[0], c[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]] } out.push('Q ' + e(c) + ' ' + e(en)); pc = c; cur = en } }
-    else if (C === 'Z') { out.push('Z'); cur = [start[0], start[1]]; pc = null }
-    else { i++ }
-  }
-  return out.join(' ')
-}
-
 // W: mueve cada punto del SVG según las medidas (con medidas por defecto = identidad).
 function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
-  const cx = 247.3, armY = 173, hemY = 357, slvTop = 50, URx = 400.95, ULx = 92.49
+  const cx = 247.3, armY = 173, hemY = 357, URx = 400.95, ULx = 92.49
   // fLen modela el LARGO TOTAL real (HPS al ruedo): 33.8cm fijos del torso superior + la parte
   // inferior (36.2cm por defecto) que es la que se estira. fLen = 1 con largoTotal = 70.
   const fLen = (m.largoTotal - 33.8) / 36.2, fP = m.anchoPecho / 60, fC = m.anchoCintura / 63, fN = m.anchoCuello / 18
   const fML = m.largoManga / 18, fMA = m.anchoManga / 25, dProf = (m.profundidadCuello - 8) * 5.0
   return (x, y) => {
     const rSlv = x > 395 && y < 200, lSlv = x < 100 && y < 200
-    // Manga: largo = extender en X desde la axila; ancho = ensanchar hacia ABAJO (anclado arriba).
-    // Al alargarse, la manga ROTA alrededor de la punta del hombro: el HOMBRO se mantiene igual y
-    // la manga cae en angulo (el puño no se acampana). El angulo crece con cuanto se estiro
-    // (fML-1), con tope para que no se pliegue sobre si misma.
+    // ── Manga ────────────────────────────────────────────────────────────────
+    //
+    // Cada punto se ubica por `t`: 0 = pegado al cuerpo (en la sisa), 1 = en la
+    // boca de la manga. Todo lo que hace la manga —estirarse, ensancharse,
+    // caer— se multiplica por `t`, así que EN LA SISA NO PASA NADA y el borde
+    // va exactamente a donde fue a parar el cuerpo.
+    //
+    // Sin eso, agrandar mucho la manga arrastraba también la curva de la sisa
+    // (la clasificación es por posición, y la sisa del CUERPO cae adentro de
+    // esta rama): se estiraba, rotaba, y terminaba metida para adentro de la
+    // remera.
+    //
+    // El ancho crece hacia ABAJO dejando quieto el borde de arriba, y cuanto
+    // más larga es la manga más apunta para abajo (rota alrededor de la punta
+    // del hombro, con tope para que no se pliegue sobre sí misma).
     if (rSlv || lSlv) {
-      const URo = rSlv ? URx : ULx, sign = rSlv ? 1 : -1
-      const nUR = cx + (URo - cx) * fP
-      let ox = nUR + (x - URo) * fML
-      let oy = slvTop + (y - slvTop) * fMA
-      const srcPx = rSlv ? 493.43 : (2 * cx - 493.43)        // punta del hombro (espejada para la izq)
-      const pX = nUR + (srcPx - URo) * fML, pY = slvTop + (58.94 - slvTop) * fMA
-      const th = Math.min(0.46, Math.max(0, fML - 1) * 0.22) * sign
-      const dx = ox - pX, dy = oy - pY
-      ox = pX + dx * Math.cos(th) - dy * Math.sin(th)
-      oy = pY + dx * Math.sin(th) + dy * Math.cos(th)
-      return [ox, oy]
+      const sign = rSlv ? 1 : -1
+      const hx  = rSlv ? 392.43 : 101.36, hy  = rSlv ? 31.46  : 26.21   // punta del hombro
+      const ax  = rSlv ? URx    : ULx,    ay   = rSlv ? 173.24 : 173.16 // axila
+      const bx1 = rSlv ? 493.43 : 1.14,   by1  = rSlv ? 58.94  : 50.05  // boca, arriba
+      const bx2 = rSlv ? 470.28 : 22.58,  by2  = rSlv ? 177.99 : 178.06 // boca, abajo
+      const cl = (v: number) => Math.max(0, Math.min(1, v))
+      const xSisa = hx  + (ax  - hx)  * cl((y - hy)  / (ay  - hy))
+      const xBoca = bx1 + (bx2 - bx1) * cl((y - by1) / (by2 - by1))
+      const t = (x - xSisa) / (xBoca - xSisa)
+      // t <= 0 es la sisa, o algo de adentro del cuerpo: cae en la regla del
+      // cuerpo, que es la de más abajo.
+      if (t > 0) {
+        const pX = cx + (hx - cx) * fP, pY = hy
+        // El borde de ARRIBA de la manga a esa distancia. El ancho crece desde
+        // ahí hacia abajo, así que ese borde no se mueve nunca.
+        const yArriba = hy + t * (by1 - hy)
+        let ox = cx + (xSisa - cx) * fP + t * (xBoca - xSisa) * fML
+        let oy = y + t * (fMA - 1) * (y - yArriba)
+        const th = Math.min(0.46, Math.max(0, fML - 1) * 0.22) * sign * Math.min(1, t)
+        const dx = ox - pX, dy = oy - pY
+        ox = pX + dx * Math.cos(th) - dy * Math.sin(th)
+        oy = pY + dx * Math.sin(th) + dy * Math.cos(th)
+        return [ox, oy]
+      }
     }
     if (y < 70 && Math.abs(x - cx) < 70) { const w = Math.max(0, Math.min(1, (y - 1) / 64)); return [cx + (x - cx) * fN, y + dProf * w] }
     const wf = y <= armY ? fP : y >= hemY ? fC : fP + (fC - fP) * ((y - armY) / (hemY - armY))
@@ -6444,13 +8365,47 @@ function teeWarp(m: Measures): (x: number, y: number) => [number, number] {
 // tela/color de cada pieza. Se sigue leyendo el formato viejo (un array) para
 // no romper los proyectos que ya existen.
 interface SavedPiece {
+  /** Nombre estable de la pieza. Los proyectos viejos no lo tienen. */
+  key?: string
   fill?: string
   tex?:  { kind: TextureKind; colors: string[] }
   eff?:  { kind: EffectKind; intensity: number }
   base?: string
   uTex?: { id: string; widthCm: number }
 }
-interface SavedGarment { measures?: Measures; pieces?: SavedPiece[] }
+// `measures` son las de la remera y `medidas` las del pantalón o la chomba.
+// Van en campos distintos a propósito: cada prenda tiene medidas propias y
+// mezclarlas haría que abrir un pantalón le pisara el talle a la remera.
+// `cortes` acepta el formato viejo (solo los puntos) y el nuevo, que ademas
+// guarda a que pieza se le aplico el corte.
+type SavedCorte = number[][] | { pts: number[][]; piezas?: string[] }
+interface SavedGarment {
+  measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[]; cortes?: SavedCorte[]
+  /** 2 = las medidas ya estan en la escala real del dibujo. Sin esto, son viejas. */
+  medidasV?: number
+}
+
+/**
+ * Pasa las medidas guardadas a la escala nueva.
+ *
+ * Los centimetros por defecto de la chomba y el pantalon no coincidian con lo
+ * que el dibujo media de verdad (decia 56 de pecho donde habia 50,4). Al
+ * corregirlos, un proyecto guardado con los viejos se veria distinto de como
+ * quedo: se convierte proporcionalmente para que la prenda salga IGUAL, solo
+ * que ahora el numero dice la verdad.
+ */
+function convertirMedidas(g: SavedGarment | null | undefined, prenda: PrendaParam): Medidas {
+  const guardadas = g?.medidas
+  if (!guardadas) return {}
+  if ((g?.medidasV ?? 1) >= 2 || !prenda.defaultsV1) return guardadas
+  const viejos = prenda.defaultsV1
+  const out: Medidas = {}
+  for (const [k, v] of Object.entries(guardadas)) {
+    const antes = viejos[k], ahora = prenda.defaults[k]
+    out[k] = (antes && ahora) ? v * (ahora / antes) : v
+  }
+  return out
+}
 interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
 
 function parseDesign(json: string): SavedDesign {
@@ -6463,18 +8418,158 @@ function parseDesign(json: string): SavedDesign {
   }
 }
 
-function buildTeeShapes(m: Measures): { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] {
-  const W = teeWarp(m)
-  const shapes: { d: string; role: 'piece' | 'inner' | 'detail'; fill: string | null; stroke: string; strokeWidth: number }[] = [
-    { d: transformPath(TEE_BODY, W), role: 'piece', fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 },
-    // Va después del cuerpo y antes de los detalles: tapa el estampado y las
-    // líneas del escote le quedan dibujadas encima.
-    { d: transformPath(TEE_INNER, W), role: 'inner', fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
-  ]
-  for (const d of TEE_DETAILS) shapes.push({ d: transformPath(d, W), role: 'detail', fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
-  return shapes
+interface FormaPrenda {
+  d: string
+  role: 'piece' | 'inner' | 'detail'
+  /** Nombre estable de la pieza: con esto se restaura la pintura al reabrir. */
+  key: string
+  nombre?: string
+  /** De que pieza saca la pintura si es nueva (proyectos guardados antes). */
+  padre?: string
+  fill: string | null
+  stroke: string
+  strokeWidth: number
 }
 
+/**
+ * Aplica los cortes guardados a las piezas de una prenda.
+ *
+ * Cada corte parte en dos toda pieza que cruce de lado a lado. Las que no cruza
+ * quedan enteras. Se hace acá, al construir, para que sobreviva a cambiar las
+ * medidas: el corte es parte de la RECETA de la prenda, no un objeto suelto.
+ */
+/**
+ * Aplana un trazado a puntos, pase lo que pase por dentro.
+ *
+ * Los moldes de la chomba y el pantalon salen de un SVG y traen comandos que el
+ * aplanador no entiende (arcos, atajos, relativos). Fabric los normaliza a
+ * M/L/C/Q/Z al construir el trazado, asi que se le pasa por ahi primero: sin
+ * esto el corte funcionaba en la remera y no hacia nada en las otras prendas.
+ */
+function aplanarTrazado(d: string, paso = 2.5): Punto[] {
+  if (!d) return []
+  const cmds = (new fabric.Path(d) as any).path as any[] | undefined
+  if (!cmds?.length) return aplanarPath(d, paso)
+  let simple = ''
+  for (const c of cmds) simple += c[0] + ' ' + c.slice(1).join(' ') + ' '
+  return aplanarPath(simple, paso)
+}
+
+/**
+ * Si un corte le toca a esa pieza.
+ *
+ * Un corte con alcance apunta a la pieza tal como se llamaba cuando se hizo;
+ * los pedazos que salgan de ella heredan el nombre con `#1`, `#2`, asi que un
+ * corte posterior sobre uno de esos pedazos lo sigue encontrando.
+ */
+function alcanzaA(corte: { piezas?: string[] }, key: string): boolean {
+  if (!corte.piezas?.length) return true          // proyectos viejos: toda la prenda
+  return corte.piezas.some(p => key === p || key.startsWith(p + '#'))
+}
+
+function aplicarCortes(formas: FormaPrenda[], cortes: { pts: Punto[]; piezas?: string[] }[]): FormaPrenda[] {
+  if (!cortes.length) return formas
+  let actuales = formas
+  for (const corte of cortes) {
+    const siguientes: FormaPrenda[] = []
+    for (const f of actuales) {
+      if (f.role !== 'piece' || !alcanzaA(corte, f.key)) { siguientes.push(f); continue }
+      const partes = partirPoligono(aplanarTrazado(f.d), corte.pts)
+      if (!partes) { siguientes.push(f); continue }
+      // El que tiene el centro más arriba es el de arriba. Nombrarlas así hace
+      // que la lista de capas se entienda sin tener que clickear cada una.
+      const centro = (q: Punto[]) => q.reduce((a, b) => a + b[1], 0) / q.length
+      const ordenadas = partes[0] && centro(partes[0]) <= centro(partes[1]) ? partes : [partes[1], partes[0]]
+      ordenadas.forEach((q, i) => siguientes.push({
+        ...f,
+        d: poligonoAPath(q),
+        key: `${f.key}#${i + 1}`,
+        nombre: `${f.nombre ?? f.key} · ${i === 0 ? 'arriba' : 'abajo'}`,
+      }))
+    }
+    actuales = siguientes
+  }
+  return actuales
+}
+
+/**
+ * Parte una pieza en dos con una costura del dibujo.
+ *
+ * La costura viene dibujada justo del largo de la pieza, asi que no llega a
+ * cruzarla: se la estira por las dos puntas antes de cortar.
+ */
+function partirPorCostura(
+  d: string, costura: string, a: Omit<FormaPrenda, 'd'>, b: Omit<FormaPrenda, 'd'>,
+  cuantoBanda: (p: Punto[]) => number,
+): FormaPrenda[] {
+  const pts = aplanarTrazado(costura)
+  if (pts.length < 2) return [{ ...a, d }]
+  const larga = (p: Punto, q: Punto): Punto => {
+    const dx = q[0] - p[0], dy = q[1] - p[1], n = Math.hypot(dx, dy)
+    return n < 1e-6 ? q : [q[0] + (dx / n) * 500, q[1] + (dy / n) * 500]
+  }
+  const corte = [larga(pts[1], pts[0]), ...pts, larga(pts[pts.length - 2], pts[pts.length - 1])]
+  const partes = partirPoligono(aplanarTrazado(d), corte)
+  if (!partes) return [{ ...a, d }]
+  // La que da el valor mas alto es la banda: la de abajo, o la de mas afuera.
+  const banda = cuantoBanda(partes[0]) > cuantoBanda(partes[1]) ? 0 : 1
+  return [
+    { ...a, d: poligonoAPath(partes[1 - banda]) },
+    { ...b, d: poligonoAPath(partes[banda]) },
+  ]
+}
+
+const TEE_PIEZA = { role: 'piece' as const, fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 }
+const centroY = (p: Punto[]) => p.reduce((a, q) => a + q[1], 0) / p.length
+const centroX = (p: Punto[]) => p.reduce((a, q) => a + q[0], 0) / p.length
+
+function buildTeeShapes(m: Measures): FormaPrenda[] {
+  const W = teeWarp(m)
+  const det = TEE_DETAILS.map(d => transformPath(d, W))
+
+  // El cuerpo y las mangas se parten por su costura, así el RUEDO y los PUÑOS
+  // son piezas de verdad y se pueden pintar aparte (una remera con vivos de
+  // otro color es de lo mas comun). Antes eran solo una raya dibujada encima:
+  // no habia nada que pintar.
+  const shapes: FormaPrenda[] = [
+    ...partirPorCostura(transformPath(TEE_CUERPO, W), det[6],
+      { ...TEE_PIEZA, key: 'cuerpo', nombre: 'Cuerpo' },
+      { ...TEE_PIEZA, key: 'ruedo', nombre: 'Ruedo', padre: 'cuerpo' },
+      centroY),
+    ...partirPorCostura(transformPath(TEE_MANGA_IZQ, W), det[5],
+      { ...TEE_PIEZA, key: 'manga-izq', nombre: 'Manga izquierda' },
+      { ...TEE_PIEZA, key: 'puno-izq', nombre: 'Puño izquierdo', padre: 'manga-izq' },
+      p => -centroX(p)),
+    ...partirPorCostura(transformPath(TEE_MANGA_DER, W), det[2],
+      { ...TEE_PIEZA, key: 'manga-der', nombre: 'Manga derecha' },
+      { ...TEE_PIEZA, key: 'puno-der', nombre: 'Puño derecho', padre: 'manga-der' },
+      centroX),
+    // Va despues del cuerpo y antes de los detalles: tapa el estampado y las
+    // lineas del escote le quedan dibujadas encima.
+    { d: transformPath(TEE_INNER, W), role: 'inner', key: 'escote', nombre: 'Interior del cuello',
+      fill: TEE_INNER_FALLBACK, stroke: 'transparent', strokeWidth: 0 },
+  ]
+
+  // El cuello tejido: la banda entre su borde de afuera y el hueco del escote.
+  // Se arma con los dos bordes ya deformados, uno de ida y el otro de vuelta.
+  const afuera = aplanarTrazado(det[1], 1)
+  const adentro = aplanarTrazado(det[4], 1)
+  if (afuera.length > 2 && adentro.length > 2) {
+    shapes.push({
+      ...TEE_PIEZA, d: poligonoAPath([...afuera, ...adentro.slice().reverse()]),
+      key: 'cuello-rib', nombre: 'Cuello', padre: 'cuerpo',
+    })
+  }
+
+  // Las costuras que ahora son el borde de una pieza no se vuelven a dibujar:
+  // quedarian pintadas dos veces y se ven mas gruesas.
+  const yaDibujadas = new Set([1, 2, 4, 5, 6])
+  det.forEach((d, i) => {
+    if (yaDibujadas.has(i)) return
+    shapes.push({ d, role: 'detail', key: 'detalle-' + i, fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
+  })
+  return shapes
+}
 // Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
 // parecidos al color de fondo (muestreado en las esquinas). Solo borra regiones de fondo
 // conectadas al borde, así no se come colores iguales que estén dentro del sujeto.
@@ -6813,27 +8908,6 @@ const IconEyedropper = () => (
   </svg>
 )
 
-const IconGradient = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16">
-    <defs>
-      <linearGradient id="gradTool" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="currentColor" stopOpacity="1" />
-        <stop offset="1" stopColor="currentColor" stopOpacity="0.15" />
-      </linearGradient>
-    </defs>
-    <rect x="2" y="2" width="12" height="12" rx="2" fill="url(#gradTool)" stroke="currentColor" strokeWidth="1" />
-  </svg>
-)
-
-const IconScissors = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <circle cx="4" cy="11.5" r="2.2" />
-    <circle cx="4" cy="4.5" r="2.2" />
-    <line x1="6" y1="5.7" x2="14" y2="11" strokeLinecap="round" />
-    <line x1="6" y1="10.3" x2="14" y2="5" strokeLinecap="round" />
-  </svg>
-)
-
 const IconRRect = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
     <rect x="2.5" y="3.5" width="11" height="9" rx="3" />
@@ -6878,12 +8952,20 @@ function StrokeStyleIcon({ kind }: { kind: StrokeStyle }) {
       <line x1="15" y1="8.5" x2="17" y2="4" />
     </svg>
   )
-  // cierre
+  if (kind === 'costura') return (
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <line x1="2" y1="7" x2="5" y2="7" /><line x1="7.5" y1="7" x2="10.5" y2="7" />
+      <line x1="13" y1="7" x2="16" y2="7" /><line x1="18" y1="7" x2="18.5" y2="7" />
+    </svg>
+  )
+  // cierre: dos cintas y la cadena de dientes en el medio
   return (
-    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round">
-      <line x1="9" y1="2" x2="9" y2="12" /><line x1="11" y1="2" x2="11" y2="12" />
-      <line x1="9" y1="3.5" x2="6.5" y2="3.5" /><line x1="11" y1="5.5" x2="13.5" y2="5.5" />
-      <line x1="9" y1="7.5" x2="6.5" y2="7.5" /><line x1="11" y1="9.5" x2="13.5" y2="9.5" />
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round">
+      <line x1="6.5" y1="1.5" x2="6.5" y2="12.5" /><line x1="13.5" y1="1.5" x2="13.5" y2="12.5" />
+      <g stroke="currentColor" strokeWidth="2.1">
+        <line x1="8" y1="3" x2="12" y2="3" /><line x1="8" y1="5.4" x2="12" y2="5.4" />
+        <line x1="8" y1="7.8" x2="12" y2="7.8" /><line x1="8" y1="10.2" x2="12" y2="10.2" />
+      </g>
     </svg>
   )
 }

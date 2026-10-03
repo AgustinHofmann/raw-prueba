@@ -35,12 +35,23 @@ export async function fetchProjectTechpack(id: string): Promise<string | null> {
   return ((data as Record<string, unknown>)?.techpack_json as string | null) ?? null
 }
 
-export async function upsertProject(p: Project, userId?: string): Promise<void> {
-  const { error } = await supabase.from('projects').upsert({
+/**
+ * Sube un proyecto y devuelve la fecha que le puso EL SERVIDOR.
+ *
+ * Esa fecha es la única referencia común entre dos dispositivos: la base tiene
+ * un disparador que reescribe `updated_at` con su propio reloj (migración 0005),
+ * así que la fecha del navegador no sirve para comparar. Guardándola se puede
+ * saber después si la copia de la nube cambió desde la última vez que este
+ * dispositivo la vio, que es lo que hace falta para no pisar el trabajo de otro.
+ */
+export async function upsertProject(p: Project, userId?: string): Promise<number | null> {
+  const { data, error } = await supabase.from('projects').upsert({
     ...projectToRow(p),
     ...(userId ? { user_id: userId } : {}),
-  })
+  }).select('updated_at')
   if (error) throw error
+  const fila = data?.[0] as { updated_at?: number } | undefined
+  return fila?.updated_at ?? null
 }
 
 // Guarda solo el techpack_json, sin tocar el resto del proyecto.
@@ -52,9 +63,20 @@ export async function saveTechpackJson(id: string, json: string): Promise<void> 
   if (error) throw error
 }
 
+// Borrar de verdad, no "pedir por favor".
+//
+// `delete()` a secas devuelve OK aunque no haya borrado NADA: si la regla de
+// seguridad de la fila no coincide (por ejemplo la fila quedó sin dueño), la
+// base descarta el borrado sin avisar. El proyecto seguía arriba y al recargar
+// la sincronización lo volvía a bajar: lo borrabas y reaparecía.
+//
+// Con `.select()` la base devuelve las filas que realmente borró. Si no volvió
+// ninguna, esto FALLA a propósito, para que el borrado quede anotado como
+// pendiente y se reintente en vez de darse por hecho.
 export async function deleteProject(id: string): Promise<void> {
-  const { error } = await supabase.from('projects').delete().eq('id', id)
+  const { data, error } = await supabase.from('projects').delete().eq('id', id).select('id')
   if (error) throw error
+  if (!data || data.length === 0) throw new Error(`La base no borró el proyecto ${id}`)
 }
 
 // ─── Folders ─────────────────────────────────────────────────────────────────
@@ -76,39 +98,11 @@ export async function upsertFolder(f: Folder, userId?: string): Promise<void> {
   if (error) throw error
 }
 
+// Mismo criterio que deleteProject: si no volvió ninguna fila, no se borró.
 export async function deleteFolder(id: string): Promise<void> {
-  const { error } = await supabase.from('folders').delete().eq('id', id)
+  const { data, error } = await supabase.from('folders').delete().eq('id', id).select('id')
   if (error) throw error
-}
-
-// ─── Profile (nickname) ──────────────────────────────────────────────────────
-
-// Mismas reglas que el CHECK de la base (migrations/0003_profiles_and_rls.sql).
-// Validar en el cliente da un error amable al instante; la base es la autoridad.
-export const NICKNAME_RE = /^[A-Za-z0-9_]{3,24}$/
-
-export async function fetchMyNickname(userId: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('nickname')
-    .eq('id', userId)
-    .maybeSingle()
-  if (error) throw error
-  return (data as { nickname: string } | null)?.nickname ?? null
-}
-
-export async function saveNickname(userId: string, nickname: string): Promise<void> {
-  if (!NICKNAME_RE.test(nickname)) {
-    throw new Error('El nickname debe tener 3–24 caracteres: letras, números o _')
-  }
-  const { error } = await supabase.from('profiles').upsert({ id: userId, nickname })
-  if (error) {
-    // 23505 = unique_violation (índice único sobre lower(nickname))
-    if ((error as { code?: string }).code === '23505') {
-      throw new Error('Ese nickname ya está en uso')
-    }
-    throw error
-  }
+  if (!data || data.length === 0) throw new Error(`La base no borró la carpeta ${id}`)
 }
 
 // ─── Mappers (camelCase ↔ snake_case) ────────────────────────────────────────

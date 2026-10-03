@@ -1,11 +1,11 @@
-import { useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useEffect } from 'react'
+import { supabase, authAlcanzable } from '../lib/supabase'
 import Logo from '../components/Logo'
 import Magnetic from '../components/Magnetic'
 
 type Mode = 'login' | 'signup'
 
-export default function AuthScreen() {
+export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }) {
   const [mode, setMode]         = useState<Mode>('login')
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
@@ -13,28 +13,52 @@ export default function AuthScreen() {
   const [ghLoading, setGhLoading] = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [sent, setSent]         = useState(false)
+  const [servidorCaido, setServidorCaido] = useState(false)
+
+  // Se comprueba al entrar si el servidor de cuentas contesta. Sin esto el
+  // diseñador escribe mail y contraseña, espera, y recién ahí se entera de que
+  // el problema no era su contraseña.
+  useEffect(() => {
+    let cancelado = false
+    authAlcanzable().then(ok => { if (!cancelado) setServidorCaido(!ok) })
+    return () => { cancelado = true }
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
-    if (mode === 'login') {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) setError(translateError(error.message))
-    } else {
-      const { error } = await supabase.auth.signUp({ email, password })
-      if (error) setError(translateError(error.message))
-      else setSent(true)
+    // El try/catch importa: cuando el servidor no existe, el cliente no devuelve
+    // un error, LANZA uno, y sin atajarlo la pantalla queda cargando para siempre.
+    try {
+      if (mode === 'login') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password })
+        if (error) setError(translateError(error.message))
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password })
+        if (error) setError(translateError(error.message))
+        else setSent(true)
+      }
+    } catch (err) {
+      setError(translateError(err instanceof Error ? err.message : String(err)))
+      setServidorCaido(true)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   async function handleGoogle() {
     setGhLoading(true)
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin },
-    })
+    try {
+      await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin },
+      })
+    } catch (err) {
+      setError(translateError(err instanceof Error ? err.message : String(err)))
+      setServidorCaido(true)
+      setGhLoading(false)
+    }
   }
 
   function switchMode() {
@@ -60,9 +84,17 @@ export default function AuthScreen() {
 
       <div style={{ position: 'relative', width: '100%', maxWidth: 400, padding: '0 20px' }}>
 
-        {/* Logo */}
+        {/* Logo + slogan de la marca. Va acá y en el onboarding porque cuál de
+            las dos es "la primera pantalla" depende de si hay sesión: sin
+            cuenta se entra por el login, con cuenta por el onboarding. */}
         <div className="rise" style={{ textAlign: 'center', marginBottom: 28 }}>
           <Logo size={30} />
+          <div style={{
+            marginTop: 10, fontFamily: 'var(--ui)', fontSize: 10,
+            letterSpacing: '0.24em', textTransform: 'uppercase', color: 'var(--muted)',
+          }}>
+            For designers, by designers
+          </div>
         </div>
 
         {/* Título */}
@@ -79,6 +111,33 @@ export default function AuthScreen() {
 
         {/* Card */}
         <div className="panel rise-3" style={{ padding: '28px 28px 24px' }}>
+
+          {/* El servidor de cuentas no contesta. Se avisa ARRIBA del formulario
+              y antes de que escriba nada: si no, prueba su contraseña tres veces
+              contra un servidor que no está y termina creyendo que perdió la
+              cuenta. */}
+          {servidorCaido && !sent && (
+            <div style={{
+              marginBottom: 18, padding: '11px 13px', borderRadius: 'var(--radius-sm)',
+              background: 'color-mix(in oklch, var(--accent) 9%, transparent)',
+              border: '1px solid color-mix(in oklch, var(--accent) 30%, transparent)',
+            }}>
+              <div style={{ fontSize: 12.5, color: 'var(--fg-2)', lineHeight: 1.55 }}>
+                <strong style={{ color: 'var(--fg)' }}>El servidor de cuentas no responde.</strong><br />
+                No es tu contraseña. Podés entrar sin cuenta y seguir diseñando: se
+                guarda todo en esta computadora.
+              </div>
+              {onSinCuenta && (
+                <button
+                  onClick={onSinCuenta}
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 11, fontSize: 12.5, padding: '9px 16px' }}
+                >
+                  Entrar sin cuenta →
+                </button>
+              )}
+            </div>
+          )}
 
           {sent ? (
             <div style={{ textAlign: 'center', padding: '12px 0 8px' }}>
@@ -196,6 +255,27 @@ export default function AuthScreen() {
             </button>
           </p>
         )}
+
+        {/* Entrar sin cuenta.
+            Tener cuenta sirve para guardar en la nube y abrir los proyectos
+            desde otra computadora, pero no debería ser el peaje para poder
+            diseñar. Sin cuenta el programa funciona igual y todo se guarda en
+            esta máquina. */}
+        {onSinCuenta && !sent && (
+          <div className="rise-4" style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--line-soft)', textAlign: 'center' }}>
+            <button
+              onClick={onSinCuenta}
+              className="btn btn-ghost"
+              style={{ width: '100%', justifyContent: 'center', fontSize: 13 }}
+            >
+              Entrar sin cuenta
+            </button>
+            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              Tus proyectos se guardan en esta computadora. Podés crear una cuenta
+              más adelante y se suben solos.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -203,6 +283,13 @@ export default function AuthScreen() {
 
 // Traduce mensajes de error de Supabase al español
 function translateError(msg: string): string {
+  // "Failed to fetch" es el error crudo del navegador cuando la petición no
+  // llega a ningún lado. No es la contraseña ni la cuenta: es que el servidor
+  // no está. Mostrarlo tal cual manda al diseñador a probar su contraseña una y
+  // otra vez contra una nube que no existe.
+  if (/failed to fetch|networkerror|load failed|fetch failed/i.test(msg)) {
+    return 'No se puede conectar con el servidor. Podés entrar sin cuenta y seguir trabajando: se guarda todo en esta computadora.'
+  }
   if (msg.includes('Invalid login credentials'))  return 'Email o contraseña incorrectos.'
   if (msg.includes('Email not confirmed'))         return 'Confirmá tu email antes de ingresar.'
   if (msg.includes('User already registered'))    return 'Ya existe una cuenta con ese email.'

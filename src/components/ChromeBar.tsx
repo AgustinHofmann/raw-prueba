@@ -9,6 +9,9 @@ interface Props {
   openTabs: Tab[]
   activeProject: Project | null
   saved: boolean
+  online: boolean
+  syncing: boolean
+  sinCuenta: boolean
   email: string
   avatarUrl?: string
   onHome: () => void
@@ -25,7 +28,7 @@ interface Props {
 }
 
 export default function ChromeBar({
-  route, openTabs, activeProject, saved, email, avatarUrl,
+  route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
   onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
 }: Props) {
@@ -95,15 +98,20 @@ export default function ChromeBar({
           width 199 = ancho del rail izquierdo del Home (aside 200 con borde a 199→200),
           así el divisor de la derecha queda alineado con esa línea. */}
       <div style={{
+        // Sin paddingLeft: el logo se centra contra el borde real de la barra,
+        // que es la línea que sigue el rail izquierdo del Home.
         width: 199, flexShrink: 0, display: 'flex', alignItems: 'center',
-        paddingLeft: 14, gap: 0, overflow: 'hidden',
+        gap: 0, overflow: 'hidden',
       }}>
+        {/* El logo se lleva todo el espacio que queda hasta el botón de Inicio y
+            se centra ahí adentro: sin el texto al lado, pegado a la izquierda
+            quedaba descolgado. */}
         <button
           onClick={onHome}
           title="Volver al inicio"
           style={{
-            background: 'none', border: 'none', padding: 0,
-            cursor: 'pointer', display: 'flex', alignItems: 'center',
+            flex: 1, minWidth: 0, background: 'none', border: 'none', padding: 0,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'var(--fg)', transition: 'opacity 0.15s var(--ease)',
           }}
           onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
@@ -111,16 +119,6 @@ export default function ChromeBar({
         >
           <Logo size={24} />
         </button>
-
-        <span style={{
-          flex: 1, marginLeft: 10, paddingLeft: 10, minWidth: 0,
-          fontSize: 9, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
-          letterSpacing: '0.02em', lineHeight: 1.3,
-          borderLeft: '1px solid var(--line-soft)',
-          overflow: 'hidden',
-        }}>
-          diseño de<br />indumentaria
-        </span>
 
         {/* Home button */}
         <button
@@ -201,6 +199,8 @@ export default function ChromeBar({
 
       {/* Right: controles editor + avatar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 14, flexShrink: 0 }}>
+
+        <ConnStatus online={online} syncing={syncing} sinCuenta={sinCuenta} />
 
         {isEditor && (
           <>
@@ -336,5 +336,45 @@ function MenuItem({ icon, label, hint, onClick }: {
       <span style={{ flex: 1 }}>{label}</span>
       {hint && <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{hint}</span>}
     </button>
+  )
+}
+
+/**
+ * Dónde están guardados los proyectos ahora mismo.
+ *
+ * El diseñador tiene derecho a saberlo sin tener que preguntar: trabajar una
+ * hora creyendo que todo va a la nube y descubrir después que estaba sin
+ * conexión es la peor forma de enterarse.
+ *
+ * No es una alarma: sin conexión el trabajo está guardado igual, solo que en
+ * esta máquina. Por eso el cartel informa y no asusta.
+ */
+function ConnStatus({ online, syncing, sinCuenta }: { online: boolean; syncing: boolean; sinCuenta: boolean }) {
+  const estado = syncing ? 'sync' : (!online || sinCuenta) ? 'local' : 'nube'
+  if (estado === 'nube') return null   // todo normal: no hace falta decir nada
+
+  const texto = estado === 'sync'
+    ? 'Sincronizando…'
+    : sinCuenta ? 'Sin cuenta' : 'Sin conexión'
+  const detalle = estado === 'sync'
+    ? 'Subiendo los cambios a tu cuenta'
+    : 'Se guarda en esta computadora' + (sinCuenta ? '' : '. Se sube al volver la conexión')
+
+  return (
+    <span
+      title={detalle}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
+        fontSize: 11, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+        border: '1px solid var(--line-soft)', background: 'var(--surface)',
+      }}
+    >
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+        background: estado === 'sync' ? 'var(--accent)' : 'var(--muted)',
+      }} />
+      {texto}
+    </span>
   )
 }

@@ -1,0 +1,726 @@
+<title>RAW Design — Una prenda no es un dibujo</title>
+
+<style>
+  /* ── Tipografías de la marca, servidas al lado de la página ──────────────── */
+  @font-face {
+    font-family: 'Instrument Serif';
+    font-style: italic; font-weight: 400; font-display: swap;
+    src: url('fonts/is-italic.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'Instrument Serif';
+    font-style: normal; font-weight: 400; font-display: swap;
+    src: url('fonts/is-regular.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal; font-weight: 400; font-display: swap;
+    src: url('fonts/jb-regular.woff2') format('woff2');
+  }
+
+  /* ── Sistema ──────────────────────────────────────────────────────────────
+     Los tokens son los de la app (src/index.css). Los grises llevan una gota
+     de azul y los textos una de cálido: es lo que evita el gris de fábrica. */
+  :root {
+    --ground:   #0b0c0f;
+    --raised:   #131518;
+    --sunken:   #08090b;
+    --hair:     #24272a;
+    --hair-2:   #303337;
+    --ink:      #f6f5f1;
+    --ink-2:    #c5c4c0;
+    --ink-3:    #777a7f;
+    --accent:   #bbec4d;
+    --on-accent:#0e1402;
+    /* El lima de la marca no se lee como línea ni como texto sobre fondo claro.
+       En vez de cambiarlo por otro color, se le baja la luz manteniendo el tono:
+       sigue siendo el mismo verde, legible en los dos fondos. */
+    --accent-line: #bbec4d;
+    /* La tela de la prenda: ni el fondo ni el blanco puro. */
+    --cloth: #24282c;
+
+    /* La hoja de molde: el único material que no cambia con el tema. */
+    --paper:     #e7e2d5;
+    --paper-ink: #1b1a17;
+
+    --display: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --gut: clamp(20px, 5vw, 64px);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #f9fafb; --raised: #ffffff; --sunken: #eff0f2;
+      --hair: #e0e1e4; --hair-2: #cfd1d5;
+      --ink: #181b1f; --ink-2: #44484e; --ink-3: #6e7278;
+      --accent-line: #5f7f0d;
+      --cloth: #e7e8ea;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0b0c0f; --raised: #131518; --sunken: #08090b;
+    --hair: #24272a; --hair-2: #303337;
+    --ink: #f6f5f1; --ink-2: #c5c4c0; --ink-3: #777a7f;
+    --accent-line: #bbec4d;
+    --cloth: #24282c;
+  }
+  :root[data-theme="light"] {
+    --ground: #f9fafb; --raised: #ffffff; --sunken: #eff0f2;
+    --hair: #e0e1e4; --hair-2: #cfd1d5;
+    --ink: #181b1f; --ink-2: #44484e; --ink-3: #6e7278;
+    --accent-line: #5f7f0d;
+    --cloth: #e7e8ea;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 var(--gut); }
+
+  /* Etiquetas técnicas: chicas, espaciadas, como una acotación de plano. */
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  h1, h2 {
+    font-family: var(--display);
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    line-height: 0.94;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h1 { font-size: clamp(40px, 6.6vw, 94px); }
+  h2 { font-size: clamp(30px, 5vw, 62px); }
+
+  p { margin: 0; }
+  .lede { font-size: clamp(15px, 1.5vw, 19px); color: var(--ink-2); max-width: 46ch; }
+
+  a { color: inherit; }
+
+  /* ── Barra ───────────────────────────────────────────────────────────────── */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(14px);
+    background: color-mix(in srgb, var(--ground) 82%, transparent);
+    border-bottom: 1px solid var(--hair);
+  }
+  .bar {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 62px;
+  }
+  .logo {
+    font-family: var(--display); font-style: italic; font-size: 21px;
+    letter-spacing: 0.04em;
+  }
+  .logo i { font-style: normal; color: var(--accent-line); }
+
+  .cta {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: var(--on-accent);
+    font-family: var(--sans); font-size: 14px; font-weight: 600;
+    text-decoration: none;
+    padding: 11px 18px; border-radius: 10px;
+    transition: transform .15s var(--ease), background .15s var(--ease);
+  }
+  .cta:hover { background: #cbf56a; transform: translateY(-1px); }
+  .cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+  .cta.big { font-size: 16px; padding: 15px 24px; }
+
+  /* ── 1. La mesa de corte ──────────────────────────────────────────────────
+     La prenda y la idea, a la par. La prenda es grande porque es el argumento;
+     las cotas se leen en grande al costado, que es donde se nota que una sube
+     y la otra no. */
+  .hero { position: relative; overflow: hidden; }
+  .hero-grid {
+    display: grid; gap: clamp(30px, 5vw, 60px);
+    padding: clamp(34px, 6vw, 84px) 0 clamp(52px, 8vw, 104px);
+    align-items: center;
+  }
+  @media (min-width: 980px) {
+    .hero-grid { grid-template-columns: 0.92fr 1.08fr; gap: clamp(40px, 5vw, 80px); }
+  }
+
+  .hero-words { display: grid; gap: 22px; justify-items: start; }
+
+  .hero-stage { position: relative; display: grid; gap: 20px; justify-items: center; }
+  /* La cuadrícula de la mesa. Tenue: es superficie, no decoración. */
+  .hero-stage::before {
+    content: ''; position: absolute; inset: -14% -22%;
+    background:
+      linear-gradient(var(--hair-2) 1px, transparent 1px) 0 0 / 100% 44px,
+      linear-gradient(90deg, var(--hair-2) 1px, transparent 1px) 0 0 / 44px 100%;
+    opacity: .55;
+    mask-image: radial-gradient(ellipse 64% 60% at 50% 48%, #000 25%, transparent 76%);
+    pointer-events: none;
+  }
+
+  .garment { position: relative; width: min(540px, 88%); }
+  .garment svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+  .cloth      { fill: var(--cloth); stroke: var(--ink-2); stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+  .cloth-neck { fill: var(--sunken); stroke: var(--ink-2); stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+
+  .rule      { stroke: var(--accent-line); stroke-width: 1.3; vector-effect: non-scaling-stroke; }
+  .rule-dim  { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 5; vector-effect: non-scaling-stroke; }
+
+  /* Las dos lecturas. Una se mueve, la otra no: ese es todo el asunto. */
+  .readout {
+    position: relative;
+    display: flex; gap: clamp(22px, 4vw, 46px); flex-wrap: wrap; justify-content: center;
+  }
+  .ro { display: grid; gap: 4px; justify-items: center; }
+  .ro-v {
+    font-family: var(--mono); font-size: clamp(30px, 4vw, 44px);
+    font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -0.03em;
+    color: var(--ink-2);
+  }
+  .ro-v.hot { color: var(--accent-line); }
+  .ro-u { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; color: var(--ink-3); }
+
+  .h1-mark { color: var(--accent-line); font-style: normal; }
+  .actions { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .hint { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+
+  /* ── 2. La prueba ────────────────────────────────────────────────────────── */
+  .proof {
+    border-top: 1px solid var(--hair);
+    padding: clamp(56px, 10vw, 128px) 0;
+    display: grid; gap: 22px; justify-items: start;
+  }
+  .proof h2 { max-width: 12ch; }
+
+  /* ── 3. Tres vistazos, casi sin explicar ─────────────────────────────────── */
+  .glimpses {
+    border-top: 1px solid var(--hair);
+    padding: clamp(52px, 9vw, 116px) 0;
+    display: grid; gap: clamp(20px, 2.6vw, 34px);
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 860px) { .glimpses { grid-template-columns: repeat(3, 1fr); } }
+
+  .glimpse { display: grid; gap: 16px; align-content: start; }
+  .frame {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    border: 1px solid var(--hair-2);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--sunken);
+  }
+  .frame canvas { display: block; width: 100%; height: 100%; }
+  .glimpse p { font-size: 15px; color: var(--ink-2); max-width: 34ch; }
+  .glimpse .q {
+    font-family: var(--display); font-style: italic;
+    font-size: clamp(21px, 2.3vw, 27px); letter-spacing: -0.02em;
+    color: var(--ink); line-height: 1.1;
+  }
+
+  /* La ficha va sobre papel de molde: el material del taller, no un tema. */
+  .frame.sheet { background: var(--paper); border-color: #c9c2b0; }
+  .sheet-doc { position: absolute; inset: 0; padding: 14px 15px; color: var(--paper-ink); }
+  .sheet-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid rgb(0 0 0 / 0.42); padding-bottom: 6px;
+  }
+  .sheet-top b { font-family: var(--display); font-style: italic; font-weight: 400; font-size: 16px; }
+  .sheet-top span, .sheet-row { font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em; }
+  .sheet-rows { margin-top: 9px; display: grid; gap: 5px; }
+  .sheet-row {
+    display: flex; justify-content: space-between;
+    border-bottom: 1px dotted rgb(0 0 0 / 0.28); padding-bottom: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── 4. La invitación ────────────────────────────────────────────────────── */
+  .end {
+    border-top: 1px solid var(--hair);
+    padding: clamp(64px, 11vw, 150px) 0 clamp(44px, 7vw, 86px);
+    display: grid; gap: 26px; justify-items: center; text-align: center;
+  }
+  .end h2 { max-width: 15ch; }
+
+  footer {
+    border-top: 1px solid var(--hair);
+    padding: 22px 0 34px;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    font-size: 12.5px; color: var(--ink-3);
+  }
+
+  /* Entrada: una sola secuencia orquestada, corta. */
+  .rise { opacity: 0; transform: translateY(14px); }
+  .in .rise { opacity: 1; transform: none; transition: opacity .7s var(--ease), transform .7s var(--ease); }
+  .in .rise:nth-child(2) { transition-delay: .07s; }
+  .in .rise:nth-child(3) { transition-delay: .14s; }
+  .in .rise:nth-child(4) { transition-delay: .21s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise, .in .rise { opacity: 1; transform: none; transition: none; }
+    .cta { transition: none; }
+  }
+</style>
+
+<header>
+  <div class="wrap bar">
+    <span class="logo">R<i>.</i>AW</span>
+    <a class="cta" href="https://raw-prueba.vercel.app">Abrir el estudio →</a>
+  </div>
+</header>
+
+<main>
+  <!-- ══ 1. La mesa de corte ═════════════════════════════════════════════════
+       La prenda se está midiendo sola. Las dos lecturas de al lado son el
+       argumento entero: una sube, la otra no se mueve. -->
+  <section class="hero">
+    <div class="wrap hero-grid" id="hb">
+
+      <div class="hero-words">
+        <span class="tag rise">Remera · chomba · pantalón</span>
+        <h1 class="rise">Una prenda<br>no es un <span class="h1-mark">dibujo</span>.</h1>
+        <p class="lede rise">
+          Escribís el largo en centímetros y la prenda se rehace. Mirá el ancho
+          mientras tanto: no se mueve.
+        </p>
+        <div class="actions rise">
+          <a class="cta big" href="https://raw-prueba.vercel.app">Abrir el estudio →</a>
+          <span class="hint">sin cuenta, sin instalar</span>
+        </div>
+      </div>
+
+      <div class="hero-stage">
+        <div class="garment">
+          <svg id="tee" viewBox="-86 -30 666 528" aria-label="Una remera que cambia de largo mientras su ancho queda igual">
+            <path id="body" class="cloth"></path>
+            <path id="neck" class="cloth-neck"></path>
+            <g id="dimLen">
+              <line id="lenLine" class="rule"></line>
+              <line id="lenCapA" class="rule"></line>
+              <line id="lenCapB" class="rule"></line>
+            </g>
+            <g id="dimWid">
+              <line id="widLine" class="rule-dim"></line>
+              <line id="widCapA" class="rule-dim"></line>
+              <line id="widCapB" class="rule-dim"></line>
+            </g>
+          </svg>
+        </div>
+        <div class="readout">
+          <div class="ro">
+            <span class="tag">Largo</span>
+            <span class="ro-v hot" id="roLen">70</span>
+            <span class="ro-u">cm</span>
+          </div>
+          <div class="ro">
+            <span class="tag">Ancho de pecho</span>
+            <span class="ro-v" id="roWid">60</span>
+            <span class="ro-u">cm · sin tocar</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ══ 2. La prueba, dicha con palabras ═══════════════════════════════════ -->
+  <div class="wrap">
+    <section class="proof">
+      <span class="tag">Lo que acaba de pasar</span>
+      <h2>Estirar deforma.<br>Medir, no.</h2>
+      <p class="lede">
+        En un programa de dibujo la remera es un dibujo: si la alargás, se
+        ensancha. Acá cada medida mueve lo suyo y nada más.
+      </p>
+    </section>
+  </div>
+
+  <!-- ══ 3. Tres vistazos ════════════════════════════════════════════════════
+       Sin explicar de más: la idea es que den ganas de abrir la app para ver
+       cómo, no que reemplacen a la app. -->
+  <div class="wrap">
+    <section class="glimpses">
+
+      <div class="glimpse">
+        <div class="frame"><canvas id="cTela"></canvas></div>
+        <span class="q">Esa raya mide 1 cm.</span>
+        <p>Decís cuánto mide la muestra de tela y se dibuja a escala real sobre
+           la prenda. Lo que ves es lo que sale del taller.</p>
+      </div>
+
+      <div class="glimpse">
+        <div class="frame"><canvas id="cBordado"></canvas></div>
+        <span class="q">Esto no es una tipografía.</span>
+        <p>Es hilo: puntada por puntada, con su brillo y su sombra. Cualquier
+           texto o vector se puede bordar.</p>
+      </div>
+
+      <div class="glimpse">
+        <div class="frame sheet">
+          <div class="sheet-doc">
+            <div class="sheet-top">
+              <b>Ficha técnica</b>
+              <span>REM-001</span>
+            </div>
+            <div class="sheet-rows">
+              <div class="sheet-row"><span>LARGO TOTAL</span><span>70,0</span></div>
+              <div class="sheet-row"><span>ANCHO DE PECHO</span><span>60,0</span></div>
+              <div class="sheet-row"><span>ANCHO DE CINTURA</span><span>63,0</span></div>
+              <div class="sheet-row"><span>ANCHO DE CUELLO</span><span>18,0</span></div>
+              <div class="sheet-row"><span>LARGO DE MANGA</span><span>18,0</span></div>
+              <div class="sheet-row"><span>ANCHO DE MANGA</span><span>25,0</span></div>
+            </div>
+          </div>
+        </div>
+        <span class="q">Y esto salió del mismo archivo.</span>
+        <p>La ficha para el taller no se arma aparte: sale del proyecto en el
+           que venías diseñando.</p>
+      </div>
+
+    </section>
+  </div>
+
+  <!-- ══ 4. La invitación ════════════════════════════════════════════════════ -->
+  <div class="wrap">
+    <section class="end">
+      <span class="tag">Hay bastante más adentro</span>
+      <h2>Lo demás lo vas a<br>encontrar solo.</h2>
+      <a class="cta big" href="https://raw-prueba.vercel.app">Abrir el estudio →</a>
+      <span class="hint">Se abre en el navegador. Funciona sin internet.</span>
+    </section>
+  </div>
+</main>
+
+<div class="wrap">
+  <footer>
+    <span>RAW Design — for designers, by designers</span>
+    <span>Ramiro · Agustín · Aaron</span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ── La prenda ───────────────────────────────────────────────────────────
+     El trazado es el MISMO que usa la app (TEE_BODY / TEE_INNER en
+     EditorScreen.tsx) y se deforma con la misma regla: de la sisa para abajo
+     se estira, de la sisa para arriba no se toca. Por eso la manga y el cuello
+     quedan quietos mientras el ruedo baja — que es justo lo que se quiere ver. */
+  const BODY = "M292.24,4.64l201.19,54.3-23.15,119.05-69.33-4.77,8.03,184.05-328.13-1.07,11.64-183.05-69.91,4.91L1.14,50.05,205.89,1.08s22.26,16.91,86.35,3.56Z";
+  const NECK = "M205.89,1.08s7.91,55.81,41.09,55.81,42.6-42.75,45.26-52.25C228.15,17.99,205.89,1.08,205.89,1.08Z";
+
+  const CX = 247.3, ARM_Y = 173, HEM_Y = 357;
+  const LEN_MIN = 70, LEN_MAX = 92;
+
+  // Convierte el trazado a puntos absolutos una sola vez.
+  function parse(d) {
+    const t = d.match(/[a-zA-Z]|-?\d*\.?\d+/g);
+    let i = 0, cur = [0, 0], start = [0, 0], cmd = '', out = [];
+    const n = () => parseFloat(t[i++]);
+    const isCmd = s => /[a-zA-Z]/.test(s);
+    while (i < t.length) {
+      if (isCmd(t[i])) cmd = t[i++];
+      const rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase();
+      if (C === 'M') {
+        let x = n(), y = n(); if (rel) { x += cur[0]; y += cur[1]; }
+        cur = [x, y]; start = [x, y]; out.push(['M', [x, y]]);
+      } else if (C === 'L') {
+        while (i < t.length && !isCmd(t[i])) {
+          let x = n(), y = n(); if (rel) { x += cur[0]; y += cur[1]; }
+          cur = [x, y]; out.push(['L', [x, y]]);
+        }
+      } else if (C === 'S') {
+        while (i < t.length && !isCmd(t[i])) {
+          let c2 = [n(), n()], en = [n(), n()];
+          if (rel) { c2 = [c2[0] + cur[0], c2[1] + cur[1]]; en = [en[0] + cur[0], en[1] + cur[1]]; }
+          // Sin curva previa el primer control cae sobre el punto actual.
+          out.push(['C', [cur[0], cur[1]], c2, en]);
+          cur = en;
+        }
+      } else if (C === 'C') {
+        while (i < t.length && !isCmd(t[i])) {
+          let c1 = [n(), n()], c2 = [n(), n()], en = [n(), n()];
+          if (rel) {
+            c1 = [c1[0] + cur[0], c1[1] + cur[1]];
+            c2 = [c2[0] + cur[0], c2[1] + cur[1]];
+            en = [en[0] + cur[0], en[1] + cur[1]];
+          }
+          out.push(['C', c1, c2, en]); cur = en;
+        }
+      } else if (C === 'Z') {
+        out.push(['Z']); cur = [start[0], start[1]];
+      } else { i++; }
+    }
+    return out;
+  }
+
+  // La regla de deformación, recortada a lo que esta página anima: el largo.
+  function warp(largo) {
+    const fLen = (largo - 33.8) / 36.2;
+    return (x, y) => {
+      const manga = (x > 395 || x < 100) && y < 200;   // la manga no se estira
+      if (manga) return [x, y];
+      return [x, y <= ARM_Y ? y : ARM_Y + (y - ARM_Y) * fLen];
+    };
+  }
+
+  function render(segs, W) {
+    let s = '';
+    for (const seg of segs) {
+      if (seg[0] === 'Z') { s += 'Z'; continue; }
+      const pts = seg.slice(1).map(p => { const q = W(p[0], p[1]); return q[0].toFixed(2) + ',' + q[1].toFixed(2); });
+      s += seg[0] + pts.join(' ') + ' ';
+    }
+    return s;
+  }
+
+  const segBody = parse(BODY), segNeck = parse(NECK);
+  const $ = id => document.getElementById(id);
+  const elBody = $('body'), elNeck = $('neck');
+
+  function dibujar(largo) {
+    const W = warp(largo);
+    elBody.setAttribute('d', render(segBody, W));
+    elNeck.setAttribute('d', render(segNeck, W));
+
+    const hem = W(CX, HEM_Y)[1];
+
+    // Acotación del largo, al costado izquierdo. Crece con la prenda.
+    const lx = -52, top = 2;
+    $('lenLine').setAttribute('x1', lx); $('lenLine').setAttribute('y1', top);
+    $('lenLine').setAttribute('x2', lx); $('lenLine').setAttribute('y2', hem);
+    for (const [id, y] of [['lenCapA', top], ['lenCapB', hem]]) {
+      const e = $(id);
+      e.setAttribute('x1', lx - 9); e.setAttribute('y1', y);
+      e.setAttribute('x2', lx + 9); e.setAttribute('y2', y);
+    }
+
+    // Acotación del ancho, sobre el pecho. Fija: nunca cambia.
+    const wy = 128, x1 = 66, x2 = 428;
+    $('widLine').setAttribute('x1', x1); $('widLine').setAttribute('y1', wy);
+    $('widLine').setAttribute('x2', x2); $('widLine').setAttribute('y2', wy);
+    for (const [id, x] of [['widCapA', x1], ['widCapB', x2]]) {
+      const e = $(id);
+      e.setAttribute('x1', x); e.setAttribute('y1', wy - 8);
+      e.setAttribute('x2', x); e.setAttribute('y2', wy + 8);
+    }
+    $('roLen').textContent = largo.toFixed(0);
+  }
+
+  const quieto = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  if (quieto) {
+    dibujar(LEN_MAX);
+  } else {
+    // Un solo gesto, lento y en bucle: la prenda respira entre dos talles.
+    // No es una animación decorativa — es el argumento de la página.
+    const CICLO = 7200, PAUSA = 1400;
+    let t0 = null;
+    const suave = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+    function paso(ts) {
+      if (t0 === null) t0 = ts;
+      const t = (ts - t0) % CICLO;
+      let k;
+      if (t < PAUSA) k = 0;
+      else if (t < CICLO / 2) k = suave((t - PAUSA) / (CICLO / 2 - PAUSA));
+      else if (t < CICLO / 2 + PAUSA) k = 1;
+      else k = 1 - suave((t - CICLO / 2 - PAUSA) / (CICLO / 2 - PAUSA));
+      dibujar(LEN_MIN + (LEN_MAX - LEN_MIN) * k);
+      requestAnimationFrame(paso);
+    }
+    dibujar(LEN_MIN);
+    requestAnimationFrame(paso);
+  }
+
+  /* ── Vistazo 1: la tela a escala, con su regla ───────────────────────────── */
+  function tela(c) {
+    const r = c.getBoundingClientRect();
+    if (r.width < 8) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const W = Math.round(r.width), H = Math.round(r.height);
+    c.width = W * dpr; c.height = H * dpr;
+    const x = c.getContext('2d');
+    x.scale(dpr, dpr);
+    const CM = Math.max(26, W / 9);          // 1 cm en pantalla
+
+    // Denim: base + trama en diagonal + grano, como el estampado de la app.
+    x.fillStyle = '#3b5b8c'; x.fillRect(0, 0, W, H);
+    x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1;
+    for (let i = -H; i < W; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + H, H); x.stroke(); }
+    for (let i = 0; i < 2600; i++) {
+      const v = Math.sin(i * 99.13) * 43758.5453, u = v - Math.floor(v);
+      const v2 = Math.sin((i + 7) * 99.13) * 43758.5453, u2 = v2 - Math.floor(v2);
+      const b = Math.sin((i + 3) * 99.13) * 43758.5453;
+      x.fillStyle = (b - Math.floor(b)) > .5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)';
+      x.fillRect(u * W, u2 * H, 1, 1);
+    }
+    // La raya blanca: mide exactamente 1 cm.
+    x.fillStyle = '#f4f1e8';
+    x.fillRect(W / 2 - CM / 2, 0, CM, H);
+
+    // La regla apoyada abajo.
+    const ry = H - 26;
+    x.fillStyle = 'rgba(8,9,11,0.82)'; x.fillRect(0, ry, W, 26);
+    x.strokeStyle = '#bbec4d'; x.lineWidth = 1;
+    x.beginPath();
+    for (let i = 0; i * (CM / 10) < W; i++) {
+      const px = Math.round(i * (CM / 10)) + .5;
+      const alto = i % 10 === 0 ? 13 : (i % 5 === 0 ? 8 : 4);
+      x.moveTo(px, ry + 26); x.lineTo(px, ry + 26 - alto);
+    }
+    x.stroke();
+    x.fillStyle = '#bbec4d';
+    x.font = '10px ui-monospace, monospace';
+    for (let i = 0; i * CM < W - 14; i++) x.fillText(i + '', i * CM + 3, ry + 12);
+  }
+
+  /* ── Vistazo 2: bordado de verdad ─────────────────────────────────────────
+     Es el mismo criterio que el editor: puntadas cortas en una sola dirección,
+     con brillo de un lado y sombra del otro, recortadas contra la silueta. */
+  function bordado(c) {
+    const r = c.getBoundingClientRect();
+    if (r.width < 8) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    // Enteros SIEMPRE: la silueta se consulta pixel por pixel y con un ancho
+    // decimal el indice cae corrido, asi que no encontraba ni un punto adentro
+    // y el bordado salia vacio.
+    const W = Math.round(r.width), H = Math.round(r.height);
+    c.width = W * dpr; c.height = H * dpr;
+    const x = c.getContext('2d');
+    x.scale(dpr, dpr);
+
+    // Tela de fondo
+    x.fillStyle = '#16181b'; x.fillRect(0, 0, W, H);
+    for (let i = 0; i < 2200; i++) {
+      const a = Math.sin(i * 12.9898) * 43758.5453, u = a - Math.floor(a);
+      const b = Math.sin(i * 78.233) * 43758.5453, v = b - Math.floor(b);
+      x.fillStyle = 'rgba(255,255,255,0.028)';
+      x.fillRect(u * W, v * H, 1, 1);
+    }
+
+    // Silueta de la palabra
+    const m = document.createElement('canvas');
+    m.width = W; m.height = H;
+    const mx = m.getContext('2d');
+    mx.fillStyle = '#fff';
+    mx.textAlign = 'center'; mx.textBaseline = 'middle';
+    const size = Math.min(H * 0.46, W * 0.32);
+    mx.font = 'italic ' + size + 'px "Instrument Serif", Georgia, serif';
+    mx.fillText('bordado', W / 2, H / 2);
+    const mask = mx.getImageData(0, 0, W, H).data;
+    const dentro = (px, py) => {
+      const ix = Math.round(px), iy = Math.round(py);
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) return false;
+      return mask[(iy * W + ix) * 4 + 3] > 80;
+    };
+
+    const capa = document.createElement('canvas');
+    capa.width = W; capa.height = H;
+    const cx2 = capa.getContext('2d');
+
+    // Hilo de algodon crudo, no el verde de la marca: el acento se reserva para
+    // el boton y las medidas. Ademas un hilo claro sobre tela oscura se lee como
+    // hilo, y el lima se leia como neon.
+    const HILO = '#ded7c5', CLARO = '#f6f1e6', OSCURO = '#8a8372';
+    const PASO = 4.6, LARGO = 15, TH = -62 * Math.PI / 180;
+    const cos = Math.cos(TH), sin = Math.sin(TH);
+    const aXY = (u, v) => [u * cos - v * sin, u * sin + v * cos];
+
+    // Base, para que no se vea la tela entre hilo e hilo
+    cx2.drawImage(m, 0, 0);
+    cx2.globalCompositeOperation = 'source-in';
+    cx2.fillStyle = '#6e6757'; cx2.fillRect(0, 0, W, H);
+    cx2.globalCompositeOperation = 'source-over';
+
+    let uMin = 1e9, uMax = -1e9, vMin = 1e9, vMax = -1e9;
+    for (const [ex, ey] of [[0, 0], [W, 0], [0, H], [W, H]]) {
+      const u = ex * cos + ey * sin, v = -ex * sin + ey * cos;
+      uMin = Math.min(uMin, u); uMax = Math.max(uMax, u);
+      vMin = Math.min(vMin, v); vMax = Math.max(vMax, v);
+    }
+    cx2.lineCap = 'butt';
+    let fila = 0;
+    for (let v = vMin; v <= vMax; v += PASO, fila++) {
+      const salto = (fila % 2) * (LARGO / 2);   // uniones trabadas
+      let u = uMin;
+      while (u <= uMax) {
+        const [px, py] = aXY(u, v);
+        if (!dentro(px, py)) { u += 1.4; continue; }
+        const tope = u + LARGO - (u === uMin ? salto : 0);
+        let fin = u;
+        while (fin + 1.4 <= uMax && fin + 1.4 <= tope) {
+          const [qx, qy] = aXY(fin + 1.4, v);
+          if (!dentro(qx, qy)) break;
+          fin += 1.4;
+        }
+        if (fin - u < 2) { u = fin + 1.4; continue; }
+        const [x0, y0] = aXY(u, v), [x1, y1] = aXY(fin, v);
+        const nx = -sin, ny = cos;
+        cx2.lineWidth = PASO * 0.94; cx2.strokeStyle = HILO;
+        cx2.beginPath(); cx2.moveTo(x0, y0); cx2.lineTo(x1, y1); cx2.stroke();
+        cx2.lineWidth = PASO * 0.3; cx2.globalAlpha = .6;
+        cx2.strokeStyle = CLARO;
+        cx2.beginPath();
+        cx2.moveTo(x0 - nx * PASO * .27, y0 - ny * PASO * .27);
+        cx2.lineTo(x1 - nx * PASO * .27, y1 - ny * PASO * .27); cx2.stroke();
+        cx2.strokeStyle = OSCURO;
+        cx2.beginPath();
+        cx2.moveTo(x0 + nx * PASO * .33, y0 + ny * PASO * .33);
+        cx2.lineTo(x1 + nx * PASO * .33, y1 + ny * PASO * .33); cx2.stroke();
+        cx2.globalAlpha = 1;
+        u = fin + 1.4;
+      }
+    }
+    // Recortado contra la silueta: el hilo cortado al ras da el canto del bordado.
+    cx2.globalCompositeOperation = 'destination-in';
+    cx2.drawImage(m, 0, 0);
+
+    // Sombra propia: el bordado está levantado de la tela.
+    x.save(); x.globalAlpha = .45; x.filter = 'blur(3px)';
+    x.drawImage(capa, 1.5, 3); x.restore();
+    x.drawImage(capa, 0, 0);
+  }
+
+  function pintar() {
+    const t = document.getElementById('cTela');
+    const b = document.getElementById('cBordado');
+    if (t) tela(t);
+    if (b) bordado(b);
+  }
+
+  // Se pinta apenas hay layout y se REPINTA cuando la tipografía termina de
+  // cargar (el bordado traza sobre las letras: con la fuente de reemplazo las
+  // formas no son las mismas). Nunca se espera solo a la fuente: si tarda o
+  // falla, los recuadros quedarían vacíos para siempre.
+  requestAnimationFrame(pintar);
+  addEventListener('load', pintar);
+  if (document.fonts && document.fonts.ready) {
+    Promise.race([
+      document.fonts.ready,
+      new Promise(r => setTimeout(r, 3000)),
+    ]).then(pintar);
+  }
+
+  let t = null;
+  addEventListener('resize', () => { clearTimeout(t); t = setTimeout(pintar, 180); });
+
+  requestAnimationFrame(() => document.getElementById('hb').classList.add('in'));
+})();
+</script>
