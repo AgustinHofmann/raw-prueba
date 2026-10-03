@@ -16,7 +16,7 @@
 import { supabase, cloudEnabled } from './supabase'
 import {
   STORE_PROJECTS, STORE_FOLDERS, STORE_DELETED,
-  idbGetAll, idbGet, idbPut, idbDelete,
+  idbGetAll, idbGet, idbPut, idbDelete, pedirAlmacenamientoDurable,
 } from './idb'
 import {
   fetchProjects, fetchProjectCanvas, fetchProjectTechpack, upsertProject, deleteProject,
@@ -135,6 +135,10 @@ export async function saveProject(
   // dispositivo sabe de la nube, y guardar un cambio local no lo invalida.
   // Perderlo haría que el próximo sync no distinga "cambió solo acá" de
   // "cambiaron los dos", que es justo lo que hay que distinguir.
+  // El mejor momento para pedir almacenamiento durable es cuando hay trabajo
+  // real que perder, no al abrir la app: el navegador lo evalua mejor y, si
+  // muestra un permiso, el usuario entiende por que se lo estan pidiendo.
+  void pedirAlmacenamientoDurable()
   const previo = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
   const conMarca: Pendiente = { ...p, pendienteDeSubir: true, nubeVistaEn: previo?.nubeVistaEn }
   const ok = (await idbPut(STORE_PROJECTS, conMarca)) !== null

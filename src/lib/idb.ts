@@ -14,6 +14,44 @@ export const STORE_FOLDERS  = 'folders'
 /** Ids borrados estando sin conexión, para poder borrarlos también en la nube al volver. */
 export const STORE_DELETED  = 'deleted'
 
+/** Pide al navegador que el almacenamiento de este origen sea PERSISTENTE.
+ *
+ * Por defecto IndexedDB es "best-effort": cuando al equipo le falta espacio, el
+ * navegador desaloja los datos del origen menos usado sin preguntar y sin avisar
+ * al usuario. Para una app donde el trabajo del disenador vive en el navegador,
+ * eso es perdida de datos silenciosa.
+ *
+ * `persist()` marca el almacenamiento como durable: deja de ser candidato al
+ * desalojo automatico. El navegador puede conceder o no el permiso (Chrome lo
+ * concede solo si el sitio esta instalado, marcado o tiene uso frecuente), asi
+ * que esto es una peticion, no una garantia. Se llama una sola vez y no rompe
+ * nada si falla.
+ */
+let pedidoPersistencia: Promise<boolean> | null = null
+export function pedirAlmacenamientoDurable(): Promise<boolean> {
+  if (pedidoPersistencia) return pedidoPersistencia
+  pedidoPersistencia = (async () => {
+    if (!navigator.storage?.persist) return false
+    try {
+      if (await navigator.storage.persisted?.()) return true
+      return await navigator.storage.persist()
+    } catch { return false }
+  })()
+  return pedidoPersistencia
+}
+
+/** Cuanto espacio local hay usado y disponible, para poder avisar ANTES de la
+ *  cuota y no cuando ya falla el guardado. Devuelve null si el navegador no lo
+ *  informa. */
+export async function espacioLocal(): Promise<{ usado: number; disponible: number; porcentaje: number } | null> {
+  if (!navigator.storage?.estimate) return null
+  try {
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate()
+    if (!quota) return null
+    return { usado: usage, disponible: quota, porcentaje: Math.round((usage / quota) * 100) }
+  } catch { return null }
+}
+
 let cached: Promise<IDBDatabase> | null = null
 
 export function openDb(): Promise<IDBDatabase> {

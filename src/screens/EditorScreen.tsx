@@ -1088,6 +1088,8 @@ try {
 const EYEDROPPER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M15 2 L20 7 L9 18 L6 21 L1 16 L12 5 Z' fill='white' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M15 2 L20 7 L17 10 L12 5 Z' fill='%23ccc'/%3E%3Crect x='3' y='14' width='4' height='4' rx='1' fill='%23555'/%3E%3C/svg%3E") 2 20, crosshair`
 
 // Lápiz: punta abajo-izquierda, borrador arriba-derecha
+// Balde: la punta del chorro es el punto activo (abajo a la izquierda del icono).
+const BUCKET_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cpath d='M4 10 L10 4 L17 11 L11 17 Z' fill='%23d9d9d9' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/%3E%3Cpath d='M10 4 L8 2' stroke='%23222' stroke-width='1.2' stroke-linecap='round'/%3E%3Cpath d='M3 15 q2 3 0 4 q-2 -1 0 -4 z' fill='%23bbec4d' stroke='%23222' stroke-width='0.8'/%3E%3C/svg%3E") 3 17, crosshair`
 const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect x='8' y='1' width='5' height='12' rx='1' fill='%23f5c842' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='8,13 13,13 10.5,18' fill='%23e8a87c' stroke='%23333' stroke-width='1'/%3E%3Cpolygon points='9.5,16.5 11.5,16.5 10.5,18' fill='%23222'/%3E%3Crect x='8' y='1' width='5' height='3' rx='1' fill='%23bbb' stroke='%23333' stroke-width='1'/%3E%3C/svg%3E") 10 18, crosshair`
 
 
@@ -3498,6 +3500,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     // ── Fill ─────────────────────────────────────────────────────────────────
     if (tool === 'fill') {
+      canvas.defaultCursor = BUCKET_CURSOR
+      offs.push(() => { canvas.defaultCursor = 'default' })
       // El balde deja la pieza en color liso: hay que BORRAR la tela que tuviera,
       // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
       // volvía por encima del color recién elegido.
@@ -3951,6 +3955,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (tool === 'zoom') {
       canvas.selection     = false
       canvas.defaultCursor = 'zoom-in'
+      // Alt aleja en vez de acercar, y el cursor lo dice antes del clic: si el
+      // modo solo se descubre apretando, no es un modo, es una sorpresa.
+      const alt = (e: KeyboardEvent) => { canvas.defaultCursor = e.altKey ? 'zoom-out' : 'zoom-in' }
+      window.addEventListener('keydown', alt)
+      window.addEventListener('keyup',   alt)
+      offs.push(() => {
+        window.removeEventListener('keydown', alt)
+        window.removeEventListener('keyup',   alt)
+      })
       const onDown = (e: fabric.TPointerEventInfo) => {
         const ev  = e.e as MouseEvent
         const cur = canvas.getZoom()
