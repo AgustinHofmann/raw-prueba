@@ -1123,6 +1123,91 @@ const PENCIL_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2
 // Campo numérico con flechitas propias (no las nativas del navegador) y soporte para valor
 // "Mixto": cuando hay selección múltiple con valores distintos muestra el indicador y las
 // flechas quedan deshabilitadas, pero igual se puede escribir un número para igualarlos a todos.
+/* Entrada numerica con cabeza
+   ---------------------------------------------------------------------------
+   Un campo de una herramienta tiene que aceptar lo que el disenador escribe,
+   no obligarlo a hacer la cuenta aparte:
+
+   - cuentas:   "70+5", "60/2", "(12+3)*2"
+   - unidades:  "700mm" en un campo en cm, "2in" en cm
+   - coma:      "70,5" es como se escribe un decimal en castellano
+
+   Se evalua con un parser propio (descenso recursivo) y NO con eval: eval sobre
+   texto de un campo es ejecutar lo que sea que haya ahi adentro.                */
+
+/** Cuanto vale una unidad escrita, medida en la unidad del campo. */
+const UNIDADES: Record<string, Record<string, number>> = {
+  cm: { cm: 1, mm: 0.1, m: 100, in: 2.54, '"': 2.54 },
+  px: { px: 1 },
+}
+
+/** Evalua + - * / y parentesis. Devuelve null si el texto no es una expresion
+ *  valida y completa — a medias no se confirma nada. */
+function evaluarExpresion(txt: string): number | null {
+  const t = txt.match(/\d+\.?\d*|[+\-*/()]/g)
+  if (!t || t.join('') !== txt.replace(/\s+/g, '')) return null
+  let i = 0
+  const ver = () => t[i]
+  const expr = (): number | null => {
+    let v = term()
+    if (v == null) return null
+    while (ver() === '+' || ver() === '-') {
+      const op = t[i++]
+      const r = term()
+      if (r == null) return null
+      v = op === '+' ? v + r : v - r
+    }
+    return v
+  }
+  const term = (): number | null => {
+    let v = factor()
+    if (v == null) return null
+    while (ver() === '*' || ver() === '/') {
+      const op = t[i++]
+      const r = factor()
+      if (r == null) return null
+      if (op === '/' && r === 0) return null
+      v = op === '*' ? v * r : v / r
+    }
+    return v
+  }
+  const factor = (): number | null => {
+    if (ver() === '-') { i++; const v = factor(); return v == null ? null : -v }
+    if (ver() === '(') {
+      i++
+      const v = expr()
+      if (v == null || ver() !== ')') return null
+      i++
+      return v
+    }
+    const n = parseFloat(t[i] ?? '')
+    if (isNaN(n)) return null
+    i++
+    return n
+  }
+  const v = expr()
+  return i === t.length && v != null && isFinite(v) ? v : null
+}
+
+/** Interpreta lo que se escribio en un campo, en la unidad de ese campo. */
+function parseEntrada(raw: string, suffix?: string): number | null {
+  let s = raw.trim().toLowerCase().replace(/,/g, '.')
+  if (!s) return null
+  let factor = 1
+  const tabla = suffix ? UNIDADES[suffix] : undefined
+  if (tabla) {
+    const m = s.match(/([a-z"]+)$/)
+    if (m) {
+      const f = tabla[m[1]]
+      if (f == null) return null          // unidad que este campo no entiende
+      factor = f
+      s = s.slice(0, -m[1].length).trim()
+    }
+  }
+  const v = evaluarExpresion(s)
+  return v == null ? null : v * factor
+}
+
 function NumberField({
   value, onChange, min, max, step = 1, mixed = false, suffix, width = 56, fullWidth = false,
 }: {
@@ -1141,8 +1226,14 @@ function NumberField({
     return n
   }
   const shown = draft != null ? draft : (mixed ? '' : String(value))
-  const commit = (raw: string) => { const n = parseFloat(raw); if (!isNaN(n)) onChange(clamp(n)); setDraft(null) }
-  const stepBy = (d: number) => { if (mixed) return; onChange(clamp((value ?? 0) + d)) }
+  // Si lo escrito no se entiende, no se confirma nada y el campo vuelve al valor
+  // que tenia: es preferible que no pase nada a que pase cualquier cosa.
+  const commit = (raw: string) => { const n = parseEntrada(raw, suffix); if (n != null) onChange(clamp(n)); setDraft(null) }
+  const stepBy = (d: number) => { if (mixed) return; onChange(clamp(Math.round(((value ?? 0) + d) * 1e4) / 1e4)) }
+  // Shift multiplica el paso por diez y Alt lo divide: la misma convencion que
+  // Illustrator, para recorrer un rango largo o afinar sin cambiar de campo.
+  const pasoCon = (e: { shiftKey: boolean; altKey: boolean }) =>
+    step * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1)
   const btn: React.CSSProperties = {
     width: 16, height: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
     padding: 0, border: 'none', background: 'transparent', cursor: mixed ? 'default' : 'pointer',
@@ -1155,13 +1246,24 @@ function NumberField({
           type="text" inputMode="decimal"
           value={shown}
           placeholder={mixed ? '—' : ''}
-          onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(clamp(n)) }}
+          // Mientras escribis solo se aplica en vivo un numero limpio. Una cuenta
+          // o una unidad ("70+5", "700mm") se confirman al soltar el campo: no
+          // tiene sentido aplicar "70+" a medio escribir.
+          onChange={e => {
+            setDraft(e.target.value)
+            const limpio = e.target.value.trim().replace(',', '.')
+            if (/^-?\d*\.?\d+$/.test(limpio)) onChange(clamp(parseFloat(limpio)))
+          }}
           onBlur={e => commit(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter') { commit((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur() }
-            else if (e.key === 'ArrowUp')   { e.preventDefault(); stepBy(step) }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); stepBy(-step) }
+            else if (e.key === 'Escape') { setDraft(null); (e.target as HTMLInputElement).blur() }
+            else if (e.key === 'ArrowUp')   { e.preventDefault(); stepBy(pasoCon(e)) }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); stepBy(-pasoCon(e)) }
           }}
+          title={suffix === 'cm' || suffix === 'px'
+            ? 'Acepta cuentas (70+5) y unidades (700mm). Flechas: paso; Shift ×10; Alt ÷10'
+            : 'Flechas para subir y bajar. Shift ×10, Alt ÷10'}
           style={{
             width: '100%', padding: '5px 20px 5px 8px', borderRadius: 'var(--radius-sm)', textAlign: 'right', boxSizing: 'border-box',
             background: 'var(--surface)', border: '1px solid var(--line)',
@@ -1170,11 +1272,11 @@ function NumberField({
         />
         <div style={{ position: 'absolute', right: 2, top: 1, bottom: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <button type="button" tabIndex={-1} disabled={mixed} aria-label="Aumentar"
-            onMouseDown={e => e.preventDefault()} onClick={() => stepBy(step)} style={btn}>
+            onMouseDown={e => e.preventDefault()} onClick={e => stepBy(pasoCon(e))} style={btn}>
             <svg width="9" height="6" viewBox="0 0 9 6"><path d="M1 4.5 L4.5 1 L8 4.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
           <button type="button" tabIndex={-1} disabled={mixed} aria-label="Disminuir"
-            onMouseDown={e => e.preventDefault()} onClick={() => stepBy(-step)} style={btn}>
+            onMouseDown={e => e.preventDefault()} onClick={e => stepBy(-pasoCon(e))} style={btn}>
             <svg width="9" height="6" viewBox="0 0 9 6"><path d="M1 1.5 L4.5 5 L8 1.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
         </div>
