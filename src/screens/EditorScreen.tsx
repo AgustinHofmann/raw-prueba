@@ -6758,13 +6758,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             onMouseLeave={e => { if (!resizingPanel) e.currentTarget.style.background = 'transparent' }}
           />
           {/* Tabs */}
-          <div style={{
+          <div role="tablist" aria-label="Panel de propiedades" style={{
             display: 'flex', flexShrink: 0,
             borderBottom: '1px solid var(--line-soft)',
           }}>
             {(['props', 'layers', 'textures'] as const).map(tab => (
               <button
                 key={tab}
+                role="tab"
+                aria-selected={rightTab === tab}
                 onClick={() => setRightTab(tab)}
                 style={{
                   flex: 1, height: 36, border: 'none', borderRadius: 0, cursor: 'pointer',
