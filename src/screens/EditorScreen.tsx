@@ -37,6 +37,33 @@ type Tool = 'select' | 'pencil' | 'pen' | 'curve' | 'eraser' | 'fill' | 'text' |
 // Estilo de trazado especial aplicable a lo que se dibuja con lápiz / pluma
 type StrokeStyle = 'normal' | 'bordado' | 'cierre' | 'costura'
 
+/* Gramatica de lineas del dibujo tecnico (flat)
+   ---------------------------------------------------------------------------
+   En un flat profesional el grosor de la linea NO es una decision estetica:
+   dice que es cada linea. El taller lee el dibujo de un vistazo porque todos
+   usan la misma convencion — contorno grueso, costura media, pespunte fino y
+   punteado, doblez con raya larga. Es convencion de oficio (la que se ensena
+   con pesos de 0.25 / 0.5 / 1 / 2 pt), no una norma ISO: por eso los valores de
+   abajo estan en px de lienzo y mantienen la MISMA proporcion, que es lo que
+   el ojo reconoce.
+
+   El tipo queda guardado en el objeto (_lineRole) para que la ficha tecnica
+   pueda despues listar las costuras del dibujo en vez de pedirlas aparte. */
+type LineRole = 'contorno' | 'costuraLinea' | 'pespunte' | 'doblez' | 'fruncido'
+
+const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; dash: number[] | null }[] = [
+  { id: 'contorno',     label: 'Contorno', width: 2,   dash: null,
+    hint: 'El borde de la prenda. Es la linea mas gruesa del dibujo.' },
+  { id: 'costuraLinea', label: 'Costura',  width: 1,   dash: null,
+    hint: 'Union de dos piezas. Linea llena de peso medio.' },
+  { id: 'pespunte',     label: 'Pespunte', width: 0.5, dash: [4, 3],
+    hint: 'Puntada visible sobre la tela. Fina y punteada.' },
+  { id: 'doblez',       label: 'Doblez',   width: 0.5, dash: [9, 4],
+    hint: 'Dobladillo o quiebre: la tela se dobla, no se corta.' },
+  { id: 'fruncido',     label: 'Fruncido', width: 0.5, dash: [1.5, 2.5],
+    hint: 'Tela recogida. Punteado corto y parejo.' },
+]
+
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
 //
 // No alcanza con el color/patrón que se ve: una pieza pintada guarda además la
@@ -1175,6 +1202,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const colorRef      = useRef('#000000')
   const brushSizeRef  = useRef(1)
   const strokeStyleRef = useRef<StrokeStyle>('normal')
+  // Guion del trazo segun el tipo de linea elegido (null = linea llena).
+  const dashRef = useRef<number[] | null>(null)
+  const lineRoleRef = useRef<LineRole | null>(null)
   const fillRef       = useRef<string | null>(null)
   const fontFamilyRef = useRef('Arial')
   const isMouseDown   = useRef(false)
@@ -1310,6 +1340,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [propSWidth,    setPropSWidth]    = useState(1)
   const [propSWidthMixed, setPropSWidthMixed] = useState(false)  // selección múltiple con grosores distintos
   const [strokeStyle,   setStrokeStyle]   = useState<StrokeStyle>('normal')  // trazado especial para lápiz/pluma
+  const [lineRole,      setLineRole]      = useState<LineRole | null>(null)  // qué significa la línea en el flat
   const [propX,         setPropX]         = useState(0)
   const [propY,         setPropY]         = useState(0)
   const [propW,         setPropW]         = useState(0)
@@ -2030,6 +2061,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.on('path:created', (e: { path: fabric.Path }) => {
         if (clipPath.current) e.path.clipPath = clipPath.current
         e.path.set({ selectable: false, evented: false })
+        marcarTipoDeLinea(e.path)
         undoHistory.current.push({ type: 'add', obj: e.path })
         redoHistory.current = []
         canvas.renderAll()
@@ -2361,6 +2393,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               strokeLineCap: 'round', strokeLineJoin: 'round', fill: null,
               selectable: false, evented: false, strokeUniform: true,
             })
+        // Los trazados especiales (bordado, costura) ya dibujan su propia
+        // textura: ponerles ademas el guion del tipo de linea seria puntear una
+        // puntada. El tipo se marca igual, porque el dato sirve para la ficha.
+        if (!special) marcarTipoDeLinea(obj)
+        else if (lineRoleRef.current) (obj as any)._lineRole = lineRoleRef.current
         if (clipPath.current) obj.clipPath = clipPath.current
         canvas.add(obj)
         undoHistory.current.push({ type: 'add', obj })
@@ -2783,6 +2820,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 stroke: colorRef.current, strokeWidth: brushSizeRef.current,
                 strokeLineCap: penPathStr.includes(' C ') ? 'round' : 'butt',
                 strokeLineJoin: 'round',
+                strokeDashArray: dashRef.current ?? undefined,
                 fill: fillRef.current, selectable: false, evented: true,
                 strokeUniform: true,
               })
@@ -3048,7 +3086,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // identidad de mockup (para que siga bloqueable y no quede huérfano al regenerar).
       const PROPIAS = [
         '_rawMockup', '_rawInner', '_rawBody', '_pieceKey', '_pieceName', '_piecePadre',
-        '_srcId', '_texture', '_effect', '_baseColor', '_userTex', '_locked', '_corte',
+        '_srcId', '_texture', '_effect', '_baseColor', '_userTex', '_locked', '_corte', '_lineRole',
       ]
       const inheritMockup = (oldO: fabric.FabricObject, newO: fabric.FabricObject) => {
         // El trazado se rehace de cero en cada cuadro, asi que hay que pasarle
@@ -5006,6 +5044,51 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }
 
+  /** Deja en el objeto el guion y la marca del tipo de linea activo. Lo que
+   *  importa guardar no es el dash sino el ROL: el dash se puede recalcular, el
+   *  significado no, y es lo que despues va a la ficha tecnica. */
+  function marcarTipoDeLinea(obj: fabric.FabricObject) {
+    const rol = lineRoleRef.current
+    if (!rol) return
+    ;(obj as any)._lineRole = rol
+    if (dashRef.current) obj.set({ strokeDashArray: [...dashRef.current] })
+  }
+
+  /** Elige que SIGNIFICA la linea. Fija el grosor y el guion para lo que dibujes
+   *  a partir de ahora y, si hay algo seleccionado, se lo aplica tambien. */
+  function aplicarTipoDeLinea(rol: LineRole) {
+    const def = LINE_ROLES.find(r => r.id === rol)
+    if (!def) return
+    const esElMismo = lineRoleRef.current === rol
+    const siguiente = esElMismo ? null : rol          // volver a tocarlo lo quita
+    setLineRole(siguiente)
+    lineRoleRef.current = siguiente
+    dashRef.current = siguiente ? def.dash : null
+
+    if (siguiente) applyStrokeWidth(def.width)
+
+    const canvas = fc.current
+    if (!canvas) return
+    const objs = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+    if (objs.length) {
+      const items = objs.map(o => ({ obj: o, prev: { strokeWidth: o.strokeWidth, strokeDashArray: o.strokeDashArray, _lineRole: (o as any)._lineRole } }))
+      objs.forEach(o => {
+        if (siguiente) {
+          o.set({ strokeWidth: def.width, strokeDashArray: def.dash ? [...def.dash] : undefined })
+          ;(o as any)._lineRole = siguiente
+        } else {
+          o.set({ strokeDashArray: undefined })
+          delete (o as any)._lineRole
+        }
+        o.dirty = true
+      })
+      undoHistory.current.push({ type: 'props', obj: items[0].obj, prev: items[0].prev as any })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      onToast?.(siguiente ? `Línea marcada como ${def.label.toLowerCase()}` : 'Tipo de línea quitado')
+    }
+  }
+
   function applyStrokeWidth(val: number) {
     const clamped = Math.max(0.5, val)
     setPropSWidth(clamped)
@@ -5593,7 +5676,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
       // circulitos azules y lineas punteadas como si fueran parte del diseno.
       .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -7128,6 +7211,50 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <span className="label">Grosor</span>
               <NumberField value={propSWidth} mixed={propSWidthMixed} onChange={applyStrokeWidth}
                 min={0.5} max={200} step={0.5} suffix="px" />
+            </div>
+
+            {/* Tipo de línea: qué SIGNIFICA el trazo en el dibujo técnico.
+                Va antes que "Estilo" porque es la decisión de arriba: primero
+                qué es la línea, después con qué puntada se dibuja. */}
+            <div style={{ marginTop: 12 }}>
+              <span className="label" style={{ display: 'block', marginBottom: 2 }}>Tipo de línea</span>
+              <p className="sec-hint" style={{ margin: '0 0 6px' }}>
+                Fija el grosor que el taller espera para cada cosa.
+              </p>
+              {/* Grilla y no fila: cinco columnas no entran en el panel angosto y
+                  la ultima quedaba cortada. En dos filas de tres entran siempre,
+                  y el panel se puede seguir angostando. */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
+                {LINE_ROLES.map(rol => {
+                  const on = lineRole === rol.id
+                  return (
+                    <button
+                      key={rol.id}
+                      onClick={() => aplicarTipoDeLinea(rol.id)}
+                      title={`${rol.label} — ${rol.hint}`}
+                      aria-pressed={on}
+                      style={{
+                        minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+                        padding: '6px 4px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                        background: on ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
+                        border: '1px solid ' + (on ? 'var(--accent)' : 'var(--line)'),
+                        color: on ? 'var(--accent)' : 'var(--fg-2)',
+                        transition: 'background-color 0.1s var(--ease), border-color 0.1s var(--ease), color 0.1s var(--ease)',
+                      }}
+                    >
+                      {/* La muestra ES la línea: mismo grosor y mismo guión que
+                          va a tener en el dibujo. */}
+                      <svg width="100%" height="10" viewBox="0 0 34 10" aria-hidden="true">
+                        <line x1="1" y1="5" x2="33" y2="5"
+                              stroke="currentColor" strokeWidth={rol.width}
+                              strokeDasharray={rol.dash ? rol.dash.join(' ') : undefined}
+                              strokeLinecap="round" />
+                      </svg>
+                      <span style={{ fontSize: 'var(--t-label)', fontFamily: 'var(--ui)' }}>{rol.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
             {/* Estilo de trazado especial — se aplica a lo que dibujes con lápiz o pluma */}
