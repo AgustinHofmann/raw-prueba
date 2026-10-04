@@ -1470,7 +1470,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [dragActive,     setDragActive]     = useState(false)
   // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
   // color sin tener que mirar al panel de la derecha.
-  const [eyeProbe,       setEyeProbe]       = useState<null | { x: number; y: number; hex: string }>(null)
+  // La lupa del gotero se mueve con el mouse, o sea hasta 120 veces por segundo.
+  // Antes su posicion y su color vivian en estado de React: cada movimiento
+  // re-renderizaba el editor ENTERO, y por eso se arrastraba al mover rapido.
+  // Ahora en estado queda solo si se ve o no (dos cambios por gesto, no dos por
+  // frame) y la posicion, el color y el texto se escriben directo en el DOM.
+  const [eyeOn,          setEyeOn]          = useState(false)
+  const eyeOnRef    = useRef(false)
+  const loupeBoxRef = useRef<HTMLDivElement>(null)
+  const loupeChipRef = useRef<HTMLDivElement>(null)
+  const loupeHexRef = useRef<HTMLSpanElement>(null)
   // Bordado: hacia dónde corren las puntadas y si está trabajando.
   // La lupa se dibuja a mano en cada movimiento del mouse: si sus píxeles
   // pasaran por el estado de React, repintaría el panel entero a 60 por segundo.
@@ -3830,7 +3839,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
 
       /** Dibuja los píxeles de alrededor agrandados, con el del centro marcado. */
-      const CELDAS = 11
+      // 7 celdas en vez de 11: alcanza para apuntar al pixel y la lupa tapa
+      // mucho menos el dibujo, que es justo lo que uno esta tratando de mirar.
+      const CELDAS = 7
+      // Un solo canvas auxiliar para todo el gesto. Antes se creaba uno nuevo en
+      // CADA movimiento: decenas de canvas por segundo para el recolector.
+      const chico = document.createElement('canvas')
+      chico.width = CELDAS; chico.height = CELDAS
       const pintarLupa = (e: fabric.TPointerEventInfo) => {
         const lc = loupeRef.current
         if (!lc) return
@@ -3860,8 +3875,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           try { datos = ctx.getImageData(px - r, py - r, CELDAS, CELDAS) } catch { return }
         }
         if (!datos) return
-        const chico = document.createElement('canvas')
-        chico.width = CELDAS; chico.height = CELDAS
         chico.getContext('2d')!.putImageData(datos, 0, 0)
         g.imageSmoothingEnabled = false
         g.clearRect(0, 0, lc.width, lc.height)
@@ -3876,28 +3889,53 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         g.strokeRect(r * z, r * z, z, z)
       }
 
-      /** Mueve la muestra, dibuja la lupa y —si estoy arrastrando— aplica el color. */
-      const preview = (e: fabric.TPointerEventInfo) => {
+      /** Mueve la muestra, dibuja la lupa y —si estoy arrastrando— aplica el color.
+       *
+       *  Todo el trabajo se hace UNA vez por cuadro: el mouse puede disparar
+       *  varios eventos entre dos cuadros y pintar la lupa de más no se ve en
+       *  pantalla, solo se siente como retraso. Se guarda el último evento y se
+       *  atiende en el siguiente frame; los del medio se descartan. */
+      let pendiente: fabric.TPointerEventInfo | null = null
+      let raf: number | null = null
+      let ultimoHex = ''
+
+      const dibujarCuadro = () => {
+        raf = null
+        const e = pendiente
+        pendiente = null
+        if (!e) return
+
+        // Posición: se escribe en el DOM, no en el estado. `transform` no obliga
+        // al navegador a recalcular la disposición de la página.
         const area = canvasAreaRef.current
         const ev   = e.e as MouseEvent
-        if (area && ev && typeof ev.clientX === 'number') {
+        if (area && ev && typeof ev.clientX === 'number' && loupeBoxRef.current) {
           const rc = area.getBoundingClientRect()
-          setEyeProbe(prev => ({
-            x: ev.clientX - rc.left, y: ev.clientY - rc.top,
-            hex: prev?.hex ?? fillRef.current ?? '#000000',
-          }))
+          loupeBoxRef.current.style.transform =
+            `translate(${Math.round(ev.clientX - rc.left + 16)}px, ${Math.round(ev.clientY - rc.top + 16)}px)`
         }
+
         pintarLupa(e)
         const patch = sampleAt(e)
         if (!patch) return
         const hex = patch.fill as string
-        setEyeProbe(prev => prev && { ...prev, hex })
+        if (hex !== ultimoHex) {
+          ultimoHex = hex
+          if (loupeChipRef.current) loupeChipRef.current.style.background = hex
+          if (loupeHexRef.current)  loupeHexRef.current.textContent = hex
+        }
         if (!scrubbing) return          // solo mirando: todavía no se toma nada
         lastPatch = patch
         // El color tomado pasa a ser el RELLENO activo (default de Illustrator)
         fillRef.current = hex
         setPropFill(hex)
         if (previewObj) { previewObj.set(patch as any); canvas.requestRenderAll() }
+      }
+
+      const preview = (e: fabric.TPointerEventInfo) => {
+        if (!eyeOnRef.current) { eyeOnRef.current = true; setEyeOn(true) }
+        pendiente = e
+        if (raf === null) raf = requestAnimationFrame(dibujarCuadro)
       }
 
       const onDown = (e: fabric.TPointerEventInfo) => {
@@ -3931,7 +3969,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
       // La muestra se va cuando el mouse SALE del lienzo, no al soltar: el gotero
       // sigue activo y hay que poder seguir apuntando sin volver a apretar.
-      const salir = () => { if (!scrubbing) setEyeProbe(null) }
+      const salir = () => {
+        if (scrubbing) return
+        if (raf !== null) { cancelAnimationFrame(raf); raf = null }
+        pendiente = null
+        eyeOnRef.current = false
+        setEyeOn(false)
+      }
 
       canvas.on('mouse:down', onDown)
       canvas.on('mouse:move', onMove)
@@ -3947,7 +3991,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.off('mouse:out', salir)
         window.removeEventListener('mouseup', finish)
         finish()
-        setEyeProbe(null)
+        if (raf !== null) { cancelAnimationFrame(raf); raf = null }
+        pendiente = null
+        eyeOnRef.current = false
+        setEyeOn(false)
         canvas.defaultCursor = 'default'
       })
     }
@@ -6788,30 +6835,31 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           {/* Gotero: lupa con los píxeles de alrededor y el color del centro.
               Se ve con solo pasar el mouse, antes de tocar nada, así se puede
               apuntar al píxel exacto en vez de clickear a ciegas. */}
-          <div style={{
-            position: 'absolute',
-            left: (eyeProbe?.x ?? 0) + 20, top: (eyeProbe?.y ?? 0) + 20,
+          <div ref={loupeBoxRef} style={{
+            // left/top quedan en 0 y la posicion la pone `transform` desde el
+            // propio manejador del mouse: mover con transform no obliga al
+            // navegador a recalcular la disposicion de la pagina en cada cuadro.
+            position: 'absolute', left: 0, top: 0,
             zIndex: 45, pointerEvents: 'none',
-            visibility: eyeProbe ? 'visible' : 'hidden',
+            visibility: eyeOn ? 'visible' : 'hidden',
             display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
-            borderRadius: 'var(--radius-lg)', overflow: 'hidden',
-            background: 'rgb(0 0 0 / 0.78)', border: '1px solid rgb(255 255 255 / 0.22)',
-            boxShadow: '0 6px 18px rgb(0 0 0 / 0.45)',
+            borderRadius: 'var(--radius-sm)', overflow: 'hidden',
+            background: 'rgb(0 0 0 / 0.80)', border: '1px solid rgb(255 255 255 / 0.22)',
+            boxShadow: '0 4px 12px rgb(0 0 0 / 0.45)',
           }}>
-            <canvas ref={loupeRef} width={110} height={110}
-              style={{ display: 'block', width: 110, height: 110 }} />
+            <canvas ref={loupeRef} width={70} height={70}
+              style={{ display: 'block', width: 70, height: 70 }} />
             <div style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
+              display: 'flex', alignItems: 'center', gap: 5, padding: '3px 5px',
               borderTop: '1px solid rgb(255 255 255 / 0.18)',
             }}>
-              <div style={{
-                width: 16, height: 16, borderRadius: 'var(--radius-sm)', flexShrink: 0,
-                background: eyeProbe?.hex ?? '#000',
+              <div ref={loupeChipRef} style={{
+                width: 10, height: 10, borderRadius: 2, flexShrink: 0,
+                background: '#000',
                 border: '1px solid rgb(255 255 255 / 0.5)',
               }} />
-              <span className="mono" style={{ fontSize: 11, color: '#fff', letterSpacing: '.02em' }}>
-                {eyeProbe?.hex ?? ''}
-              </span>
+              <span ref={loupeHexRef} className="mono"
+                style={{ fontSize: 10, color: '#fff', letterSpacing: '.02em' }} />
             </div>
           </div>
 
