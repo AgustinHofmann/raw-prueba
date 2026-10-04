@@ -1346,6 +1346,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const saltarCapas = useRef(false)
   const [hayCortes, setHayCortes] = useState(false)  // escala fija: el tamaño refleja los cm
   // Guías inteligentes (líneas magenta de alineación al arrastrar, como Illustrator)
+  // Etiqueta de medida viva: cuanto se movio lo que estas arrastrando, en cm.
+  // Illustrator la llama Measurement Label y es, por lejos, lo mas barato que se
+  // puede copiar de una herramienta profesional: durante un gesto SIEMPRE hay un
+  // numero en pantalla, asi no hay que soltar para saber cuanto moviste.
+  const arrastreDesde = useRef<{ left: number; top: number } | null>(null)
+  const medidaViva = useRef<{ x: number; y: number; texto: string } | null>(null)
   const smartGuides = useRef<{ v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }>({ v: null, h: null })
 
   const [tool, setTool] = useState<Tool>('select')
@@ -1935,6 +1941,26 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         ctx.restore()
       }
 
+      // Etiqueta de medida pegada al objeto que se esta arrastrando.
+      const m = medidaViva.current
+      if (m) {
+        const sx = vpt[0] * m.x + vpt[2] * m.y + vpt[4]
+        const sy = vpt[1] * m.x + vpt[3] * m.y + vpt[5]
+        ctx.save(); ctx.setTransform(rs, 0, 0, rs, 0, 0)
+        ctx.font = '11px ui-monospace, Menlo, monospace'
+        const w = ctx.measureText(m.texto).width + 12
+        const h = 18
+        // Se corre si no entra: una etiqueta cortada contra el borde no sirve.
+        const bx = Math.min(Math.max(2, sx + 8), canvas.getWidth() - w - 2)
+        const by = Math.min(Math.max(2, sy + 8), canvas.getHeight() - h - 2)
+        ctx.fillStyle = 'rgba(12,12,14,0.88)'
+        ctx.beginPath(); ctx.roundRect(bx, by, w, h, 3); ctx.fill()
+        ctx.fillStyle = '#f6f5f1'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(m.texto, bx + 6, by + h / 2 + 0.5)
+        ctx.restore()
+      }
+
       // Dibuja el contorno (trazado) de un objeto en azul, sobre el canvas.
       const strokeOutline = (obj: fabric.FabricObject) => {
         const pathCmds = (obj as any).path as any[][] | undefined
@@ -2040,10 +2066,39 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (Math.abs(bestY.d) <= thr) { obj.set({ top: (obj.top ?? 0) + bestY.d }); guides.h = { y: bestY.y, x1: bestY.x1, x2: bestY.x2 }; snapped = true }
       if (snapped) obj.setCoords()
       smartGuides.current = guides
+
+      // Cuanto se movio, en la unidad que le importa al taller.
+      const desde = arrastreDesde.current
+      if (desde) {
+        const ppc = pxPerCmRef.current
+        const dx = (obj.left ?? 0) - desde.left
+        const dy = (obj.top  ?? 0) - desde.top
+        const fmt = (v: number) => ppc > 0
+          ? (v / ppc).toFixed(1).replace('.', ',') + ' cm'
+          : Math.round(v) + ' px'
+        const bb = obj.getBoundingRect()
+        medidaViva.current = {
+          x: bb.left + bb.width, y: bb.top + bb.height,
+          texto: `${fmt(dx)}  ${fmt(dy)}`,
+        }
+      }
     }
     const clearGuides = () => {
-      if (smartGuides.current.v || smartGuides.current.h) { smartGuides.current = { v: null, h: null }; canvas.requestRenderAll() }
+      arrastreDesde.current = null
+      const habia = medidaViva.current !== null
+      medidaViva.current = null
+      if (habia || smartGuides.current.v || smartGuides.current.h) {
+        smartGuides.current = { v: null, h: null }
+        canvas.requestRenderAll()
+      }
     }
+    // De donde salio el objeto: se lee al apretar, antes del primer movimiento.
+    const marcarOrigen = () => {
+      const a = canvas.getActiveObject()
+      arrastreDesde.current = a ? { left: a.left ?? 0, top: a.top ?? 0 } : null
+      medidaViva.current = null
+    }
+    canvas.on('mouse:down', marcarOrigen)
     canvas.on('object:moving', onObjMoving)
     canvas.on('object:modified', clearGuides)
     canvas.on('mouse:up', clearGuides)
