@@ -2248,6 +2248,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         restoreGarmentPaint(design.garment)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
 
+        // El encuadre va DESPUÉS de reponer la prenda y los objetos: si se
+        // aplicara antes, el ajuste automático del lienzo al colocar la prenda
+        // lo pisaría y volveríamos al 100% centrado.
+        aplicarVista(design.vista)
+
         // Las tipografías del diseño hay que CARGARLAS al abrirlo.
         //
         // Antes solo se cargaban al elegirlas del menú, así que al abrir un
@@ -2406,6 +2411,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.zoomToPoint(pt, newZoom)
       canvas.requestRenderAll()
       setZoom(newZoom)
+      vistaCambiada()
     }
 
     let midPan = false
@@ -2455,6 +2461,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.relativePan(new fabric.Point(nx - vpt[4], ny - vpt[5]))
       canvas.requestRenderAll()
       setPanned(true)
+      vistaCambiada()
     }
 
     const onMUp = (e: MouseEvent) => {
@@ -4222,6 +4229,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         last = { x: ev.clientX, y: ev.clientY }
         canvas.relativePan(new fabric.Point(dx, dy))
         setPanned(true)
+        vistaCambiada()
       }
       const onUp = () => { panning = false; canvas.setCursor('grab') }
       canvas.on('mouse:down', onDown)
@@ -4256,6 +4264,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         canvas.zoomToPoint(new fabric.Point(pt.x, pt.y), next)
         canvas.requestRenderAll()
         setZoom(next)
+        vistaCambiada()
       }
       canvas.on('mouse:down', onDown)
       offs.push(() => {
@@ -5918,6 +5927,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // Lo que se manda a guardar. Lo usan el guardado a mano y el automático: si
   // fueran dos armados distintos, tarde o temprano guardarían cosas distintas.
+  /** Mover el encuadre ya no es "mirar": es parte del proyecto, porque se guarda.
+   *  Sin esto el autoguardado nunca se entera y el zoom se perdía al cerrar. */
+  function vistaCambiada() { markDirty() }
+
+  /** Zoom y encuadre actuales, tal como los guarda Fabric. */
+  function leerVista(): { zoom: number; vpt: number[] } | null {
+    const canvas = fc.current
+    if (!canvas) return null
+    const vpt = canvas.viewportTransform
+    if (!vpt) return null
+    return { zoom: canvas.getZoom(), vpt: [...vpt] }
+  }
+
+  /** Devuelve el lienzo al zoom y al encuadre con los que se cerró el proyecto. */
+  function aplicarVista(v: { zoom: number; vpt: number[] } | null | undefined) {
+    const canvas = fc.current
+    if (!canvas || !v || !Array.isArray(v.vpt) || v.vpt.length !== 6) return
+    if (!v.vpt.every(n => typeof n === 'number' && isFinite(n))) return
+    canvas.setViewportTransform(v.vpt as [number, number, number, number, number, number])
+    canvas.requestRenderAll()
+    const z = canvas.getZoom()
+    setZoom(z)
+    // El botón de "restablecer" solo tiene sentido si la vista está movida.
+    setPanned(Math.abs(v.vpt[4]) > 0.5 || Math.abs(v.vpt[5]) > 0.5)
+  }
+
   function buildSavePayload(): { thumbnail: string; canvasJson: string } | null {
     const canvas = fc.current
     if (!canvas) return null
@@ -5947,7 +5982,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })),
     }
     return {
-      canvasJson: JSON.stringify({ v: 2, objects: userObjs, garment }),
+      // La VISTA también se guarda: zoom y encuadre.
+      //
+      // Sin esto, al reabrir el proyecto el lienzo volvía al 100% centrado, y lo
+      // que habías dejado encuadrado al 5% aparecía en otro lado. Nada se movía
+      // de verdad —las coordenadas son las mismas— pero para quien mira es como
+      // si todo se hubiera corrido, y la única forma de recuperar el encuadre
+      // era buscarlo a mano.
+      canvasJson: JSON.stringify({ v: 2, objects: userObjs, garment, vista: leerVista() }),
       thumbnail: garmentThumbnail(canvas),
     }
   }
@@ -6002,6 +6044,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.requestRenderAll()
     setZoom(1)
     setPanned(false)
+    vistaCambiada()
   }
 
   // ── Remera paramétrica: (re)genera el mockup desde las medidas en cm ─────────
@@ -8802,13 +8845,18 @@ function convertirMedidas(g: SavedGarment | null | undefined, prenda: PrendaPara
   }
   return out
 }
-interface SavedDesign  { objects: object[]; garment: SavedGarment | null }
+interface SavedDesign  {
+  objects: object[]
+  garment: SavedGarment | null
+  /** Zoom y encuadre con los que se dejó el proyecto. */
+  vista?: { zoom: number; vpt: number[] } | null
+}
 
 function parseDesign(json: string): SavedDesign {
   try {
     const parsed = JSON.parse(json)
     if (Array.isArray(parsed)) return { objects: parsed, garment: null }      // formato viejo
-    return { objects: parsed?.objects ?? [], garment: parsed?.garment ?? null }
+    return { objects: parsed?.objects ?? [], garment: parsed?.garment ?? null, vista: parsed?.vista ?? null }
   } catch {
     return { objects: [], garment: null }
   }
