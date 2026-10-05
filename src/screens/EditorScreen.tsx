@@ -1427,6 +1427,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
   const [hasSel,        setHasSel]        = useState(false)
+  const [selKind,       setSelKind]       = useState<'none' | 'single' | 'multi' | 'group'>('none')
 
   /* Qué controles tienen sentido ahora mismo
      -------------------------------------------------------------------------
@@ -1439,7 +1440,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
      lo que tiene área; el bordado necesita un vector del que sacar la silueta;
      y sin selección manda la herramienta, porque lo que configurás es con qué
      vas a dibujar. */
-  const tipoSel = (selectedObj as any)?.type as string | undefined
+  // Con varios objetos tomados a la vez no hay UN objeto del que leer
+  // propiedades, pero seleccion hay: el panel tiene que seguir mostrando los
+  // controles que se aplican a todos (color, grosor, bordado).
+  const esMulti = selKind === 'multi'
+  const haySel = hasSel || esMulti
+  // Con varios tomados, el tipo de UNO no manda sobre el panel: si en el grupo
+  // cae una imagen, no por eso hay que esconderle el color al resto.
+  const tipoSel = (esMulti ? undefined : (selectedObj as any)?.type) as string | undefined
   const selEsImagen = tipoSel === 'image'
   const selEsTrazo  = tipoSel === 'path' || tipoSel === 'line' || tipoSel === 'polyline'
   const selEsFigura = ['rect', 'circle', 'ellipse', 'triangle', 'polygon'].includes(tipoSel ?? '')
@@ -1449,17 +1457,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                              'ellipse', 'polygon', 'star', 'text'].includes(tool)
 
   // Trazado (color y grosor): lo que se dibuja, o lo seleccionado si lo tiene.
-  const mostrarTrazado = hasSel ? !selEsImagen : herramientaDibuja
+  const mostrarTrazado = haySel ? (esMulti || !selEsImagen) : herramientaDibuja
   // Tipo de línea: es la gramática del dibujo técnico. Solo sobre trazos y
   // figuras, o mientras elegís con qué dibujar.
-  const mostrarTipoLinea = hasSel ? (selEsTrazo || selEsFigura) : herramientaDibuja
+  const mostrarTipoLinea = haySel ? (esMulti || selEsTrazo || selEsFigura) : herramientaDibuja
   // Estilo de trazado (bordado, cierre, costura): es del lápiz y de la pluma.
   // No se aplica a algo ya dibujado, así que no va con una selección cualquiera.
   const mostrarEstiloTrazo = tool === 'pencil' || tool === 'pen' || tool === 'curve'
   // Relleno: lo que tiene área. Una imagen no se rellena.
-  const mostrarRelleno = hasSel ? !selEsImagen : herramientaDibuja
+  const mostrarRelleno = haySel ? (esMulti || !selEsImagen) : herramientaDibuja
   // Bordado: necesita un vector del que sacar la silueta. Una imagen ya no lo es.
-  const puedeBordar = hasSel && !selEsImagen
+  const puedeBordar = haySel && (esMulti || !selEsImagen)
+  // Un bordado se reconoce por el original que lleva guardado adentro: si está,
+  // se puede volver atrás, y el panel ofrece quitarlo en lugar de aplicarlo.
+  const selEsBordado = !esMulti && !!(selectedObj as any)?._bordadoOrigen
   const [isText,        setIsText]        = useState(false)
   const [polySides,     setPolySides]     = useState(6)   // lados del polígono
   const [starPointCount, setStarPointCount] = useState(5) // puntas de la estrella
@@ -1497,7 +1508,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [vectorizing,    setVectorizing]    = useState(false)
   const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
-  const [selKind,        setSelKind]        = useState<'none' | 'single' | 'multi' | 'group'>('none')
   const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
@@ -4996,6 +5006,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           opacity: obj.opacity ?? 1, selectable: true, evented: true,
         })
         ;(img as any)._bordado = true
+        // Se guarda el objeto original adentro del bordado. Bordar reemplaza un
+        // vector por una imagen: sin esto, la única vuelta atrás es deshacer, y
+        // deshacer deja de servir en cuanto hacés otra cosa encima.
+        ;(img as any)._bordadoOrigen = obj.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
         if (clipEnabledRef.current && clipPath.current) img.clipPath = clipPath.current
         img.setCoords()
         canvas.remove(obj)
@@ -5003,13 +5017,65 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         nuevos.push(img)
       }
       canvas.discardActiveObject()
-      if (nuevos.length === 1) { canvas.setActiveObject(nuevos[0]); setSelectedObj(nuevos[0]) }
-      undoHistory.current.push({ type: 'erase', removed: activos, added: nuevos })
+      // Si se bordaron varios a la vez, el resultado es UN bordado: agruparlo
+      // solo evita que queden piezas sueltas que se separan al primer arrastre.
+      let resultado: fabric.FabricObject[] = nuevos
+      if (nuevos.length > 1) {
+        const grupo = makeGroup(nuevos)
+        ;(grupo as any)._bordado = true
+        ;(grupo as any)._bordadoOrigen = activos.map(o => o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']))
+        resultado = [grupo]
+      }
+      canvas.setActiveObject(resultado[0])
+      setSelectedObj(resultado[0])
+      undoHistory.current.push({ type: 'erase', removed: activos, added: resultado })
       redoHistory.current = []
       canvas.requestRenderAll()
       refreshLayersNow()
     } catch (err) {
       console.error('No se pudo bordar:', err)
+    } finally {
+      setBordando(false)
+    }
+  }
+
+  /** Devuelve un bordado a lo que era antes.
+   *
+   *  El original viaja guardado dentro de la imagen desde que se bordó, así que
+   *  esto no depende del historial: funciona aunque hayas hecho veinte cosas
+   *  después, y aunque hayas cerrado y vuelto a abrir el proyecto. */
+  async function quitarBordado() {
+    const canvas = fc.current
+    if (!canvas) return
+    const activos = (canvas.getActiveObjects?.() ?? []).filter(o => (o as any)._bordadoOrigen)
+    if (!activos.length) return
+
+    setBordando(true)
+    try {
+      const vueltos: fabric.FabricObject[] = []
+      for (const img of activos) {
+        const origen = (img as any)._bordadoOrigen
+        const jsons = Array.isArray(origen) ? origen : [origen]
+        const revividos = await (fabric.util as any).enlivenObjects(jsons) as fabric.FabricObject[]
+        for (const o of revividos) {
+          o.set({ strokeUniform: true, selectable: true, evented: true })
+          if (clipEnabledRef.current && clipPath.current && !(o instanceof fabric.IText)) o.clipPath = clipPath.current
+          o.setCoords()
+          canvas.add(o)
+          vueltos.push(o)
+        }
+        canvas.remove(img)
+      }
+      canvas.discardActiveObject()
+      if (vueltos.length === 1) { canvas.setActiveObject(vueltos[0]); setSelectedObj(vueltos[0]) }
+      undoHistory.current.push({ type: 'erase', removed: activos, added: vueltos })
+      redoHistory.current = []
+      canvas.requestRenderAll()
+      refreshLayersNow()
+      onToast?.(vueltos.length === 1 ? 'Bordado quitado' : `${vueltos.length} objetos recuperados`)
+    } catch (err) {
+      console.error('No se pudo quitar el bordado:', err)
+      onToast?.('No se pudo deshacer el bordado')
     } finally {
       setBordando(false)
     }
@@ -5963,7 +6029,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
       // circulitos azules y lineas punteadas como si fueran parte del diseno.
       .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -7599,23 +7665,37 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           {/* Pasar a bordado: un dibujo, una figura o un texto → hilo de verdad.
               Una imagen ya no tiene silueta vectorial de la que sacar puntadas,
               así que con una imagen seleccionada esta sección no aparece. */}
-          {puedeBordar && <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+          {(puedeBordar || selEsBordado) && <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
             <div className="label" style={{ marginBottom: 6 }}>Bordado</div>
-            <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
-              Convierte lo seleccionado en bordado. Toma el color del objeto como
-              color del hilo. Queda como imagen: el hilo ya no se edita como vector.
-            </p>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }}>
-              <span className="label">Dirección del hilo</span>
-              <NumberField value={bordadoAngulo} onChange={v => setBordadoAngulo(Math.max(0, Math.min(180, Math.round(v))))}
-                min={0} max={180} step={5} suffix="°" />
-            </div>
-            <button className="btn btn-primary btn-block"
-              disabled={!hasSel || bordando}
-              onClick={convertirEnBordado}
-              style={{ opacity: (!hasSel || bordando) ? 0.5 : 1, cursor: (!hasSel || bordando) ? 'default' : 'pointer' }}>
-              {bordando ? 'Bordando…' : 'Convertir en bordado'}
-            </button>
+            {selEsBordado ? <>
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
+                Esto ya es un bordado. Podés devolverlo a como estaba antes y
+                seguir editándolo como vector.
+              </p>
+              <button className="btn btn-block"
+                disabled={bordando}
+                onClick={quitarBordado}
+                style={{ opacity: bordando ? 0.5 : 1, cursor: bordando ? 'default' : 'pointer' }}>
+                {bordando ? 'Quitando…' : 'Quitar bordado'}
+              </button>
+            </> : <>
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
+                Convierte lo seleccionado en bordado. Toma el color del objeto como
+                color del hilo. Si hay varios objetos quedan agrupados en un solo
+                bordado, y siempre podés volver atrás desde este mismo panel.
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }}>
+                <span className="label">Dirección del hilo</span>
+                <NumberField value={bordadoAngulo} onChange={v => setBordadoAngulo(Math.max(0, Math.min(180, Math.round(v))))}
+                  min={0} max={180} step={5} suffix="°" />
+              </div>
+              <button className="btn btn-primary btn-block"
+                disabled={!haySel || bordando}
+                onClick={convertirEnBordado}
+                style={{ opacity: (!haySel || bordando) ? 0.5 : 1, cursor: (!haySel || bordando) ? 'default' : 'pointer' }}>
+                {bordando ? 'Bordando…' : 'Convertir en bordado'}
+              </button>
+            </>}
           </div>}
 
           {hasSel && (
