@@ -1427,6 +1427,39 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [selectedObj,  setSelectedObj]  = useState<fabric.FabricObject | null>(null)
 
   const [hasSel,        setHasSel]        = useState(false)
+
+  /* Qué controles tienen sentido ahora mismo
+     -------------------------------------------------------------------------
+     El panel mostraba SIEMPRE todo: tipo de línea y estilo de trazado aparecían
+     con una imagen seleccionada, con un texto, o sin nada. Un control que no
+     hace nada sobre lo que tenés enfrente no es una comodidad, es ruido — y
+     peor, te hace creer que lo apretaste y no pasó nada.
+
+     Las reglas, en una línea: el trazo es de lo que se dibuja; el relleno es de
+     lo que tiene área; el bordado necesita un vector del que sacar la silueta;
+     y sin selección manda la herramienta, porque lo que configurás es con qué
+     vas a dibujar. */
+  const tipoSel = (selectedObj as any)?.type as string | undefined
+  const selEsImagen = tipoSel === 'image'
+  const selEsTrazo  = tipoSel === 'path' || tipoSel === 'line' || tipoSel === 'polyline'
+  const selEsFigura = ['rect', 'circle', 'ellipse', 'triangle', 'polygon'].includes(tipoSel ?? '')
+  // Herramientas que dejan un trazo en el lienzo: lo que configures ahora es
+  // con qué se va a dibujar.
+  const herramientaDibuja = ['pen', 'pencil', 'curve', 'line', 'rect', 'rrect',
+                             'ellipse', 'polygon', 'star', 'text'].includes(tool)
+
+  // Trazado (color y grosor): lo que se dibuja, o lo seleccionado si lo tiene.
+  const mostrarTrazado = hasSel ? !selEsImagen : herramientaDibuja
+  // Tipo de línea: es la gramática del dibujo técnico. Solo sobre trazos y
+  // figuras, o mientras elegís con qué dibujar.
+  const mostrarTipoLinea = hasSel ? (selEsTrazo || selEsFigura) : herramientaDibuja
+  // Estilo de trazado (bordado, cierre, costura): es del lápiz y de la pluma.
+  // No se aplica a algo ya dibujado, así que no va con una selección cualquiera.
+  const mostrarEstiloTrazo = tool === 'pencil' || tool === 'pen' || tool === 'curve'
+  // Relleno: lo que tiene área. Una imagen no se rellena.
+  const mostrarRelleno = hasSel ? !selEsImagen : herramientaDibuja
+  // Bordado: necesita un vector del que sacar la silueta. Una imagen ya no lo es.
+  const puedeBordar = hasSel && !selEsImagen
   const [isText,        setIsText]        = useState(false)
   const [polySides,     setPolySides]     = useState(6)   // lados del polígono
   const [starPointCount, setStarPointCount] = useState(5) // puntas de la estrella
@@ -1548,10 +1581,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }, [measureEdit, tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
-  useEffect(() => { colorRef.current      = propStroke    }, [propStroke])
-  useEffect(() => { brushSizeRef.current  = propSWidth    }, [propSWidth])
+  /* Lo que usa la HERRAMIENTA y lo que muestra el PANEL son dos cosas distintas.
+     -------------------------------------------------------------------------
+     Antes eran la misma: el color del trazado, el relleno y el grosor vivían en
+     un solo estado que hacía de dos cosas a la vez — "con qué voy a dibujar" y
+     "qué tiene lo que está seleccionado". Como seleccionar algo escribe sus
+     propiedades en ese estado, seleccionar un objeto te cambiaba el color del
+     lápiz. Y si el objeto no tenía trazo (una imagen, por ejemplo lo que queda
+     después de bordar), se escribía negro y todo quedaba en negro.
+
+     Ahora los refs que leen las herramientas solo cambian cuando el usuario toca
+     un control del panel (ver applyStroke / applyFill / applyStrokeWidth). Mirar
+     un objeto ya no reconfigura la herramienta. */
   useEffect(() => { strokeStyleRef.current = strokeStyle   }, [strokeStyle])
-  useEffect(() => { fillRef.current       = propFill      }, [propFill])
   useEffect(() => { polySidesRef.current  = polySides     }, [polySides])
   useEffect(() => { starPointsRef.current = starPointCount }, [starPointCount])
   useEffect(() => { symbolsRef.current      = symbols      }, [symbols])
@@ -4227,9 +4269,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const syncProps = (obj: fabric.FabricObject | null) => {
         if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); return }
         setHasSel(true)
-        setPropFill(typeof obj.fill   === 'string' ? obj.fill   : null)
-        setPropStroke(typeof obj.stroke === 'string' ? obj.stroke : '#000000')
-        setPropSWidth(obj.strokeWidth ?? 1)
+        // Si el objeto no tiene trazo o relleno de color (una imagen, por
+        // ejemplo), se deja lo que el panel ya mostraba en vez de inventar un
+        // negro: ese negro inventado era lo que "reiniciaba" las propiedades.
+        setPropFill(typeof obj.fill === 'string' ? obj.fill : null)
+        if (typeof obj.stroke === 'string') setPropStroke(obj.stroke)
+        if (obj.strokeWidth != null)        setPropSWidth(obj.strokeWidth)
         // Grosor "Mixto" si hay varios objetos seleccionados con distinto strokeWidth
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
@@ -5199,6 +5244,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // ── Property panel handlers ─────────────────────────────────────────────────
   function applyFill(val: string | null) {
     setPropFill(val)
+    fillRef.current = val          // elegido por el usuario: pasa a ser el relleno activo
     const obj = fc.current?.getActiveObject()
     if (obj && !mockupObjects.current.includes(obj)) {
       obj.set({ fill: val ?? undefined })
@@ -5241,6 +5287,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   function applyStroke(val: string) {
     setPropStroke(val)
+    colorRef.current = val         // elegido por el usuario: pasa a ser el color activo
     const obj = fc.current?.getActiveObject()
     if (obj && !mockupObjects.current.includes(obj)) {
       obj.set({ stroke: val })
@@ -5296,6 +5343,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyStrokeWidth(val: number) {
     const clamped = Math.max(0.5, val)
     setPropSWidth(clamped)
+    brushSizeRef.current = clamped  // elegido por el usuario: pasa a ser el grosor activo
     setPropSWidthMixed(false)   // al escribir un número se igualan todos
     const canvas = fc.current
     if (!canvas) return
@@ -7382,8 +7430,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
           )}
 
-          {/* Relleno */}
-          <div>
+          {/* Relleno: solo para lo que tiene área */}
+          {mostrarRelleno && <div>
             <div className="label" style={{ marginBottom: 8 }}>Relleno</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {propFill !== null ? (
@@ -7403,10 +7451,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 </button>
               )}
             </div>
-          </div>
+          </div>}
 
           {/* Trazado */}
-          <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+          {mostrarTrazado && <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
             <div className="label" style={{ marginBottom: 8 }}>Trazado</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <ColorPicker value={propStroke} onChange={applyStroke} title="Color del trazado" />
@@ -7423,7 +7471,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             {/* Tipo de línea: qué SIGNIFICA el trazo en el dibujo técnico.
                 Va antes que "Estilo" porque es la decisión de arriba: primero
                 qué es la línea, después con qué puntada se dibuja. */}
-            <div style={{ marginTop: 12 }}>
+            {mostrarTipoLinea && <div style={{ marginTop: 12 }}>
               <span className="label" style={{ display: 'block', marginBottom: 2 }}>Tipo de línea</span>
               <p className="sec-hint" style={{ margin: '0 0 6px' }}>
                 Fija el grosor que el taller espera para cada cosa.
@@ -7462,10 +7510,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   )
                 })}
               </div>
-            </div>
+            </div>}
 
-            {/* Estilo de trazado especial — se aplica a lo que dibujes con lápiz o pluma */}
-            <div style={{ marginTop: 12 }}>
+            {/* Estilo de trazado especial: es del lápiz y de la pluma, no de un
+                objeto ya dibujado. Por eso aparece con esas herramientas y no
+                cuando tenés algo seleccionado. */}
+            {mostrarEstiloTrazo && <div style={{ marginTop: 12 }}>
               <span className="label" style={{ display: 'block', marginBottom: 6 }}>Estilo</span>
               <div style={{ display: 'flex', gap: 4 }}>
                 {([
@@ -7500,11 +7550,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     : 'una línea de costura'}.
                 </p>
               )}
-            </div>
-          </div>
+            </div>}
+          </div>}
 
-          {/* Pasar a bordado: un dibujo, una figura o un texto → hilo de verdad */}
-          <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
+          {/* Pasar a bordado: un dibujo, una figura o un texto → hilo de verdad.
+              Una imagen ya no tiene silueta vectorial de la que sacar puntadas,
+              así que con una imagen seleccionada esta sección no aparece. */}
+          {puedeBordar && <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
             <div className="label" style={{ marginBottom: 6 }}>Bordado</div>
             <p style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 9, lineHeight: 1.45 }}>
               Convierte lo seleccionado en bordado. Toma el color del objeto como
@@ -7521,12 +7573,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               style={{ opacity: (!hasSel || bordando) ? 0.5 : 1, cursor: (!hasSel || bordando) ? 'default' : 'pointer' }}>
               {bordando ? 'Bordando…' : 'Convertir en bordado'}
             </button>
-            {!hasSel && (
-              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 7 }}>
-                Seleccioná primero un dibujo, una figura o un texto.
-              </p>
-            )}
-          </div>
+          </div>}
 
           {hasSel && (
             <div className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>· objeto seleccionado</div>
