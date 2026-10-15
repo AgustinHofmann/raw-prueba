@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project, TechPackMeasures } from '../types/project'
+import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
@@ -26,7 +26,7 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
-  onOpenTechPack: (snapshot: string, measures: TechPackMeasures | null) => void
+  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null) => void
   onToast?: (msg: string) => void
 }
 
@@ -4625,13 +4625,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // Importar imagen tal cual (raster), sin vectorizar — como "Colocar" de Illustrator
+  /** Pasa un archivo a data URL.
+   *
+   *  Las imagenes NO pueden entrar al lienzo como blob: una URL de objeto vive
+   *  mientras vive la pestana, y lo que se guarda del lienzo es justamente esa
+   *  URL. Al reabrir el proyecto la direccion ya no apunta a nada y la imagen
+   *  desaparecia: el diseno se guardaba sin sus logos y nadie se enteraba hasta
+   *  volver a abrirlo. En data URL la imagen viaja ADENTRO del proyecto. */
+  function aDataUrl(blob: Blob): Promise<string> {
+    return new Promise((listo, falla) => {
+      const fr = new FileReader()
+      fr.onload  = () => listo(String(fr.result))
+      fr.onerror = () => falla(fr.error)
+      fr.readAsDataURL(blob)
+    })
+  }
+
   async function handlePlaceImage(file: File) {
     const canvas = fc.current
     if (!canvas) return
     try {
-      const url = URL.createObjectURL(file)
-      const img = await fabric.FabricImage.fromURL(url, { crossOrigin: 'anonymous' })
-      URL.revokeObjectURL(url)
+      const img = await fabric.FabricImage.fromURL(await aDataUrl(file), { crossOrigin: 'anonymous' })
       const cw = canvas.width  ?? 800
       const ch = canvas.height ?? 600
       const scale = Math.min(cw / (img.width ?? 1), ch / (img.height ?? 1)) * 0.85
@@ -5917,8 +5931,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (item.type.startsWith('image/')) {
           const blob = item.getAsFile()
           if (!blob) continue
-          const url = URL.createObjectURL(blob)
-          fabric.FabricImage.fromURL(url).then((img: fabric.FabricImage) => {
+          // Igual que al importar: en data URL, o la imagen pegada se pierde
+          // al reabrir el proyecto.
+          aDataUrl(blob).then(src => fabric.FabricImage.fromURL(src)).then((img: fabric.FabricImage) => {
             const maxSide = 400
             const w = img.width ?? 100
             const h = img.height ?? 100
@@ -6122,7 +6137,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     const img = canvas.toDataURL(opts)
     measureEditRef.current = wasMeasure
-    onOpenTechPack(img, isTee ? measures : null)
+    // La remera tiene sus medidas propias; el resto de las prendas
+    // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
+    // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
+    // la app conozca los numeros.
+    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
   }
 
   function resetView() {
