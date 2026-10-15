@@ -10,7 +10,7 @@ import {
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type {
-  Project, TechPackMeasures, TechPackDoc, TechPackPage, TechPackPageKind,
+  Project, TechPackDoc, TechPackPage, TechPackPageKind,
   BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole,
 } from '../types/project'
 import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName } from '../lib/techpackTemplate'
@@ -20,7 +20,7 @@ interface Props {
   project: Project
   designer: string
   snapshot: string
-  measures: TechPackMeasures | null
+  measures: Record<string, number> | null
   onSave: (doc: TechPackDoc) => void
   onBackToEditor: () => void
   onClose: () => void

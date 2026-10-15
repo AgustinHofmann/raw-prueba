@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { Project, Folder, Tab, tabKey, TechPackMeasures, TechPackDoc } from './types/project'
+import { Project, Folder, Tab, tabKey, TechPackDoc } from './types/project'
 // Todo pasa por repo: guarda primero en el navegador y sube a la nube después.
 // Ver lib/repo.ts.
 import { listProjects, listFolders, getCanvas, getTechpack, saveProject, saveTechpack,
@@ -162,7 +162,7 @@ export default function App() {
 
   // Abre (o reenfoca y refresca) la pestaña de ficha técnica del proyecto activo,
   // en paralelo con el editor. La llama EditorScreen vía onOpenTechPack.
-  async function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
+  async function openTechPackTab(snapshot: string, measures: Record<string, number> | null) {
     const base = activeProject
     if (!base) return
     // Carga lazy del documento guardado

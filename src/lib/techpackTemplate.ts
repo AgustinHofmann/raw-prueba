@@ -1,6 +1,6 @@
 import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
-  TechPackMeasures, BomRow, PomRow, TechPackImageSlot,
+  BomRow, PomRow, TechPackImageSlot,
 } from '../types/project'
 
 const uid = () => crypto.randomUUID()
@@ -79,7 +79,7 @@ function defaultBom(mockupId: Project['mockupId'], colors: string[]): BomRow[] {
 }
 
 // ─── POM por tipo de prenda ──────────────────────────────────────────────────
-const BASE_POMS: { code: string; punto: string; key: keyof TechPackMeasures; htm: string; tol: string }[] = [
+const BASE_POMS: { code: string; punto: string; key: string; htm: string; tol: string }[] = [
   { code: 'A', punto: 'Largo total',           key: 'largoTotal',        htm: 'Desde HPS hasta ruedo',       tol: '1' },
   { code: 'B', punto: 'Ancho de pecho',        key: 'anchoPecho',        htm: '2.5 cm bajo sisa, plano',     tol: '1' },
   { code: 'C', punto: 'Ancho de cintura',      key: 'anchoCintura',      htm: 'Punto más angosto, plano',    tol: '1' },
@@ -89,7 +89,10 @@ const BASE_POMS: { code: string; punto: string; key: keyof TechPackMeasures; htm
   { code: 'G', punto: 'Ancho de manga',        key: 'anchoManga',        htm: 'Plano en la sisa',            tol: '0.5' },
 ]
 
-const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm: string; tol: string }[]> = {
+// `key` es la medida de la prenda que llena la columna Base. Las filas que no
+// la tienen (las que se miden sobre la prenda cosida, como el tiro) se cargan
+// a mano en el taller.
+const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm: string; tol: string; key?: string }[]> = {
   tshirt: [],
   chomba: [
     { code: 'H', punto: 'Alto de cuello',    htm: 'Costura a borde',   tol: '0.5' },
@@ -98,44 +101,47 @@ const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm
     { code: 'K', punto: 'Alto de puño',      htm: 'Borde a costura',   tol: '0.5' },
   ],
   musculosa: [
-    { code: 'A', punto: 'Largo total',           htm: 'Desde HPS hasta ruedo',      tol: '1' },
-    { code: 'B', punto: 'Ancho de pecho',        htm: '2.5 cm bajo sisa, plano',    tol: '1' },
-    { code: 'C', punto: 'Ancho de cintura',      htm: 'Punto más angosto, plano',   tol: '1' },
-    { code: 'D', punto: 'Ancho de hombros',      htm: 'Punta a punta, plano',       tol: '1' },
-    { code: 'E', punto: 'Ancho de cuello',       htm: 'Interior costura a costura', tol: '0.5' },
-    { code: 'F', punto: 'Profundidad de cuello', htm: 'Desde HPS a base del cuello', tol: '0.5' },
+    { code: 'A', punto: 'Largo total',           htm: 'Desde HPS hasta ruedo',      tol: '1',   key: 'largoTotal' },
+    { code: 'B', punto: 'Ancho de pecho',        htm: '2.5 cm bajo sisa, plano',    tol: '1',   key: 'anchoPecho' },
+    { code: 'C', punto: 'Ancho de cintura',      htm: 'Punto más angosto, plano',   tol: '1',   key: 'anchoCintura' },
+    { code: 'D', punto: 'Ancho de hombros',      htm: 'Punta a punta, plano',       tol: '1',   key: 'anchoHombro' },
+    { code: 'E', punto: 'Ancho de cuello',       htm: 'Interior costura a costura', tol: '0.5', key: 'anchoCuello' },
+    { code: 'F', punto: 'Profundidad de cuello', htm: 'Desde HPS a base del cuello', tol: '0.5', key: 'profundidadCuello' },
     { code: 'G', punto: 'Alto de sisa',          htm: 'Hombro a axila, recto',      tol: '0.5' },
     { code: 'H', punto: 'Ancho de collarete',    htm: 'Costura a borde',            tol: '0.3' },
     { code: 'I', punto: 'Alto de abertura',      htm: 'Ruedo a remate',             tol: '0.5' },
   ],
   short: [
-    { code: 'A', punto: 'Largo total',      htm: 'Cintura a ruedo, costado', tol: '1' },
-    { code: 'B', punto: 'Cintura relajada', htm: 'Borde a borde, plano',     tol: '1' },
+    { code: 'A', punto: 'Largo total',      htm: 'Cintura a ruedo, costado', tol: '1',   key: 'largoTotal' },
+    { code: 'B', punto: 'Cintura relajada', htm: 'Borde a borde, plano',     tol: '1',   key: 'cintura' },
     { code: 'C', punto: 'Cintura estirada', htm: 'Borde a borde, estirado',  tol: '1' },
-    { code: 'D', punto: 'Cadera',           htm: '18 cm bajo cintura',       tol: '1' },
+    { code: 'D', punto: 'Cadera',           htm: '18 cm bajo cintura',       tol: '1',   key: 'cadera' },
     { code: 'E', punto: 'Tiro delantero',   htm: 'Entrepierna a cintura',    tol: '0.5' },
-    { code: 'F', punto: 'Boca de pierna',   htm: 'Plano, una pierna',        tol: '0.5' },
+    { code: 'F', punto: 'Boca de pierna',   htm: 'Plano, una pierna',        tol: '0.5', key: 'ruedo' },
     { code: 'G', punto: 'Entrepierna',      htm: 'Costura interior',         tol: '0.5' },
     { code: 'H', punto: 'Alto de cintura',  htm: 'Borde a costura',          tol: '0.3' },
     { code: 'I', punto: 'Ancho de vivo',    htm: 'Plano',                    tol: '0.2' },
   ],
   pants: [
-    { code: 'A', punto: 'Cintura',          htm: 'Borde a borde, plano',  tol: '1' },
-    { code: 'B', punto: 'Cadera / asiento', htm: '18 cm bajo cintura',    tol: '1' },
+    { code: 'A', punto: 'Cintura',          htm: 'Borde a borde, plano',  tol: '1',   key: 'cintura' },
+    { code: 'B', punto: 'Cadera / asiento', htm: '18 cm bajo cintura',    tol: '1',   key: 'cadera' },
     { code: 'C', punto: 'Tiro delantero',   htm: 'Entrepierna a cintura', tol: '0.5' },
     { code: 'D', punto: 'Tiro trasero',     htm: 'Entrepierna a cintura', tol: '0.5' },
     { code: 'E', punto: 'Muslo',            htm: '2.5 cm bajo entrepierna', tol: '0.5' },
-    { code: 'F', punto: 'Rodilla',          htm: 'Plano',                 tol: '0.5' },
-    { code: 'G', punto: 'Boca de pierna',   htm: 'Plano',                 tol: '0.5' },
+    { code: 'F', punto: 'Rodilla',          htm: 'Plano',                 tol: '0.5', key: 'rodilla' },
+    { code: 'G', punto: 'Boca de pierna',   htm: 'Plano',                 tol: '0.5', key: 'ruedo' },
     { code: 'H', punto: 'Entrepierna',      htm: 'Costura interior',      tol: '0.5' },
   ],
 }
 
-function defaultPoms(mockupId: Project['mockupId'], measures: TechPackMeasures | null): PomRow[] {
+function defaultPoms(mockupId: Project['mockupId'], measures: Record<string, number> | null): PomRow[] {
   // Estas tres no comparten la tabla de la remera: no tienen manga, o
   // directamente no son una prenda de arriba.
   if (mockupId === 'pants' || mockupId === 'musculosa' || mockupId === 'short') {
-    return EXTRA_POMS[mockupId].map(p => ({ id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol, base: null }))
+    return EXTRA_POMS[mockupId].map(p => ({
+      id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol,
+      base: (measures && p.key && measures[p.key] != null) ? measures[p.key] : null,
+    }))
   }
   const rows: PomRow[] = BASE_POMS.map(p => ({
     id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol,
@@ -159,7 +165,7 @@ function defaultImages(snapshot: string | null): TechPackImageSlot[] {
 
 export function buildDefaultTechPack(
   project: Project,
-  measures: TechPackMeasures | null,
+  measures: Record<string, number> | null,
   snapshot: string | null,
 ): TechPackDoc {
   const pages: TechPackPage[] = DEFAULT_PAGES.map(kind => ({
