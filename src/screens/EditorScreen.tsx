@@ -1482,7 +1482,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // No se aplica a algo ya dibujado, así que no va con una selección cualquiera.
   const mostrarEstiloTrazo = tool === 'pencil' || tool === 'pen' || tool === 'curve'
   // Relleno: lo que tiene área. Una imagen no se rellena.
-  const mostrarRelleno = haySel ? (esMulti || !selEsImagen) : herramientaDibuja
+  // El balde PINTA con el relleno: es la unica forma de elegir con que color
+  // va a pintar, asi que tiene que mostrarlo aunque no dibuje una forma nueva.
+  const mostrarRelleno = haySel ? (esMulti || !selEsImagen) : (herramientaDibuja || tool === 'fill')
   // Bordado: necesita un vector del que sacar la silueta. Una imagen ya no lo es.
   const puedeBordar = haySel && (esMulti || !selEsImagen)
   // Un bordado se reconoce por el original que lleva guardado adentro: si está,
