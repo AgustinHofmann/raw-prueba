@@ -3788,7 +3788,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
       // volvía por encima del color recién elegido.
       const pintar = (objs: fabric.FabricObject[]) => {
-        const receta: PaintSnap = { fill: colorRef.current, base: colorRef.current }
+        // Pinta con el RELLENO, que es lo que muestra el panel cuando el balde
+        // esta activo. Antes tomaba el color de trazo: elegias un relleno, el
+        // panel te lo mostraba, y la pieza salia del color de la linea.
+        const color = fillRef.current ?? colorRef.current
+        const receta: PaintSnap = { fill: color, base: color }
         const items = objs
           .filter(o => o && !(o as any)._locked)
           .map(o => ({ obj: o, prev: snapshotPaint(o) }))
