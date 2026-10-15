@@ -1,7 +1,7 @@
 export interface Project {
   id: string
   name: string
-  mockupId: 'tshirt' | 'chomba' | 'pants'
+  mockupId: 'tshirt' | 'chomba' | 'pants' | 'musculosa' | 'short'
   thumbnail: string | null
   canvasJson: string | null
   techpackJson: string | null   // documento de ficha técnica serializado (TechPackDoc como JSON)

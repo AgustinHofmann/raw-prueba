@@ -11,11 +11,13 @@ const MOCKUPS = [
   { id: 'tshirt' as const, label: 'Remera', src: '/mockups/tshirt.svg' },
   { id: 'chomba' as const, label: 'Chomba', src: '/mockups/chomba.svg' },
   { id: 'pants'  as const, label: 'Pantalon', src: '/mockups/pants.svg' },
+  { id: 'musculosa' as const, label: 'Musculosa', src: '/mockups/musculosa.svg' },
+  { id: 'short'  as const, label: 'Short', src: '/mockups/short.svg' },
 ]
 
 export default function NewProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('Sin titulo')
-  const [selectedMockup, setSelectedMockup] = useState<'tshirt' | 'chomba' | 'pants'>('tshirt')
+  const [selectedMockup, setSelectedMockup] = useState<Project['mockupId']>('tshirt')
 
   function handleCreate() {
     const now = Date.now()

@@ -18,6 +18,8 @@ const MOCKUP_LABELS: Record<string, string> = {
   tshirt: 'Remera',
   chomba: 'Chomba',
   pants: 'Pantalón',
+  musculosa: 'Musculosa',
+  short: 'Short',
 }
 
 export default function HomeScreen({

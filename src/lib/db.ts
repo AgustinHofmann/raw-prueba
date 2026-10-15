@@ -111,7 +111,7 @@ export async function deleteFolder(id: string): Promise<void> {
 // mockup_id = 'hoodie'. Sin esto la app buscaría /mockups/hoodie.svg, no lo
 // encontraría y el proyecto abriría vacío. Se abre como remera, que es la
 // prenda por defecto, en vez de romperse.
-const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants']
+const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants', 'musculosa', 'short']
 function normalizeMockupId(v: unknown): Project['mockupId'] {
   return MOCKUPS_VALIDOS.includes(v as Project['mockupId']) ? v as Project['mockupId'] : 'tshirt'
 }

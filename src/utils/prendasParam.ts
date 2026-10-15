@@ -286,8 +286,151 @@ const chomba: PrendaParam = {
 
 chomba.segundaMitad = (id) => id.endsWith('-back')
 
+// ── Musculosa ────────────────────────────────────────────────────────────────
+//
+// Es una remera con la manga cortada al ras: el hombro cae hasta la punta, la
+// sisa es un corte hondo que entra hacia el centro, y el costado baja recto
+// hasta una abertura en el ruedo.
+//
+// Los números salen del generador del dibujo (el mismo que escribió el SVG), no
+// de medir a ojo: altura del hombro, de la axila y del ruedo tienen que ser los
+// mismos acá y allá, o al cambiar un talle la prenda sale torcida.
+const MUSC_UPC = 2.6
+const MUSC_CX_FRENTE  = 100
+const MUSC_CX_ESPALDA = 320
+const MUSC_Y_HPS    = 5      // alto de hombro: de acá se mide el largo
+const MUSC_Y_HOMBRO = 27     // punta del hombro
+const MUSC_Y_SISA   = 120    // axila
+const MUSC_Y_RUEDO  = 177    // arranque de la tira del ruedo
+const MUSC_Y_ABAJO  = 192.2
+// El escote: lo que cae dentro de esta caja se mueve con el cuello y no con el
+// pecho. Sin esto, subir un talle agrandaría también el escote.
+const MUSC_ESCOTE_X = 34
+const MUSC_ESCOTE_Y = 36
+
+/** Lo que mide el dibujo, en cm. Con estos valores la prenda sale sin tocar. */
+const MUSC_CM = {
+  largoTotal: 72, anchoPecho: 58, anchoCintura: 58,
+  anchoHombro: 58, anchoCuello: 20, profundidadCuello: 10,
+}
+
+const musculosa: PrendaParam = {
+  svg: '/mockups/musculosa.svg',
+  unidadesPorCm: MUSC_UPC,
+  defaults: { ...MUSC_CM },
+  campos: [
+    { key: 'largoTotal',   label: 'Largo total',      min: 55, max: 95 },
+    { key: 'anchoPecho',   label: 'Ancho de pecho',   min: 40, max: 80 },
+    { key: 'anchoCintura', label: 'Ancho de cintura', min: 40, max: 80 },
+    { key: 'anchoHombro',  label: 'Ancho de hombros', min: 38, max: 78 },
+    { key: 'anchoCuello',  label: 'Ancho de cuello',  min: 14, max: 32 },
+    { key: 'profundidadCuello', label: 'Profundidad de cuello', min: 4, max: 24 },
+  ],
+  grupos: [
+    { id: 'largo',  label: 'Largo',                 keys: ['largoTotal'] },
+    { id: 'ancho',  label: 'Ancho (pecho/cintura)', keys: ['anchoPecho', 'anchoCintura'] },
+    { id: 'hombro', label: 'Hombros',               keys: ['anchoHombro'] },
+    { id: 'cuello', label: 'Cuello',                keys: ['anchoCuello', 'profundidadCuello'] },
+  ],
+  segundaMitad: (id) => id.includes('-back') || id === 'collar-back',
+  warp: (m, id) => {
+    const fPecho   = m.anchoPecho   / MUSC_CM.anchoPecho
+    const fCintura = m.anchoCintura / MUSC_CM.anchoCintura
+    const fHombro  = m.anchoHombro  / MUSC_CM.anchoHombro
+    const fCuello  = m.anchoCuello  / MUSC_CM.anchoCuello
+    const fProf    = m.profundidadCuello / MUSC_CM.profundidadCuello
+
+    // El largo estira SOLO de la axila para abajo. Arriba están el hombro, la
+    // sisa y el cuello, que no cambian porque la prenda sea más larga.
+    const altoFijo = MUSC_Y_SISA - MUSC_Y_HPS
+    const fLargo = Math.max(0.15,
+      (m.largoTotal * MUSC_UPC - altoFijo) / (MUSC_Y_ABAJO - MUSC_Y_SISA))
+
+    const esEspalda = id.includes('-back') || id === 'collar-back'
+    const cx = esEspalda ? MUSC_CX_ESPALDA : MUSC_CX_FRENTE
+
+    const alto = (y: number) =>
+      y <= MUSC_Y_SISA ? y : MUSC_Y_SISA + (y - MUSC_Y_SISA) * fLargo
+
+    // Cuánto se abre la prenda a cada altura: hombro arriba, pecho en la axila,
+    // cintura en el ruedo. Una sola función para todo, así el vivo de la sisa y
+    // el ruedo acompañan al cuerpo sin despegarse.
+    const ancho = (y: number) =>
+      y <= MUSC_Y_HOMBRO ? fHombro :
+      y <= MUSC_Y_SISA   ? fHombro + (fPecho - fHombro) * ((y - MUSC_Y_HOMBRO) / (MUSC_Y_SISA - MUSC_Y_HOMBRO)) :
+      y >= MUSC_Y_RUEDO  ? fCintura :
+      fPecho + (fCintura - fPecho) * ((y - MUSC_Y_SISA) / (MUSC_Y_RUEDO - MUSC_Y_SISA))
+
+    // Qué tan hondo baja el escote, medido desde el alto de hombro.
+    const hondo = (y: number) =>
+      y <= MUSC_Y_HPS ? y : MUSC_Y_HPS + (y - MUSC_Y_HPS) * fProf
+
+    // El collarete y el hueco del escote van con la medida del cuello.
+    if (id.includes('collar') || id.includes('escote')) {
+      return (x, y) => [cx + (x - cx) * fCuello, hondo(y)]
+    }
+
+    return (x, y) => {
+      const dx = x - cx
+      // El escote está dibujado dentro del cuerpo: si se ensanchara con el
+      // pecho, el collarete —que sigue a SU medida— se despegaría.
+      if (y <= MUSC_ESCOTE_Y && Math.abs(dx) <= MUSC_ESCOTE_X) return [cx + dx * fCuello, hondo(y)]
+      return [cx + dx * ancho(y), alto(y)]
+    }
+  },
+}
+
+// ── Short deportivo ──────────────────────────────────────────────────────────
+//
+// Oversize: tiro alto, pierna ancha y dos vivos al costado. Se deforma como el
+// pantalón —el ancho depende de la altura— pero la cintura no se estira: lo que
+// se alarga es la pierna, igual que al pedir un short más largo.
+const SHORT_UPC = 2.6
+const SHORT_CX_FRENTE  = 100
+const SHORT_CX_ESPALDA = 320
+const SHORT_Y_CINTO = 15.6    // abajo de la cintura elástica
+const SHORT_Y_CADERA = 54.6
+const SHORT_Y_ABAJO  = 143
+
+/** Lo que mide el dibujo, en cm. Cintura y cadera son de lado a lado; el ruedo,
+ *  de una pierna. */
+const SHORT_CM = { largoTotal: 55, cintura: 42, cadera: 56, ruedo: 32 }
+
+const short: PrendaParam = {
+  svg: '/mockups/short.svg',
+  unidadesPorCm: SHORT_UPC,
+  defaults: { ...SHORT_CM },
+  campos: [
+    { key: 'largoTotal', label: 'Largo total', min: 35, max: 75 },
+    { key: 'cintura',    label: 'Cintura',     min: 28, max: 60 },
+    { key: 'cadera',     label: 'Cadera',      min: 38, max: 80 },
+    { key: 'ruedo',      label: 'Boca de pierna', min: 18, max: 48 },
+  ],
+  grupos: [
+    { id: 'largo',  label: 'Largo',            keys: ['largoTotal'] },
+    { id: 'arriba', label: 'Cintura y cadera', keys: ['cintura', 'cadera'] },
+    { id: 'pierna', label: 'Pierna',           keys: ['ruedo'] },
+  ],
+  segundaMitad: (id) => id.includes('-back'),
+  warp: (m, id) => {
+    const cx = id.includes('-back') ? SHORT_CX_ESPALDA : SHORT_CX_FRENTE
+    // La cintura no se estira: el largo sale de ahí para abajo.
+    const fLargo = Math.max(0.15,
+      (m.largoTotal * SHORT_UPC - SHORT_Y_CINTO) / (SHORT_Y_ABAJO - SHORT_Y_CINTO))
+    const ctrl: [number, number][] = [
+      [0,              m.cintura / SHORT_CM.cintura],
+      [SHORT_Y_CADERA, m.cadera  / SHORT_CM.cadera],
+      [SHORT_Y_ABAJO,  m.ruedo   / SHORT_CM.ruedo],
+    ]
+    return (x, y) => [
+      cx + (x - cx) * factorPorAltura(y, ctrl),
+      y <= SHORT_Y_CINTO ? y : SHORT_Y_CINTO + (y - SHORT_Y_CINTO) * fLargo,
+    ]
+  },
+}
+
 /** Las prendas que se pueden editar por medidas, además de la remera. */
-export const PRENDAS_PARAM: Record<string, PrendaParam> = { pants: pantalon, chomba }
+export const PRENDAS_PARAM: Record<string, PrendaParam> = { pants: pantalon, chomba, musculosa, short }
 
 /** Una pieza del dibujo, ya leída del archivo. */
 export interface PiezaSvg {

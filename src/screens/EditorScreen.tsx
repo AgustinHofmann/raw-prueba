@@ -544,6 +544,21 @@ const PIECE_LABELS: Record<string, string> = {
   'collar-band-front': 'Tira del cuello', 'collar-back': 'Cuello espalda',
   'inner-escote': 'Interior del escote',
   'waistband-left': 'Cintura L', 'waistband-right': 'Cintura R',
+  // Musculosa
+  'binding-left-front': 'Vivo de sisa L', 'binding-right-front': 'Vivo de sisa R',
+  'binding-left-back': 'Vivo de sisa L espalda', 'binding-right-back': 'Vivo de sisa R espalda',
+  'slit-left-front': 'Abertura L', 'slit-right-front': 'Abertura R',
+  'slit-left-back': 'Abertura L espalda', 'slit-right-back': 'Abertura R espalda',
+  // Short
+  'waistband-front': 'Cintura frente', 'waistband-back': 'Cintura espalda',
+  'leg-left-front': 'Pierna L frente', 'leg-right-front': 'Pierna R frente',
+  'leg-left-back': 'Pierna L espalda', 'leg-right-back': 'Pierna R espalda',
+  'stripe-left-a-front': 'Vivo externo L', 'stripe-left-b-front': 'Vivo interno L',
+  'stripe-right-a-front': 'Vivo externo R', 'stripe-right-b-front': 'Vivo interno R',
+  'stripe-left-a-back': 'Vivo externo L espalda', 'stripe-left-b-back': 'Vivo interno L espalda',
+  'stripe-right-a-back': 'Vivo externo R espalda', 'stripe-right-b-back': 'Vivo interno R espalda',
+  'hem-left-front': 'Ruedo L frente', 'hem-right-front': 'Ruedo R frente',
+  'hem-left-back': 'Ruedo L espalda', 'hem-right-back': 'Ruedo R espalda',
   'hem-left': 'Ruedo L', 'hem-right': 'Ruedo R',
 }
 function pieceLabelFromId(id: string | undefined | null, fallback: string): string {
@@ -605,7 +620,9 @@ function PickColorBtn({ onPick, onFallback, title }: {
     </button>
   )
 }
-const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón' }
+const GARMENT_NAMES: Record<string, string> = {
+  tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón', musculosa: 'Musculosa', short: 'Short',
+}
 
 // Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
 // La chomba son ~105 porque el archivo trae dos prendas (frente y espalda) una
