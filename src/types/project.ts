@@ -101,6 +101,14 @@ export interface TechPackImageSlot {
   role: ImageRole
   label: string
   src: string | null  // data URL
+  /**
+   * El dibujo lo sacó la app del lienzo y nadie lo cambió a mano.
+   *
+   * Sirve para saber si se puede refrescar solo: una foto que subió el
+   * diseñador no se pisa nunca, pero la que sale del diseño tiene que
+   * seguir al diseño, o la ficha muestra una prenda que ya no existe.
+   */
+  auto?: boolean
 }
 
 // Metadatos mínimos y relevantes para fábrica (sin drop/temporada/etc.)

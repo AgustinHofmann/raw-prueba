@@ -1,6 +1,6 @@
 import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
-  BomRow, PomRow, TechPackImageSlot,
+  BomRow, PomRow, TechPackImageSlot, ImageRole,
 } from '../types/project'
 
 const uid = () => crypto.randomUUID()
@@ -156,11 +156,40 @@ function defaultPoms(mockupId: Project['mockupId'], measures: Record<string, num
 // ─── Slots de imagen (uno por rol; se separan las anotaciones por página) ─────
 function defaultImages(snapshot: string | null): TechPackImageSlot[] {
   return [
-    { id: uid(), role: 'front',    label: 'Frente',                src: snapshot },
+    { id: uid(), role: 'front',    label: 'Frente',                src: snapshot, auto: true },
     { id: uid(), role: 'back',     label: 'Espalda',               src: null },
-    { id: uid(), role: 'specs',    label: 'Frente (especificaciones)', src: snapshot },
-    { id: uid(), role: 'measures', label: 'Frente (medidas)',      src: snapshot },
+    { id: uid(), role: 'specs',    label: 'Frente (especificaciones)', src: snapshot, auto: true },
+    { id: uid(), role: 'measures', label: 'Frente (medidas)',      src: snapshot, auto: true },
   ]
+}
+
+/**
+ * Pone al día los dibujos que salieron del lienzo.
+ *
+ * La ficha se guarda con el diseño adentro, así que al seguir diseñando la
+ * ficha se quedaba mostrando la prenda vieja: cambiabas el color, el número o
+ * un logo, abrías la ficha y seguía la de antes. La única salida era exportar
+ * un PNG y volver a cargarlo a mano, justo el trabajo que la ficha existe para
+ * ahorrar.
+ *
+ * Solo se tocan los dibujos que puso la app. Una foto que subió el diseñador
+ * se queda como está.
+ */
+export function refrescarImagenesAuto(doc: TechPackDoc, snapshot: string | null): TechPackDoc {
+  if (!snapshot) return doc
+  // Las tres ranuras que la app llena sola. "Espalda" no esta: nace vacia, asi
+  // que lo que haya ahi lo puso una persona.
+  const DEL_LIENZO: ImageRole[] = ['front', 'specs', 'measures']
+  let cambio = false
+  const images = doc.images.map(s => {
+    // `auto` no existia en las fichas viejas: ahi manda el rol. Solo un
+    // `auto: false` explicito —puesto al elegir una foto a mano— bloquea.
+    const laPusoLaApp = s.auto !== false && DEL_LIENZO.includes(s.role)
+    if (!laPusoLaApp || s.src === snapshot) return s
+    cambio = true
+    return { ...s, src: snapshot, auto: true }
+  })
+  return cambio ? { ...doc, images } : doc
 }
 
 export function buildDefaultTechPack(
