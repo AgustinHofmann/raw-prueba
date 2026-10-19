@@ -10,17 +10,17 @@ import {
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type {
-  Project, TechPackMeasures, TechPackDoc, TechPackPage, TechPackPageKind,
+  Project, TechPackDoc, TechPackPage, TechPackPageKind,
   BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole,
 } from '../types/project'
-import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName } from '../lib/techpackTemplate'
+import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto } from '../lib/techpackTemplate'
 import AnnotationLayer, { type AnnTool } from './AnnotationLayer'
 
 interface Props {
   project: Project
   designer: string
   snapshot: string
-  measures: TechPackMeasures | null
+  measures: Record<string, number> | null
   onSave: (doc: TechPackDoc) => void
   onBackToEditor: () => void
   onClose: () => void
@@ -53,9 +53,14 @@ const td: React.CSSProperties = { border: '1px solid #ccc', padding: 0, fontSize
 const ci: React.CSSProperties = { width: '100%', border: 'none', outline: 'none', padding: '5px 7px', fontSize: 10.5, fontFamily: 'Arial', color: '#111', background: 'transparent', boxSizing: 'border-box' }
 
 export default function TechPackScreen({ project, designer, snapshot, measures, onSave, onBackToEditor, onClose }: Props) {
-  const [doc, setDoc] = useState<TechPackDoc>(
-    () => parseTechPack(project.techpackJson) ?? buildDefaultTechPack(project, measures, snapshot),
-  )
+  const [doc, setDoc] = useState<TechPackDoc>(() => {
+    const guardado = parseTechPack(project.techpackJson)
+    // Una ficha que ya existe se abre con el dibujo de la prenda PUESTO AL DIA.
+    // Sin esto, el diseno seguia y la ficha se quedaba mostrando la prenda de
+    // cuando se creo: el entregable dejaba de coincidir con lo que se diseno.
+    return guardado ? refrescarImagenesAuto(guardado, snapshot)
+                    : buildDefaultTechPack(project, measures, snapshot)
+  })
   const [zoom, setZoom]       = useState(0.7)
   const [annTool, setAnnTool] = useState<AnnTool>('select')
   const [annCat, setAnnCat]   = useState<AnnotationCategory>('construccion')
@@ -96,7 +101,8 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
   const patchPom = (id: string, patch: Partial<PomRow>) => update(d => ({ ...d, poms: d.poms.map(r => r.id === id ? { ...r, ...patch } : r) }))
   const addPom = () => update(d => ({ ...d, poms: [...d.poms, { id: uid(), code: '', punto: '', comoMedir: '', tolerancia: '', base: null }] }))
   const removePom = (id: string) => update(d => ({ ...d, poms: d.poms.filter(r => r.id !== id) }))
-  const replaceImage = (role: ImageRole, src: string) => update(d => ({ ...d, images: d.images.map(im => im.role === role ? { ...im, src } : im) }))
+  // Al elegir una foto a mano, esa ranura deja de seguir al lienzo.
+  const replaceImage = (role: ImageRole, src: string) => update(d => ({ ...d, images: d.images.map(im => im.role === role ? { ...im, src, auto: false } : im) }))
   const addAnnotation = (a: Annotation) => update(d => ({ ...d, annotations: [...d.annotations, a] }))
   const patchAnnotation = (id: string, patch: Partial<Annotation>) => update(d => ({ ...d, annotations: d.annotations.map(a => a.id === id ? { ...a, ...patch } : a) }))
   const removeAnnotation = (id: string) => update(d => ({ ...d, annotations: d.annotations.filter(a => a.id !== id) }))

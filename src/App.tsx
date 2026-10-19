@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { Project, Folder, Tab, tabKey, TechPackMeasures, TechPackDoc } from './types/project'
+import { Project, Folder, Tab, tabKey, TechPackDoc } from './types/project'
 // Todo pasa por repo: guarda primero en el navegador y sube a la nube después.
 // Ver lib/repo.ts.
 import { listProjects, listFolders, getCanvas, getTechpack, saveProject, saveTechpack,
@@ -162,7 +162,7 @@ export default function App() {
 
   // Abre (o reenfoca y refresca) la pestaña de ficha técnica del proyecto activo,
   // en paralelo con el editor. La llama EditorScreen vía onOpenTechPack.
-  async function openTechPackTab(snapshot: string, measures: TechPackMeasures | null) {
+  async function openTechPackTab(snapshot: string, measures: Record<string, number> | null) {
     const base = activeProject
     if (!base) return
     // Carga lazy del documento guardado
@@ -341,12 +341,17 @@ export default function App() {
   // Devuelve si el proyecto llegó realmente a la base. El editor lo usa para no
   // cantar "Guardado ✓" cuando en verdad falló: antes salían los dos carteles a
   // la vez y el diseñador se iba creyendo que su trabajo estaba a salvo.
-  async function handleSave(thumbnail: string, canvasJson: string): Promise<boolean> {
+  async function handleSave(thumbnail: string, canvasJson: string, deQuien?: Project): Promise<boolean> {
     // Siempre sobre el proyecto de ahora: el editor puede estar llamando con una
     // version vieja de esta funcion (ver activeRef), y lo unico que aporta el
     // editor son el dibujo y la miniatura — el nombre, la carpeta y el resto del
     // proyecto son de la app, no suyos.
-    const base = activeRef.current
+    //
+    // Salvo cuando el editor se cierra con un guardado pendiente: ahí manda su
+    // propio proyecto, porque al cambiar de pestaña el activo ya es el NUEVO
+    // cuando el editor viejo se desmonta, y guardar sobre activeRef metía el
+    // dibujo de un proyecto adentro de otro.
+    const base = deQuien ?? activeRef.current
     if (!base) return false
     const updated = { ...base, thumbnail, canvasJson, updatedAt: Date.now() }
     // Lo que decide si el trabajo está a salvo es el guardado LOCAL. Que la nube
@@ -357,7 +362,8 @@ export default function App() {
       showToast('No se pudo guardar en este navegador — revisá que no estés en modo incógnito')
       return false
     }
-    setActive(updated)
+    // Si mientras tanto se pasó a otro proyecto, ese sigue siendo el activo.
+    if (activeRef.current?.id === updated.id) setActive(updated)
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
     return true

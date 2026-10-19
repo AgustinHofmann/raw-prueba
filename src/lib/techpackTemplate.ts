@@ -1,6 +1,6 @@
 import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
-  TechPackMeasures, BomRow, PomRow, TechPackImageSlot,
+  BomRow, PomRow, TechPackImageSlot, ImageRole,
 } from '../types/project'
 
 const uid = () => crypto.randomUUID()
@@ -18,8 +18,11 @@ export const PAGE_CATALOG: { kind: TechPackPageKind; title: string }[] = [
 // Páginas por defecto de una ficha nueva (orden típico de fábrica)
 const DEFAULT_PAGES: TechPackPageKind[] = ['design', 'specs', 'measures', 'materials']
 
-export const garmentName = (mockupId: Project['mockupId']) =>
-  mockupId === 'tshirt' ? 'Remera' : mockupId === 'chomba' ? 'Chomba' : 'Pantalón'
+const GARMENT_NAMES: Record<Project['mockupId'], string> = {
+  tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón',
+  musculosa: 'Musculosa', short: 'Short deportivo',
+}
+export const garmentName = (mockupId: Project['mockupId']) => GARMENT_NAMES[mockupId] ?? 'Prenda'
 
 const titleOf = (kind: TechPackPageKind) => PAGE_CATALOG.find(p => p.kind === kind)?.title ?? kind
 
@@ -27,6 +30,10 @@ function defaultBody(kind: TechPackPageKind, mockupId: Project['mockupId']): str
   if (kind === 'specs') {
     return mockupId === 'pants'
       ? 'Construcción: doble pespunte en tiro y entrepierna · Cintura con elástico/pretina · Ruedo dobladillo 2 cm · Bolsillos según diseño.'
+      : mockupId === 'musculosa'
+      ? 'Construcción: escote con collarete ribb 1x1 · Sisas rematadas con vivo al tono · Hombro caído con costura reforzada · Costados overlock con abertura de 9 cm en el ruedo · Ruedo con recubridora · Etiqueta interior en cuello CB.'
+      : mockupId === 'short'
+      ? 'Construcción: cintura con elástico de 4 cm y cordón interno · Vivos laterales aplicados antes de cerrar el costado · Tiro y entrepierna con doble pespunte · Ruedo con recubridora · Etiqueta interior en cintura CB.'
       : mockupId === 'chomba'
       ? 'Construcción: cuello tejido piqué · Tapeta con entretela y 3 botones · Costuras de unión overlock · Ruedos con recubridora · Hombro reforzado con cinta · Etiqueta interior en cuello CB.'
       : 'Construcción: cuello ribb 1x1 · Costuras de unión overlock · Ruedos con recubridora · Hombro reforzado con cinta · Etiqueta interior en cuello CB.'
@@ -50,6 +57,17 @@ function defaultBom(mockupId: Project['mockupId'], colors: string[]): BomRow[] {
       { categoria: 'Trim', descripcion: 'Botones de tapeta',        placement: 'Tapeta delantera', composicion: '', color: '', proveedor: '', consumo: '3', uom: 'u', notas: '' },
       { categoria: 'Trim', descripcion: 'Entretela de tapeta',      placement: 'Tapeta delantera', composicion: '', color: '', proveedor: '', consumo: '', uom: 'u', notas: '' },
     )
+  } else if (mockupId === 'musculosa') {
+    base.push(
+      { categoria: 'Tela', descripcion: 'Ribb 1x1 para collarete', placement: 'Escote', composicion: '95% algodón 5% elastano', color: dtm, proveedor: '', consumo: '', uom: 'm', notas: '' },
+      { categoria: 'Tela', descripcion: 'Vivo de sisa al tono',    placement: 'Sisas', composicion: '95% algodón 5% elastano', color: dtm, proveedor: '', consumo: '', uom: 'm', notas: '' },
+    )
+  } else if (mockupId === 'short') {
+    base.push(
+      { categoria: 'Trim', descripcion: 'Elástico 4 cm',        placement: 'Cintura', composicion: '', color: '', proveedor: '', consumo: '', uom: 'cm', notas: '' },
+      { categoria: 'Trim', descripcion: 'Cordón interno',       placement: 'Cintura', composicion: '100% poliéster', color: '', proveedor: '', consumo: '1', uom: 'u', notas: '' },
+      { categoria: 'Tela', descripcion: 'Vivo lateral contraste', placement: 'Costados', composicion: '100% poliéster', color: '', proveedor: '', consumo: '', uom: 'm', notas: '' },
+    )
   } else if (mockupId === 'pants') {
     base.push(
       { categoria: 'Trim', descripcion: 'Elástico / pretina', placement: 'Cintura', composicion: '', color: '', proveedor: '', consumo: '', uom: 'cm', notas: '' },
@@ -61,7 +79,7 @@ function defaultBom(mockupId: Project['mockupId'], colors: string[]): BomRow[] {
 }
 
 // ─── POM por tipo de prenda ──────────────────────────────────────────────────
-const BASE_POMS: { code: string; punto: string; key: keyof TechPackMeasures; htm: string; tol: string }[] = [
+const BASE_POMS: { code: string; punto: string; key: string; htm: string; tol: string }[] = [
   { code: 'A', punto: 'Largo total',           key: 'largoTotal',        htm: 'Desde HPS hasta ruedo',       tol: '1' },
   { code: 'B', punto: 'Ancho de pecho',        key: 'anchoPecho',        htm: '2.5 cm bajo sisa, plano',     tol: '1' },
   { code: 'C', punto: 'Ancho de cintura',      key: 'anchoCintura',      htm: 'Punto más angosto, plano',    tol: '1' },
@@ -71,7 +89,10 @@ const BASE_POMS: { code: string; punto: string; key: keyof TechPackMeasures; htm
   { code: 'G', punto: 'Ancho de manga',        key: 'anchoManga',        htm: 'Plano en la sisa',            tol: '0.5' },
 ]
 
-const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm: string; tol: string }[]> = {
+// `key` es la medida de la prenda que llena la columna Base. Las filas que no
+// la tienen (las que se miden sobre la prenda cosida, como el tiro) se cargan
+// a mano en el taller.
+const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm: string; tol: string; key?: string }[]> = {
   tshirt: [],
   chomba: [
     { code: 'H', punto: 'Alto de cuello',    htm: 'Costura a borde',   tol: '0.5' },
@@ -79,21 +100,48 @@ const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm
     { code: 'J', punto: 'Ancho de tapeta',   htm: 'Plano',             tol: '0.3' },
     { code: 'K', punto: 'Alto de puño',      htm: 'Borde a costura',   tol: '0.5' },
   ],
+  musculosa: [
+    { code: 'A', punto: 'Largo total',           htm: 'Desde HPS hasta ruedo',      tol: '1',   key: 'largoTotal' },
+    { code: 'B', punto: 'Ancho de pecho',        htm: '2.5 cm bajo sisa, plano',    tol: '1',   key: 'anchoPecho' },
+    { code: 'C', punto: 'Ancho de cintura',      htm: 'Punto más angosto, plano',   tol: '1',   key: 'anchoCintura' },
+    { code: 'D', punto: 'Ancho de hombros',      htm: 'Punta a punta, plano',       tol: '1',   key: 'anchoHombro' },
+    { code: 'E', punto: 'Ancho de cuello',       htm: 'Interior costura a costura', tol: '0.5', key: 'anchoCuello' },
+    { code: 'F', punto: 'Profundidad de cuello', htm: 'Desde HPS a base del cuello', tol: '0.5', key: 'profundidadCuello' },
+    { code: 'G', punto: 'Alto de sisa',          htm: 'Hombro a axila, recto',      tol: '0.5' },
+    { code: 'H', punto: 'Ancho de collarete',    htm: 'Costura a borde',            tol: '0.3' },
+    { code: 'I', punto: 'Alto de abertura',      htm: 'Ruedo a remate',             tol: '0.5' },
+  ],
+  short: [
+    { code: 'A', punto: 'Largo total',      htm: 'Cintura a ruedo, costado', tol: '1',   key: 'largoTotal' },
+    { code: 'B', punto: 'Cintura relajada', htm: 'Borde a borde, plano',     tol: '1',   key: 'cintura' },
+    { code: 'C', punto: 'Cintura estirada', htm: 'Borde a borde, estirado',  tol: '1' },
+    { code: 'D', punto: 'Cadera',           htm: '18 cm bajo cintura',       tol: '1',   key: 'cadera' },
+    { code: 'E', punto: 'Tiro delantero',   htm: 'Entrepierna a cintura',    tol: '0.5' },
+    { code: 'F', punto: 'Boca de pierna',   htm: 'Plano, una pierna',        tol: '0.5', key: 'ruedo' },
+    { code: 'G', punto: 'Entrepierna',      htm: 'Costura interior',         tol: '0.5' },
+    { code: 'H', punto: 'Alto de cintura',  htm: 'Borde a costura',          tol: '0.3' },
+    { code: 'I', punto: 'Ancho de vivo',    htm: 'Plano',                    tol: '0.2' },
+  ],
   pants: [
-    { code: 'A', punto: 'Cintura',          htm: 'Borde a borde, plano',  tol: '1' },
-    { code: 'B', punto: 'Cadera / asiento', htm: '18 cm bajo cintura',    tol: '1' },
+    { code: 'A', punto: 'Cintura',          htm: 'Borde a borde, plano',  tol: '1',   key: 'cintura' },
+    { code: 'B', punto: 'Cadera / asiento', htm: '18 cm bajo cintura',    tol: '1',   key: 'cadera' },
     { code: 'C', punto: 'Tiro delantero',   htm: 'Entrepierna a cintura', tol: '0.5' },
     { code: 'D', punto: 'Tiro trasero',     htm: 'Entrepierna a cintura', tol: '0.5' },
     { code: 'E', punto: 'Muslo',            htm: '2.5 cm bajo entrepierna', tol: '0.5' },
-    { code: 'F', punto: 'Rodilla',          htm: 'Plano',                 tol: '0.5' },
-    { code: 'G', punto: 'Boca de pierna',   htm: 'Plano',                 tol: '0.5' },
+    { code: 'F', punto: 'Rodilla',          htm: 'Plano',                 tol: '0.5', key: 'rodilla' },
+    { code: 'G', punto: 'Boca de pierna',   htm: 'Plano',                 tol: '0.5', key: 'ruedo' },
     { code: 'H', punto: 'Entrepierna',      htm: 'Costura interior',      tol: '0.5' },
   ],
 }
 
-function defaultPoms(mockupId: Project['mockupId'], measures: TechPackMeasures | null): PomRow[] {
-  if (mockupId === 'pants') {
-    return EXTRA_POMS.pants.map(p => ({ id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol, base: null }))
+function defaultPoms(mockupId: Project['mockupId'], measures: Record<string, number> | null): PomRow[] {
+  // Estas tres no comparten la tabla de la remera: no tienen manga, o
+  // directamente no son una prenda de arriba.
+  if (mockupId === 'pants' || mockupId === 'musculosa' || mockupId === 'short') {
+    return EXTRA_POMS[mockupId].map(p => ({
+      id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol,
+      base: (measures && p.key && measures[p.key] != null) ? measures[p.key] : null,
+    }))
   }
   const rows: PomRow[] = BASE_POMS.map(p => ({
     id: uid(), code: p.code, punto: p.punto, comoMedir: p.htm, tolerancia: p.tol,
@@ -108,16 +156,45 @@ function defaultPoms(mockupId: Project['mockupId'], measures: TechPackMeasures |
 // ─── Slots de imagen (uno por rol; se separan las anotaciones por página) ─────
 function defaultImages(snapshot: string | null): TechPackImageSlot[] {
   return [
-    { id: uid(), role: 'front',    label: 'Frente',                src: snapshot },
+    { id: uid(), role: 'front',    label: 'Frente',                src: snapshot, auto: true },
     { id: uid(), role: 'back',     label: 'Espalda',               src: null },
-    { id: uid(), role: 'specs',    label: 'Frente (especificaciones)', src: snapshot },
-    { id: uid(), role: 'measures', label: 'Frente (medidas)',      src: snapshot },
+    { id: uid(), role: 'specs',    label: 'Frente (especificaciones)', src: snapshot, auto: true },
+    { id: uid(), role: 'measures', label: 'Frente (medidas)',      src: snapshot, auto: true },
   ]
+}
+
+/**
+ * Pone al día los dibujos que salieron del lienzo.
+ *
+ * La ficha se guarda con el diseño adentro, así que al seguir diseñando la
+ * ficha se quedaba mostrando la prenda vieja: cambiabas el color, el número o
+ * un logo, abrías la ficha y seguía la de antes. La única salida era exportar
+ * un PNG y volver a cargarlo a mano, justo el trabajo que la ficha existe para
+ * ahorrar.
+ *
+ * Solo se tocan los dibujos que puso la app. Una foto que subió el diseñador
+ * se queda como está.
+ */
+export function refrescarImagenesAuto(doc: TechPackDoc, snapshot: string | null): TechPackDoc {
+  if (!snapshot) return doc
+  // Las tres ranuras que la app llena sola. "Espalda" no esta: nace vacia, asi
+  // que lo que haya ahi lo puso una persona.
+  const DEL_LIENZO: ImageRole[] = ['front', 'specs', 'measures']
+  let cambio = false
+  const images = doc.images.map(s => {
+    // `auto` no existia en las fichas viejas: ahi manda el rol. Solo un
+    // `auto: false` explicito —puesto al elegir una foto a mano— bloquea.
+    const laPusoLaApp = s.auto !== false && DEL_LIENZO.includes(s.role)
+    if (!laPusoLaApp || s.src === snapshot) return s
+    cambio = true
+    return { ...s, src: snapshot, auto: true }
+  })
+  return cambio ? { ...doc, images } : doc
 }
 
 export function buildDefaultTechPack(
   project: Project,
-  measures: TechPackMeasures | null,
+  measures: Record<string, number> | null,
   snapshot: string | null,
 ): TechPackDoc {
   const pages: TechPackPage[] = DEFAULT_PAGES.map(kind => ({

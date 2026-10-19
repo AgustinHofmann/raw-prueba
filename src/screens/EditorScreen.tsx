@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState, type RefObject } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project, TechPackMeasures } from '../types/project'
+import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
@@ -21,12 +21,13 @@ interface Props {
   project: Project
   designer: string
   // Devuelve si el guardado llego a la base. Sin ese dato el editor
-  // cantaba "Guardado" aunque hubiera fallado.
-  onSave: (thumbnail: string, canvasJson: string) => Promise<boolean>
+  // cantaba "Guardado" aunque hubiera fallado. `deQuien` va solo al cerrarse
+  // el editor: ahi el proyecto activo de la app ya puede ser otro.
+  onSave: (thumbnail: string, canvasJson: string, deQuien?: Project) => Promise<boolean>
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
-  onOpenTechPack: (snapshot: string, measures: TechPackMeasures | null) => void
+  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null) => void
   onToast?: (msg: string) => void
 }
 
@@ -544,6 +545,21 @@ const PIECE_LABELS: Record<string, string> = {
   'collar-band-front': 'Tira del cuello', 'collar-back': 'Cuello espalda',
   'inner-escote': 'Interior del escote',
   'waistband-left': 'Cintura L', 'waistband-right': 'Cintura R',
+  // Musculosa
+  'binding-left-front': 'Vivo de sisa L', 'binding-right-front': 'Vivo de sisa R',
+  'binding-left-back': 'Vivo de sisa L espalda', 'binding-right-back': 'Vivo de sisa R espalda',
+  'slit-left-front': 'Abertura L', 'slit-right-front': 'Abertura R',
+  'slit-left-back': 'Abertura L espalda', 'slit-right-back': 'Abertura R espalda',
+  // Short
+  'waistband-front': 'Cintura frente', 'waistband-back': 'Cintura espalda',
+  'leg-left-front': 'Pierna L frente', 'leg-right-front': 'Pierna R frente',
+  'leg-left-back': 'Pierna L espalda', 'leg-right-back': 'Pierna R espalda',
+  'stripe-left-a-front': 'Vivo externo L', 'stripe-left-b-front': 'Vivo interno L',
+  'stripe-right-a-front': 'Vivo externo R', 'stripe-right-b-front': 'Vivo interno R',
+  'stripe-left-a-back': 'Vivo externo L espalda', 'stripe-left-b-back': 'Vivo interno L espalda',
+  'stripe-right-a-back': 'Vivo externo R espalda', 'stripe-right-b-back': 'Vivo interno R espalda',
+  'hem-left-front': 'Ruedo L frente', 'hem-right-front': 'Ruedo R frente',
+  'hem-left-back': 'Ruedo L espalda', 'hem-right-back': 'Ruedo R espalda',
   'hem-left': 'Ruedo L', 'hem-right': 'Ruedo R',
 }
 function pieceLabelFromId(id: string | undefined | null, fallback: string): string {
@@ -605,7 +621,9 @@ function PickColorBtn({ onPick, onFallback, title }: {
     </button>
   )
 }
-const GARMENT_NAMES: Record<string, string> = { tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón' }
+const GARMENT_NAMES: Record<string, string> = {
+  tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón', musculosa: 'Musculosa', short: 'Short',
+}
 
 // Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
 // La chomba son ~105 porque el archivo trae dos prendas (frente y espalda) una
@@ -1465,7 +1483,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // No se aplica a algo ya dibujado, así que no va con una selección cualquiera.
   const mostrarEstiloTrazo = tool === 'pencil' || tool === 'pen' || tool === 'curve'
   // Relleno: lo que tiene área. Una imagen no se rellena.
-  const mostrarRelleno = haySel ? (esMulti || !selEsImagen) : herramientaDibuja
+  // El balde PINTA con el relleno: es la unica forma de elegir con que color
+  // va a pintar, asi que tiene que mostrarlo aunque no dibuje una forma nueva.
+  const mostrarRelleno = haySel ? (esMulti || !selEsImagen) : (herramientaDibuja || tool === 'fill')
   // Bordado: necesita un vector del que sacar la silueta. Una imagen ya no lo es.
   const puedeBordar = haySel && (esMulti || !selEsImagen)
   // Un bordado se reconoce por el original que lleva guardado adentro: si está,
@@ -1511,6 +1531,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
+  // El molde de la prenda no se pudo leer. `intentoMolde` vuelve a armar el
+  // lienzo desde cero al tocar "Reintentar".
+  const [moldeFallido,   setMoldeFallido]   = useState(false)
+  const [intentoMolde,   setIntentoMolde]   = useState(0)
   // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
   // color sin tener que mirar al panel de la derecha.
   // La lupa del gotero se mueve con el mouse, o sea hasta 120 veces por segundo.
@@ -2189,6 +2213,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // estar puestas cuando se dibuja, o saldría con el talle por defecto y
     // después habría que rehacerla entera.
     autosaveListo.current = false
+    // Las piezas de un lienzo anterior ya no existen; dejarlas acá haría creer
+    // al guardado que hay prenda cuando todavía no se cargó.
+    mockupObjects.current = []
+    setMoldeFallido(false)
+    // Sin molde no hay prenda, y el autoguardado no se prende: con la lista de
+    // piezas vacía, el primer zoom reescribía el proyecto sin los colores de la
+    // prenda. Abrirlo en un momento sin molde alcanzaba para perder la pintura.
+    const moldeNoCargo = (e: unknown) => {
+      if (cancelled) return
+      console.warn('no se pudo cargar el molde de la prenda', e)
+      setMoldeFallido(true)
+    }
     const design = project.canvasJson ? parseDesign(project.canvasJson) : null
     if (design?.garment?.measures) {
       const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
@@ -2334,13 +2370,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         piezasRef.current = piezas
         placePrenda(medidasRef.current)
         await restoreAndWire()
-      })
+      }, moldeNoCargo)
     } else {
       // Mockups SVG (chomba, pants)
       const svgUrl = `/mockups/${project.mockupId}.svg`
       fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
         if (cancelled) return
         const objs = objects.filter(Boolean) as fabric.FabricObject[]
+        if (!objs.length) { moldeNoCargo(new Error(`${svgUrl} no tiene piezas`)); return }
         mockupObjects.current = objs
         objs.forEach((obj, i) => {
           const id = String((obj as any).id ?? '')
@@ -2399,11 +2436,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         clipPath.current = cg
 
         await restoreAndWire()
-      })
+      }, moldeNoCargo)
     }
 
     return () => { cancelled = true; canvasAlive.current = false; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
-  }, [project.mockupId])
+  }, [project.mockupId, intentoMolde])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
   useEffect(() => {
@@ -3769,7 +3806,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // o al primer redibujo (cambiar una medida, guardar y abrir) el estampado
       // volvía por encima del color recién elegido.
       const pintar = (objs: fabric.FabricObject[]) => {
-        const receta: PaintSnap = { fill: colorRef.current, base: colorRef.current }
+        // Pinta con el RELLENO, que es lo que muestra el panel cuando el balde
+        // esta activo. Antes tomaba el color de trazo: elegias un relleno, el
+        // panel te lo mostraba, y la pieza salia del color de la linea.
+        const color = fillRef.current ?? colorRef.current
+        const receta: PaintSnap = { fill: color, base: color }
         const items = objs
           .filter(o => o && !(o as any)._locked)
           .map(o => ({ obj: o, prev: snapshotPaint(o) }))
@@ -3783,6 +3824,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         undoHistory.current.push({ type: 'fillBatch', items })
         redoHistory.current = []
         canvas.requestRenderAll()
+        // Cambiar el color de una pieza no dispara ningun evento del lienzo, asi
+        // que el autoguardado no se enteraba: pintabas la prenda, cerrabas, y al
+        // abrirla estaba como antes.
+        markDirty()
       }
 
       const onDown = (e: fabric.TPointerEventInfo) => {
@@ -4022,6 +4067,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           for (const k of Object.keys(lastPatch)) prev[k] = prevProps[k]
           undoHistory.current.push({ type: 'props', obj: previewObj, prev })
           redoHistory.current = []
+          markDirty()   // igual que el balde: cambiar el color no avisa al autoguardado
         }
         previewObj = null; prevProps = null; lastPatch = null
       }
@@ -4602,13 +4648,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // Importar imagen tal cual (raster), sin vectorizar — como "Colocar" de Illustrator
+  /** Pasa un archivo a data URL.
+   *
+   *  Las imagenes NO pueden entrar al lienzo como blob: una URL de objeto vive
+   *  mientras vive la pestana, y lo que se guarda del lienzo es justamente esa
+   *  URL. Al reabrir el proyecto la direccion ya no apunta a nada y la imagen
+   *  desaparecia: el diseno se guardaba sin sus logos y nadie se enteraba hasta
+   *  volver a abrirlo. En data URL la imagen viaja ADENTRO del proyecto. */
+  function aDataUrl(blob: Blob): Promise<string> {
+    return new Promise((listo, falla) => {
+      const fr = new FileReader()
+      fr.onload  = () => listo(String(fr.result))
+      fr.onerror = () => falla(fr.error)
+      fr.readAsDataURL(blob)
+    })
+  }
+
   async function handlePlaceImage(file: File) {
     const canvas = fc.current
     if (!canvas) return
     try {
-      const url = URL.createObjectURL(file)
-      const img = await fabric.FabricImage.fromURL(url, { crossOrigin: 'anonymous' })
-      URL.revokeObjectURL(url)
+      const img = await fabric.FabricImage.fromURL(await aDataUrl(file), { crossOrigin: 'anonymous' })
       const cw = canvas.width  ?? 800
       const ch = canvas.height ?? 600
       const scale = Math.min(cw / (img.width ?? 1), ch / (img.height ?? 1)) * 0.85
@@ -5894,8 +5954,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (item.type.startsWith('image/')) {
           const blob = item.getAsFile()
           if (!blob) continue
-          const url = URL.createObjectURL(blob)
-          fabric.FabricImage.fromURL(url).then((img: fabric.FabricImage) => {
+          // Igual que al importar: en data URL, o la imagen pegada se pierde
+          // al reabrir el proyecto.
+          aDataUrl(blob).then(src => fabric.FabricImage.fromURL(src)).then((img: fabric.FabricImage) => {
             const maxSide = 400
             const w = img.width ?? 100
             const h = img.height ?? 100
@@ -5989,7 +6050,45 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     finally { guardando.current = false }
   }
 
-  useEffect(() => () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }, [])
+  // Lo pendiente se guarda al irse, no se tira.
+  //
+  // Antes, salir antes de que pasaran los 2 s del autoguardado (volver a
+  // Inicio, cambiar de pestaña, cerrar el proyecto o la ventana) cancelaba el
+  // reloj y el último cambio se perdía. Ir a Inicio desmonta el editor, así
+  // que bastaba con pintar algo y volver al archivo enseguida.
+  //
+  // Va en un efecto de layout a propósito: en el desmontaje corre ANTES que la
+  // limpieza del lienzo, que lo destruye. Con un efecto común el lienzo ya no
+  // existía cuando se quería leer lo que había que guardar.
+  const onSaveRef  = useRef(onSave)
+  const projectRef = useRef(project)
+  onSaveRef.current  = onSave
+  projectRef.current = project
+
+  function guardarPendiente() {
+    if (!autosaveTimer.current) return
+    clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = null
+    const payload = buildSavePayload()
+    if (payload) void onSaveRef.current(payload.thumbnail, payload.canvasJson, projectRef.current)
+  }
+  const guardarPendienteRef = useRef(guardarPendiente)
+  guardarPendienteRef.current = guardarPendiente
+
+  useLayoutEffect(() => () => guardarPendienteRef.current(), [])
+
+  // Cerrar o recargar la ventana no desmonta nada: se avisa con que la página
+  // deja de verse, que es lo último que el navegador garantiza que llega.
+  useEffect(() => {
+    const alOcultar = () => { if (document.visibilityState === 'hidden') guardarPendienteRef.current() }
+    const alSalir   = () => guardarPendienteRef.current()
+    document.addEventListener('visibilitychange', alOcultar)
+    window.addEventListener('pagehide', alSalir)
+    return () => {
+      document.removeEventListener('visibilitychange', alOcultar)
+      window.removeEventListener('pagehide', alSalir)
+    }
+  }, [])
 
   // Lo que se manda a guardar. Lo usan el guardado a mano y el automático: si
   // fueran dos armados distintos, tarde o temprano guardarían cosas distintas.
@@ -6022,6 +6121,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function buildSavePayload(): { thumbnail: string; canvasJson: string } | null {
     const canvas = fc.current
     if (!canvas) return null
+    // Toda prenda tiene piezas. Si no hay ninguna es que el molde no cargó, y
+    // guardar ahora sería reemplazar la pintura guardada por una prenda vacía.
+    if (!mockupObjects.current.length) return null
     const userObjs = canvas.getObjects()
       // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
       // los tiradores de anclaje y los previews del lapiz y de la pluma son
@@ -6062,7 +6164,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   async function handleSave() {
     const payload = buildSavePayload()
-    if (!payload) return
+    if (!payload) {
+      if (moldeFallido) onToast?.('No se guardó: el molde de la prenda no cargó y el diseño guardado queda como estaba')
+      return
+    }
     // El guardado a mano cancela el automático pendiente: si no, guardaría dos
     // veces lo mismo con dos segundos de diferencia.
     if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
@@ -6099,7 +6204,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
     const img = canvas.toDataURL(opts)
     measureEditRef.current = wasMeasure
-    onOpenTechPack(img, isTee ? measures : null)
+    // La remera tiene sus medidas propias; el resto de las prendas
+    // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
+    // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
+    // la app conozca los numeros.
+    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
   }
 
   function resetView() {
@@ -7031,6 +7140,25 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <span style={{ color: 'var(--muted-2)' }}><IconImagen /></span>
               <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>Soltá la imagen para importarla</span>
               <span style={{ color: 'var(--muted)', fontSize: 12 }}>sin abrir el explorador · no sale de pantalla completa</span>
+            </div>
+          )}
+
+          {moldeFallido && (
+            <div role="alert" style={{
+              position: 'absolute', inset: 0, zIndex: 40,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              gap: 10, padding: 24, textAlign: 'center',
+            }}>
+              <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>
+                No se pudo cargar el molde{GARMENT_NAMES[project.mockupId] ? ` · ${GARMENT_NAMES[project.mockupId]}` : ''}
+              </span>
+              <span style={{ color: 'var(--muted)', fontSize: 12, maxWidth: 360, lineHeight: 1.5 }}>
+                Tu diseño está a salvo: mientras el molde no aparezca no se guarda nada encima.
+                Revisá la conexión y probá de nuevo.
+              </span>
+              <button className="btn btn-primary" onClick={() => setIntentoMolde(n => n + 1)}>
+                Reintentar
+              </button>
             </div>
           )}
 

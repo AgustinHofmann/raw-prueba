@@ -1,7 +1,7 @@
 export interface Project {
   id: string
   name: string
-  mockupId: 'tshirt' | 'chomba' | 'pants'
+  mockupId: 'tshirt' | 'chomba' | 'pants' | 'musculosa' | 'short'
   thumbnail: string | null
   canvasJson: string | null
   techpackJson: string | null   // documento de ficha técnica serializado (TechPackDoc como JSON)
@@ -28,7 +28,10 @@ export interface TechPackMeasures {
 // su editor y su ficha técnica (Tech Pack), abiertos en paralelo.
 export type Tab =
   | { kind: 'editor';   project: Project }
-  | { kind: 'techpack'; project: Project; snapshot: string; measures: TechPackMeasures | null }
+  // Las medidas van como un diccionario y no con la forma fija de la remera:
+  // cada prenda tiene las suyas (el short no tiene manga, la musculosa no
+  // tiene punos) y la ficha tiene que poder recibir cualquiera.
+  | { kind: 'techpack'; project: Project; snapshot: string; measures: Record<string, number> | null }
 
 // Identidad única de una pestaña: kind + id de proyecto (no solo el id,
 // porque un mismo proyecto puede estar abierto como editor y como techpack).
@@ -98,6 +101,14 @@ export interface TechPackImageSlot {
   role: ImageRole
   label: string
   src: string | null  // data URL
+  /**
+   * El dibujo lo sacó la app del lienzo y nadie lo cambió a mano.
+   *
+   * Sirve para saber si se puede refrescar solo: una foto que subió el
+   * diseñador no se pisa nunca, pero la que sale del diseño tiene que
+   * seguir al diseño, o la ficha muestra una prenda que ya no existe.
+   */
+  auto?: boolean
 }
 
 // Metadatos mínimos y relevantes para fábrica (sin drop/temporada/etc.)

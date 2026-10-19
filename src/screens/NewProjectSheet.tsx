@@ -6,6 +6,8 @@ const MOCKUPS = [
   { id: 'tshirt' as const, label: 'Remera',   icon: '/mockups/tshirt.svg' },
   { id: 'chomba' as const, label: 'Chomba',   icon: '/mockups/chomba.svg' },
   { id: 'pants'  as const, label: 'Pantalón', icon: '/mockups/pants.svg'  },
+  { id: 'musculosa' as const, label: 'Musculosa', icon: '/mockups/musculosa.svg' },
+  { id: 'short'  as const, label: 'Short',    icon: '/mockups/short.svg'  },
 ]
 
 interface Props {
@@ -16,7 +18,7 @@ interface Props {
 
 export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props) {
   const [name, setName]       = useState('Sin título')
-  const [mockup, setMockup]   = useState<'tshirt' | 'chomba' | 'pants'>('tshirt')
+  const [mockup, setMockup]   = useState<Project['mockupId']>('tshirt')
   const [folderId, setFolder] = useState<string | null>(null)
 
   function handleCreate() {
