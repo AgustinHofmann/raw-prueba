@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, type RefObject } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
@@ -21,8 +21,9 @@ interface Props {
   project: Project
   designer: string
   // Devuelve si el guardado llego a la base. Sin ese dato el editor
-  // cantaba "Guardado" aunque hubiera fallado.
-  onSave: (thumbnail: string, canvasJson: string) => Promise<boolean>
+  // cantaba "Guardado" aunque hubiera fallado. `deQuien` va solo al cerrarse
+  // el editor: ahi el proyecto activo de la app ya puede ser otro.
+  onSave: (thumbnail: string, canvasJson: string, deQuien?: Project) => Promise<boolean>
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
@@ -6049,7 +6050,45 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     finally { guardando.current = false }
   }
 
-  useEffect(() => () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current) }, [])
+  // Lo pendiente se guarda al irse, no se tira.
+  //
+  // Antes, salir antes de que pasaran los 2 s del autoguardado (volver a
+  // Inicio, cambiar de pestaña, cerrar el proyecto o la ventana) cancelaba el
+  // reloj y el último cambio se perdía. Ir a Inicio desmonta el editor, así
+  // que bastaba con pintar algo y volver al archivo enseguida.
+  //
+  // Va en un efecto de layout a propósito: en el desmontaje corre ANTES que la
+  // limpieza del lienzo, que lo destruye. Con un efecto común el lienzo ya no
+  // existía cuando se quería leer lo que había que guardar.
+  const onSaveRef  = useRef(onSave)
+  const projectRef = useRef(project)
+  onSaveRef.current  = onSave
+  projectRef.current = project
+
+  function guardarPendiente() {
+    if (!autosaveTimer.current) return
+    clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = null
+    const payload = buildSavePayload()
+    if (payload) void onSaveRef.current(payload.thumbnail, payload.canvasJson, projectRef.current)
+  }
+  const guardarPendienteRef = useRef(guardarPendiente)
+  guardarPendienteRef.current = guardarPendiente
+
+  useLayoutEffect(() => () => guardarPendienteRef.current(), [])
+
+  // Cerrar o recargar la ventana no desmonta nada: se avisa con que la página
+  // deja de verse, que es lo último que el navegador garantiza que llega.
+  useEffect(() => {
+    const alOcultar = () => { if (document.visibilityState === 'hidden') guardarPendienteRef.current() }
+    const alSalir   = () => guardarPendienteRef.current()
+    document.addEventListener('visibilitychange', alOcultar)
+    window.addEventListener('pagehide', alSalir)
+    return () => {
+      document.removeEventListener('visibilitychange', alOcultar)
+      window.removeEventListener('pagehide', alSalir)
+    }
+  }, [])
 
   // Lo que se manda a guardar. Lo usan el guardado a mano y el automático: si
   // fueran dos armados distintos, tarde o temprano guardarían cosas distintas.
