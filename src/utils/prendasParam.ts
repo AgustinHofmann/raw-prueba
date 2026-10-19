@@ -447,12 +447,18 @@ export interface PiezaSvg {
  * Se usa el parser del navegador y no una expresión regular: los atributos
  * pueden venir en cualquier orden y con comillas distintas, y una regex ahí
  * falla en silencio (deja la prenda sin una pieza y nadie se entera).
+ *
+ * Si el molde no llega, FALLA: no devuelve una lista vacía. Antes un 404 (la
+ * versión publicada no tenía la musculosa ni el short) o el servidor caído se
+ * leían como "un molde sin piezas", y el editor abría el lienzo en blanco sin
+ * decir nada. Peor: guardaba esa prenda vacía encima del diseño.
  */
 export async function leerPiezasSvg(url: string): Promise<PiezaSvg[]> {
-  const txt = await fetch(url).then(r => r.text())
-  const doc = new DOMParser().parseFromString(txt, 'image/svg+xml')
-  if (doc.querySelector('parsererror')) return []
-  return [...doc.querySelectorAll('path')]
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(`No se pudo leer ${url} (${r.status})`)
+  const doc = new DOMParser().parseFromString(await r.text(), 'image/svg+xml')
+  if (doc.querySelector('parsererror')) throw new Error(`${url} no es un SVG válido`)
+  const piezas = [...doc.querySelectorAll('path')]
     .map(el => {
       const f = el.getAttribute('fill')
       const sw = el.getAttribute('stroke-width')
@@ -465,4 +471,6 @@ export async function leerPiezasSvg(url: string): Promise<PiezaSvg[]> {
       }
     })
     .filter(p => p.d)
+  if (!piezas.length) throw new Error(`${url} no tiene piezas`)
+  return piezas
 }

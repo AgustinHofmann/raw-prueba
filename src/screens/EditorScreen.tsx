@@ -1530,6 +1530,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
   const [dragActive,     setDragActive]     = useState(false)
+  // El molde de la prenda no se pudo leer. `intentoMolde` vuelve a armar el
+  // lienzo desde cero al tocar "Reintentar".
+  const [moldeFallido,   setMoldeFallido]   = useState(false)
+  const [intentoMolde,   setIntentoMolde]   = useState(0)
   // Muestra que sigue al cursor mientras se arrastra con el gotero, para ver el
   // color sin tener que mirar al panel de la derecha.
   // La lupa del gotero se mueve con el mouse, o sea hasta 120 veces por segundo.
@@ -2208,6 +2212,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // estar puestas cuando se dibuja, o saldría con el talle por defecto y
     // después habría que rehacerla entera.
     autosaveListo.current = false
+    // Las piezas de un lienzo anterior ya no existen; dejarlas acá haría creer
+    // al guardado que hay prenda cuando todavía no se cargó.
+    mockupObjects.current = []
+    setMoldeFallido(false)
+    // Sin molde no hay prenda, y el autoguardado no se prende: con la lista de
+    // piezas vacía, el primer zoom reescribía el proyecto sin los colores de la
+    // prenda. Abrirlo en un momento sin molde alcanzaba para perder la pintura.
+    const moldeNoCargo = (e: unknown) => {
+      if (cancelled) return
+      console.warn('no se pudo cargar el molde de la prenda', e)
+      setMoldeFallido(true)
+    }
     const design = project.canvasJson ? parseDesign(project.canvasJson) : null
     if (design?.garment?.measures) {
       const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
@@ -2353,13 +2369,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         piezasRef.current = piezas
         placePrenda(medidasRef.current)
         await restoreAndWire()
-      })
+      }, moldeNoCargo)
     } else {
       // Mockups SVG (chomba, pants)
       const svgUrl = `/mockups/${project.mockupId}.svg`
       fabric.loadSVGFromURL(svgUrl).then(async ({ objects }) => {
         if (cancelled) return
         const objs = objects.filter(Boolean) as fabric.FabricObject[]
+        if (!objs.length) { moldeNoCargo(new Error(`${svgUrl} no tiene piezas`)); return }
         mockupObjects.current = objs
         objs.forEach((obj, i) => {
           const id = String((obj as any).id ?? '')
@@ -2418,11 +2435,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         clipPath.current = cg
 
         await restoreAndWire()
-      })
+      }, moldeNoCargo)
     }
 
     return () => { cancelled = true; canvasAlive.current = false; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
-  }, [project.mockupId])
+  }, [project.mockupId, intentoMolde])
 
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
   useEffect(() => {
@@ -6060,6 +6077,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function buildSavePayload(): { thumbnail: string; canvasJson: string } | null {
     const canvas = fc.current
     if (!canvas) return null
+    // Toda prenda tiene piezas. Si no hay ninguna es que el molde no cargó, y
+    // guardar ahora sería reemplazar la pintura guardada por una prenda vacía.
+    if (!mockupObjects.current.length) return null
     const userObjs = canvas.getObjects()
       // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
       // los tiradores de anclaje y los previews del lapiz y de la pluma son
@@ -6100,7 +6120,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   async function handleSave() {
     const payload = buildSavePayload()
-    if (!payload) return
+    if (!payload) {
+      if (moldeFallido) onToast?.('No se guardó: el molde de la prenda no cargó y el diseño guardado queda como estaba')
+      return
+    }
     // El guardado a mano cancela el automático pendiente: si no, guardaría dos
     // veces lo mismo con dos segundos de diferencia.
     if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
@@ -7073,6 +7096,25 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               <span style={{ color: 'var(--muted-2)' }}><IconImagen /></span>
               <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>Soltá la imagen para importarla</span>
               <span style={{ color: 'var(--muted)', fontSize: 12 }}>sin abrir el explorador · no sale de pantalla completa</span>
+            </div>
+          )}
+
+          {moldeFallido && (
+            <div role="alert" style={{
+              position: 'absolute', inset: 0, zIndex: 40,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              gap: 10, padding: 24, textAlign: 'center',
+            }}>
+              <span style={{ color: 'var(--fg)', fontSize: 15, fontFamily: 'var(--ui)' }}>
+                No se pudo cargar el molde{GARMENT_NAMES[project.mockupId] ? ` · ${GARMENT_NAMES[project.mockupId]}` : ''}
+              </span>
+              <span style={{ color: 'var(--muted)', fontSize: 12, maxWidth: 360, lineHeight: 1.5 }}>
+                Tu diseño está a salvo: mientras el molde no aparezca no se guarda nada encima.
+                Revisá la conexión y probá de nuevo.
+              </span>
+              <button className="btn btn-primary" onClick={() => setIntentoMolde(n => n + 1)}>
+                Reintentar
+              </button>
             </div>
           )}
 
