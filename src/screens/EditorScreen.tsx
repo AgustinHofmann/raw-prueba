@@ -3823,6 +3823,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         undoHistory.current.push({ type: 'fillBatch', items })
         redoHistory.current = []
         canvas.requestRenderAll()
+        // Cambiar el color de una pieza no dispara ningun evento del lienzo, asi
+        // que el autoguardado no se enteraba: pintabas la prenda, cerrabas, y al
+        // abrirla estaba como antes.
+        markDirty()
       }
 
       const onDown = (e: fabric.TPointerEventInfo) => {
@@ -4062,6 +4066,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           for (const k of Object.keys(lastPatch)) prev[k] = prevProps[k]
           undoHistory.current.push({ type: 'props', obj: previewObj, prev })
           redoHistory.current = []
+          markDirty()   // igual que el balde: cambiar el color no avisa al autoguardado
         }
         previewObj = null; prevProps = null; lastPatch = null
       }
