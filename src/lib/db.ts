@@ -111,6 +111,11 @@ export async function deleteFolder(id: string): Promise<void> {
 // mockup_id = 'hoodie'. Sin esto la app buscaría /mockups/hoodie.svg, no lo
 // encontraría y el proyecto abriría vacío. Se abre como remera, que es la
 // prenda por defecto, en vez de romperse.
+//
+// La base tiene su propia lista (el CHECK projects_mockup_id_valido). Al sumar
+// una prenda hay que sumarla también ahí con una migración: la musculosa y el
+// short se agregaron solo acá, la base rechazaba cada guardado y los proyectos
+// nunca llegaban a la cuenta (ver supabase/migrations/0007).
 const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants', 'musculosa', 'short']
 function normalizeMockupId(v: unknown): Project['mockupId'] {
   return MOCKUPS_VALIDOS.includes(v as Project['mockupId']) ? v as Project['mockupId'] : 'tshirt'

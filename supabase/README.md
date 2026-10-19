@@ -15,9 +15,10 @@ migrations/0003_profiles_and_rls.sql  profiles (nickname) + RLS por operación
 migrations/0004_add_techpack.sql      projects.techpack_json (ficha técnica)
 migrations/0005_hardening.sql         integridad + privilegio mínimo
 migrations/0006_mockup_chomba.sql     mockup_id: entra chomba, queda hoodie
+migrations/0007_mockup_musculosa_short.sql  mockup_id: entran musculosa y short
 ```
 
-- **Base nueva y vacía:** correr las seis en orden. El resultado es el mismo esquema final.
+- **Base nueva y vacía:** correr las siete en orden. El resultado es el mismo esquema final.
 - **Base existente:** correr solo las pendientes.
 
 > Antes había además un `setup.sql` que duplicaba todo el esquema "para base nueva".
@@ -38,6 +39,7 @@ cat supabase/migrations/*.sql > /tmp/raw-design-full.sql
 |---|---|---|
 | 0001, 0002, 0003 | aplicadas | mayo–julio 2026 |
 | 0004, 0005, 0006 | aplicadas | 18-ago-2026 |
+| 0007 | **pendiente** | — |
 
 Se verifica con la query del final de `0005_hardening.sql`: las tres tablas deben dar
 `rls_activo = true`, `perm_authent` 4/4/3 y **`perm_anon = 0`**.
