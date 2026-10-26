@@ -39,7 +39,11 @@ cat supabase/migrations/*.sql > /tmp/raw-design-full.sql
 |---|---|---|
 | 0001, 0002, 0003 | aplicadas | mayo–julio 2026 |
 | 0004, 0005, 0006 | aplicadas | 18-ago-2026 |
-| 0007 | **pendiente** | — |
+| 0007 | aplicada | 26-oct-2026 |
+
+> El plan gratis **pausa el proyecto tras una semana sin uso**. Pausado, el dominio
+> `*.supabase.co` ni siquiera resuelve: la app cae en modo local sin avisar y nada sube
+> a la cuenta. Se reactiva desde el dashboard (pasó el 26-oct-2026).
 
 Se verifica con la query del final de `0005_hardening.sql`: las tres tablas deben dar
 `rls_activo = true`, `perm_authent` 4/4/3 y **`perm_anon = 0`**.
