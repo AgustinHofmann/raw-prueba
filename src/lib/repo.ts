@@ -29,13 +29,55 @@ interface Tombstone { id: string; kind: 'project' | 'folder'; at: number }
 
 export const isOnline = () => (typeof navigator === 'undefined' ? true : navigator.onLine !== false)
 
-/** ¿Se puede hablar con la nube AHORA? Hace falta credenciales, red y sesión. */
+/**
+ * Plazo máximo para hablar con la nube. Pasado eso, se da por no contestada.
+ *
+ * Hace falta porque `navigator.onLine` miente: dice que hay internet con solo
+ * tener wifi, aunque el servidor de la nube no conteste. Y una petición que no
+ * contesta NO falla rápido: el navegador la deja colgada medio minuto o más.
+ *
+ * Eso era un bug visible, no un detalle. Con sesión abierta y la nube sin
+ * contestar: crear un proyecto no abría el editor (la app esperaba a bajar un
+ * dibujo que no existía todavía) y borrar tardaba 30 segundos en sacar la
+ * tarjeta de la pantalla. Sin sesión las mismas dos cosas tardaban menos de un
+ * segundo, que es la prueba de que lo que tardaba era la espera, no el trabajo.
+ *
+ * 8 segundos: de sobra para una conexión lenta de verdad, poco para que alguien
+ * crea que el programa se colgó.
+ */
+const PLAZO_NUBE_MS = 8000
+
+/**
+ * Le pone plazo a una promesa de red. Si no contesta en tiempo, se resuelve
+ * como si no hubiera nube.
+ *
+ * El trabajo de fondo NO se cancela: si la petición termina más tarde, termina.
+ * Lo único que se corta es la espera, que es lo que tiene a alguien mirando una
+ * pantalla que no reacciona.
+ */
+function conPlazo<T>(trabajo: Promise<T>, siNoContesta: T, ms = PLAZO_NUBE_MS): Promise<T> {
+  return new Promise<T>(resolve => {
+    const t = setTimeout(() => resolve(siNoContesta), ms)
+    trabajo.then(
+      v => { clearTimeout(t); resolve(v) },
+      () => { clearTimeout(t); resolve(siNoContesta) },
+    )
+  })
+}
+
+/**
+ * ¿Se puede hablar con la nube AHORA? Hace falta credenciales, red y sesión.
+ *
+ * Va con plazo porque `getSession()` no siempre es local: si el token está
+ * vencido sale a la red a renovarlo, y ahí se cuelga igual que cualquier otra
+ * petición. Era el primer eslabón de la espera.
+ */
 export async function cloudReady(): Promise<boolean> {
   if (!cloudEnabled || !isOnline()) return false
-  try {
-    const { data } = await supabase.auth.getSession()
-    return Boolean(data.session)
-  } catch { return false }
+  return conPlazo(
+    supabase.auth.getSession().then(({ data }) => Boolean(data.session)),
+    false,
+  )
 }
 
 // ─── Lectura ─────────────────────────────────────────────────────────────────
@@ -55,23 +97,24 @@ export const listFolders = () => idbGetAll<Folder>(STORE_FOLDERS)
 export async function getCanvas(id: string): Promise<string | null> {
   const local = await idbGet<Project>(STORE_PROJECTS, id)
   if (local?.canvasJson != null) return local.canvasJson
+  // Un proyecto recién creado no tiene dibujo en ningún lado: no nació con uno.
+  // Salir a la nube a buscarlo es esperar por algo que no existe, y era
+  // exactamente lo que impedía que el editor abriera al crear un proyecto.
+  // La miniatura es la señal de que ALGUNA vez se guardó un dibujo.
+  if (local != null && !local.thumbnail) return null
   if (!(await cloudReady())) return null
-  try {
-    const json = await fetchProjectCanvas(id)
-    if (local && json != null) await idbPut(STORE_PROJECTS, { ...local, canvasJson: json })
-    return json
-  } catch { return null }
+  const json = await conPlazo(fetchProjectCanvas(id), null)
+  if (local && json != null) await idbPut(STORE_PROJECTS, { ...local, canvasJson: json })
+  return json
 }
 
 export async function getTechpack(id: string): Promise<string | null> {
   const local = await idbGet<Project>(STORE_PROJECTS, id)
   if (local?.techpackJson != null) return local.techpackJson
   if (!(await cloudReady())) return null
-  try {
-    const json = await fetchProjectTechpack(id)
-    if (local && json != null) await idbPut(STORE_PROJECTS, { ...local, techpackJson: json })
-    return json
-  } catch { return null }
+  const json = await conPlazo(fetchProjectTechpack(id), null)
+  if (local && json != null) await idbPut(STORE_PROJECTS, { ...local, techpackJson: json })
+  return json
 }
 
 // ─── Escritura ───────────────────────────────────────────────────────────────
@@ -149,7 +192,15 @@ export async function saveProject(
 async function pushProject(p: Pendiente, userId?: string): Promise<void> {
   if (!(await cloudReady())) return
   try {
-    const fechaServidor = await upsertProject(p, userId)
+    // Con plazo: una subida colgada no tiene que dejar su promesa viva para
+    // siempre. Si no contesta, `subio` queda en false y el proyecto se queda
+    // marcado como pendiente, que es exactamente lo que corresponde.
+    const subio = await conPlazo(
+      upsertProject(p, userId).then(fecha => ({ fecha })),
+      null,
+    )
+    if (!subio) return
+    const fechaServidor = subio.fecha
     // Subió: se limpia la marca, pero solo si nadie volvió a guardar mientras
     // tanto (si la fecha cambió, hay cambios más nuevos todavía sin subir).
     const actual = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
@@ -180,17 +231,27 @@ export async function saveTechpack(id: string, json: string, userId?: string): P
 export async function saveFolder(f: Folder, userId?: string): Promise<void> {
   await idbPut(STORE_FOLDERS, f)
   await idbDelete(STORE_DELETED, f.id)   // crear/renombrar una carpeta sí la revive
-  if (await cloudReady()) { try { await upsertFolder(f, userId) } catch { /* pendiente */ } }
+  // La subida va de fondo, igual que la de un proyecto: la carpeta ya está
+  // creada en esta máquina. Esperándola, crear una carpeta tardaba lo mismo que
+  // tarde el servidor en contestar.
+  void pushFolder(f, userId)
+}
+
+async function pushFolder(f: Folder, userId?: string): Promise<void> {
+  if (!(await cloudReady())) return
+  await conPlazo(upsertFolder(f, userId).then(() => true), false)
 }
 
 export async function removeProject(id: string): Promise<void> {
   await idbDelete(STORE_PROJECTS, id)
-  await applyRemoteDelete(id, 'project')
+  await anotarBorrado(id, 'project')
+  void borrarEnLaNube(id, 'project')
 }
 
 export async function removeFolder(id: string): Promise<void> {
   await idbDelete(STORE_FOLDERS, id)
-  await applyRemoteDelete(id, 'folder')
+  await anotarBorrado(id, 'folder')
+  void borrarEnLaNube(id, 'folder')
 }
 
 // Un borrado no se puede perder: si solo se borrara local, el próximo sync lo
@@ -201,15 +262,29 @@ export async function removeFolder(id: string): Promise<void> {
 // era justo el que no tira error: la base contesta OK habiendo borrado cero
 // filas. Como nadie anotaba nada, el proyecto seguía arriba y volvía al recargar.
 //
-// La anotación se levanta recién cuando la nube CONFIRMA el borrado.
-async function applyRemoteDelete(id: string, kind: 'project' | 'folder'): Promise<void> {
+// Esta parte SÍ se espera: es la que hace que el borrado sea definitivo, es
+// local y tarda milisegundos.
+async function anotarBorrado(id: string, kind: 'project' | 'folder'): Promise<void> {
   await idbPut<Tombstone>(STORE_DELETED, { id, kind, at: Date.now() })
+}
+
+// El borrado de la nube, en cambio, NO se espera: va de fondo, igual que la
+// subida de un guardado (ver pushProject).
+//
+// Mientras se esperaba, apretar "Eliminar" dejaba la tarjeta en pantalla hasta
+// medio minuto si el servidor no contestaba — la app parecía colgada cuando en
+// realidad el proyecto ya estaba borrado de esta máquina desde el primer
+// instante. Que la nube tarde, o no conteste nunca, no cambia nada: la
+// anotación de arriba ya está puesta y el próximo sync reintenta.
+//
+// La anotación se levanta recién cuando la nube CONFIRMA el borrado.
+async function borrarEnLaNube(id: string, kind: 'project' | 'folder'): Promise<void> {
   if (!(await cloudReady())) return
-  try {
-    if (kind === 'project') await deleteProject(id)
-    else await deleteFolder(id)
-    await idbDelete(STORE_DELETED, id)
-  } catch { /* queda anotado y se reintenta en el próximo sync */ }
+  const ok = await conPlazo(
+    (kind === 'project' ? deleteProject(id) : deleteFolder(id)).then(() => true),
+    false,
+  )
+  if (ok) await idbDelete(STORE_DELETED, id)
 }
 
 // ─── Sincronización ──────────────────────────────────────────────────────────
@@ -233,11 +308,12 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     //    borraste sin internet volvería a aparecer en este mismo sync.
     const pendientes = await idbGetAll<Tombstone>(STORE_DELETED)
     for (const t of pendientes) {
-      try {
-        if (t.kind === 'project') await deleteProject(t.id)
-        else await deleteFolder(t.id)
-        await idbDelete(STORE_DELETED, t.id)
-      } catch { /* se reintenta el próximo sync */ }
+      const listo = await conPlazo(
+        (t.kind === 'project' ? deleteProject(t.id) : deleteFolder(t.id)).then(() => true),
+        false,
+      )
+      if (listo) await idbDelete(STORE_DELETED, t.id)
+      /* si no contestó, queda anotado y se reintenta el próximo sync */
     }
     // Lo borrado acá NO vuelve, aunque la nube se haya negado a borrarlo. Sin
     // esta lista, una fila que la base no deja borrar (por ejemplo porque quedó
@@ -248,25 +324,43 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     )
 
     // 2. Carpetas: son livianas, se resuelven de una.
-    const [nubeCarpetas, localesCarpetas] = await Promise.all([fetchFolders(), listFolders()])
+    //
+    // OJO con el plazo acá: "no contestó" NO es lo mismo que "la nube está
+    // vacía". Si una consulta vencida se tomara por lista vacía, el paso 4
+    // concluiría que borraron todo en otro dispositivo y se llevaría puestos los
+    // proyectos de esta máquina. Por eso vence en `null` y el sync se corta:
+    // mejor no sincronizar que sincronizar contra una respuesta que no llegó.
+    const [nubeCarpetas, localesCarpetas] = await Promise.all([
+      conPlazo(fetchFolders().then(v => v as Folder[] | null), null),
+      listFolders(),
+    ])
+    if (nubeCarpetas === null) return null
     const carpetas = new Map<string, Folder>()
     for (const f of nubeCarpetas) { if (!borrados.has(f.id)) carpetas.set(f.id, f) }
     for (const f of localesCarpetas) {
-      if (!carpetas.has(f.id)) { carpetas.set(f.id, f); try { await upsertFolder(f, userId) } catch { /* luego */ } }
+      if (!carpetas.has(f.id)) {
+        carpetas.set(f.id, f)
+        await conPlazo(upsertFolder(f, userId).then(() => true), false)   /* si no, el próximo sync */
+      }
     }
     for (const f of carpetas.values()) await idbPut(STORE_FOLDERS, f)
 
     // 3. Proyectos. La lista de la nube viene sin el dibujo (es pesado), así que
     //    de los que ganan arriba hay que bajar el contenido aparte.
-    const [nube, locales] = await Promise.all([fetchProjects(), listProjects()])
+    const [nubeLista, locales] = await Promise.all([
+      conPlazo(fetchProjects().then(v => v as Project[] | null), null),
+      listProjects(),
+    ])
+    if (nubeLista === null) return null   // mismo criterio que con las carpetas
+    const nube = nubeLista
     const porId = new Map<string, Project>()
     for (const p of locales) porId.set(p.id, p)
 
     /** Trae el contenido de la nube y lo deja guardado acá. */
     const bajar = async (remoto: Project, local?: Pendiente) => {
       const [canvasJson, techpackJson] = await Promise.all([
-        fetchProjectCanvas(remoto.id).catch(() => null),
-        fetchProjectTechpack(remoto.id).catch(() => null),
+        conPlazo(fetchProjectCanvas(remoto.id), null),
+        conPlazo(fetchProjectTechpack(remoto.id), null),
       ])
       // Si la nube no trae dibujo (falló la descarga, o esa fila nunca llegó a
       // guardarlo) se conserva el que hay acá. Pisar un diseño con vacío porque
