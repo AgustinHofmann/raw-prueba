@@ -91,5 +91,20 @@ píxeles hacia el cursor. Es un movimiento **corto y contenido**, no decorativo.
 
 ## El logotipo
 
-No hay archivo. En la app es texto: **`R.AW`** en Instrument Serif itálica, con
-el punto del medio en color de acento y un poco de espacio entre letras.
+En la app es texto: **`R.AW`** en Instrument Serif itálica, con el punto del
+medio en color de acento y un poco de espacio entre letras.
+
+Desde el 2026-10-28 también hay archivo, en `docs/brand/`:
+
+| Archivo | Para qué |
+|---|---|
+| `logo-raw-design.svg` | El principal. Letras en `#0b0c0f`, para fondos claros |
+| `logo-raw-design-fondo-oscuro.svg` | Letras en `#f6f5f1`, para fondos oscuros |
+
+Las letras están **convertidas a trazos**, no son texto: se ven igual en
+cualquier máquina sin tener Instrument Serif instalada. El fondo es
+transparente y el cuadrado va en el acento `#bbec4d` en los dos.
+
+Se generan con el script de `docs/brand/` a partir de
+`InstrumentSerif-Italic.ttf`, respetando las proporciones reales del componente
+`src/components/Logo.tsx` (cuadrado y separación = 0.18 em, tracking -0.02 em).
