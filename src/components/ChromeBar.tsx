@@ -25,12 +25,15 @@ interface Props {
   onTechPack: () => void
   onRename: (name: string) => void
   onProfileOpen: () => void
+  /** Sin cuenta, el avatar y el cartel llevan acá en vez de al perfil. */
+  onIniciarSesion?: () => void
 }
 
 export default function ChromeBar({
   route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
   onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
+  onIniciarSesion,
 }: Props) {
   const [editing, setEditing]     = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -200,7 +203,7 @@ export default function ChromeBar({
       {/* Right: controles editor + avatar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 14, flexShrink: 0 }}>
 
-        <ConnStatus online={online} syncing={syncing} sinCuenta={sinCuenta} />
+        <ConnStatus online={online} syncing={syncing} sinCuenta={sinCuenta} onIniciarSesion={onIniciarSesion} />
 
         {isEditor && (
           <>
@@ -286,10 +289,12 @@ export default function ChromeBar({
           {isFullscreen ? '⛶' : '⛶'}
         </button>
 
-        {/* Avatar — abre el panel de perfil */}
+        {/* Avatar — abre el panel de perfil. Sin cuenta no hay perfil que
+            abrir (el panel no se dibuja sin usuario): el botón quedaba muerto,
+            así que ahí lleva a crear la cuenta. */}
         <button
-          onClick={onProfileOpen}
-          title={email}
+          onClick={sinCuenta && onIniciarSesion ? onIniciarSesion : onProfileOpen}
+          title={sinCuenta ? 'Iniciar sesión o registrarte' : email}
           style={{
             width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
             background: 'color-mix(in oklch, var(--accent) 18%, var(--surface))',
@@ -349,32 +354,53 @@ function MenuItem({ icon, label, hint, onClick }: {
  * No es una alarma: sin conexión el trabajo está guardado igual, solo que en
  * esta máquina. Por eso el cartel informa y no asusta.
  */
-function ConnStatus({ online, syncing, sinCuenta }: { online: boolean; syncing: boolean; sinCuenta: boolean }) {
+function ConnStatus({ online, syncing, sinCuenta, onIniciarSesion }: {
+  online: boolean; syncing: boolean; sinCuenta: boolean; onIniciarSesion?: () => void
+}) {
   const estado = syncing ? 'sync' : (!online || sinCuenta) ? 'local' : 'nube'
   if (estado === 'nube') return null   // todo normal: no hace falta decir nada
 
   const texto = estado === 'sync'
     ? 'Sincronizando…'
     : sinCuenta ? 'Sin cuenta' : 'Sin conexión'
+  // "Sin cuenta" es el único de los tres estados que el diseñador puede
+  // cambiar, así que es el único que se puede apretar. "Sin conexión" no:
+  // ofrecer un botón que no arregla nada es peor que no ofrecer ninguno.
+  const sePuedeApretar = sinCuenta && !syncing && Boolean(onIniciarSesion)
   const detalle = estado === 'sync'
     ? 'Subiendo los cambios a tu cuenta'
-    : 'Se guarda en esta computadora' + (sinCuenta ? '' : '. Se sube al volver la conexión')
+    : sePuedeApretar
+      ? 'Se guarda en esta computadora. Tocá para iniciar sesión o registrarte'
+      : 'Se guarda en esta computadora' + (sinCuenta ? '' : '. Se sube al volver la conexión')
 
-  return (
-    <span
-      title={detalle}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 6,
-        padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
-        fontSize: 11, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
-        border: '1px solid var(--line-soft)', background: 'var(--surface)',
-      }}
-    >
+  const contenido = (
+    <>
       <span style={{
         width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
         background: estado === 'sync' ? 'var(--accent)' : 'var(--muted)',
       }} />
       {texto}
-    </span>
+    </>
+  )
+
+  const estiloBase: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 6,
+    padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
+    fontSize: 11, fontFamily: 'var(--ui)', color: 'var(--fg-2)',
+    border: '1px solid var(--line-soft)', background: 'var(--surface)',
+  }
+
+  if (!sePuedeApretar) return <span title={detalle} style={estiloBase}>{contenido}</span>
+
+  return (
+    <button
+      onClick={onIniciarSesion}
+      title={detalle}
+      style={{ ...estiloBase, cursor: 'pointer', transition: 'border-color 0.12s var(--ease), color 0.12s var(--ease)' }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--fg)' }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line-soft)'; e.currentTarget.style.color = 'var(--fg-2)' }}
+    >
+      {contenido}
+    </button>
   )
 }

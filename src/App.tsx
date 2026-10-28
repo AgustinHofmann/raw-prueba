@@ -37,6 +37,8 @@ export default function App() {
   const [loading, setLoading]         = useState(false)
   const [showSheet, setShowSheet]     = useState(false)
   const [showProfile, setShowProfile] = useState(false)
+  // Pantalla de cuenta abierta DESDE ADENTRO, ya trabajando sin cuenta.
+  const [showAuth, setShowAuth]       = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
   const [online, setOnline]         = useState(isOnline())
@@ -84,8 +86,21 @@ export default function App() {
       .catch(() => { /* sin sesión: se sigue igual */ })
       .finally(() => { clearTimeout(rescate); setAuthReady(true) })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null)
+      // Entró: la pantalla de cuenta ya cumplió y se va sola. Dejarla abierta
+      // taparía el archivo justo cuando el diseñador quiere ver que sus
+      // proyectos siguen ahí.
+      if (session?.user) setShowAuth(false)
+      // Cerró sesión: se levanta el "entrar sin cuenta". Si no, salir de la
+      // cuenta devolvía en silencio al modo invitado, sin pantalla de login y
+      // sin forma de volver a entrar. Solo con SIGNED_OUT: el arranque de
+      // alguien que eligió no tener cuenta también avisa sesión nula, y ahí
+      // levantar la marca lo mandaría al login en cada recarga.
+      if (event === 'SIGNED_OUT') {
+        localStorage.removeItem('raw.sinCuenta')
+        setSinCuenta(false)
+      }
     })
     return () => { clearTimeout(rescate); subscription.unsubscribe() }
   }, [])
@@ -450,6 +465,7 @@ export default function App() {
           onTechPack={() => editorActionsRef.current?.techpack()}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
+          onIniciarSesion={cloudEnabled ? () => setShowAuth(true) : undefined}
         />
       )}
 
@@ -467,6 +483,8 @@ export default function App() {
             onCreateFolder={handleCreateFolder}
             onDeleteFolder={handleDeleteFolder}
             onMoveProject={handleMoveProject}
+            sinCuenta={!user && cloudEnabled}
+            onIniciarSesion={() => setShowAuth(true)}
           />
         )}
         {route === 'library'  && <LibraryScreen onGo={go} />}
@@ -509,6 +527,18 @@ export default function App() {
 
       {showProfile && user && (
         <ProfilePanel user={user} projects={projects} folders={folders} theme={theme} onThemeChange={setTheme} onClose={() => setShowProfile(false)} />
+      )}
+
+      {/* Crear cuenta o entrar, sin salir de lo que estaba haciendo.
+          Va al final y por encima de todo: es la misma pantalla del arranque,
+          pero acá hay trabajo atrás, así que se puede cerrar y seguir. */}
+      {showAuth && !user && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 300 }}>
+          <AuthScreen
+            onCerrar={() => setShowAuth(false)}
+            proyectosLocales={projects.length}
+          />
+        </div>
       )}
     </div>
   )

@@ -12,6 +12,10 @@ interface Props {
   onCreateFolder: (name: string) => void
   onDeleteFolder: (id: string) => void
   onMoveProject: (projectId: string, folderId: string | null) => void
+  /** Se está trabajando sin cuenta: todo vive solo en esta computadora. */
+  sinCuenta?: boolean
+  /** Abre la pantalla de cuenta sin salir del archivo. */
+  onIniciarSesion?: () => void
 }
 
 const MOCKUP_LABELS: Record<string, string> = {
@@ -26,6 +30,7 @@ export default function HomeScreen({
   projects, folders, loading,
   onNewProject, onOpenProject, onDeleteProject, onImportProject,
   onCreateFolder, onDeleteFolder, onMoveProject,
+  sinCuenta, onIniciarSesion,
 }: Props) {
   const [search, setSearch]                 = useState('')
   const [importError, setImportError]       = useState<string | null>(null)
@@ -180,6 +185,27 @@ export default function HomeScreen({
         <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportFile} />
 
         <div style={{ marginTop: 'auto', paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+          {/* Sin cuenta: la puerta de entrada a tener una.
+              Va acá y no escondida en un menú porque el momento en que a alguien
+              le importa tener cuenta es cuando ya tiene proyectos hechos y está
+              mirando el archivo — no cuando abrió el programa por primera vez.
+              El login prometía "podés crear una cuenta más adelante" y no había
+              por dónde: esto es ese "más adelante". */}
+          {sinCuenta && onIniciarSesion && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>
+                Estás sin cuenta. Tus proyectos se guardan solo en esta
+                computadora.
+              </div>
+              <button
+                onClick={onIniciarSesion}
+                className="btn"
+                style={{ width: '100%', justifyContent: 'center', fontSize: 12 }}
+              >
+                Iniciar sesión o registrarte
+              </button>
+            </div>
+          )}
           <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 2 }}>
             <div>Ctrl+N &nbsp; nuevo</div>
           </div>
