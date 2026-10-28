@@ -86,6 +86,64 @@ function svg(tinta) {
 writeFileSync('logo-raw-design.svg', svg(TINTA_CLARA))
 writeFileSync('logo-raw-design-fondo-oscuro.svg', svg(TINTA_OSCURA))
 
+// ── Isotipo: la R y el punto, sin el AW ──────────────────────────────────────
+//
+// Es la marca corta — la que entra en una pestaña del navegador, en un avatar o
+// en una esquina. El logotipo completo a 16 px no se lee; este sí.
+//
+// Mismas proporciones que el completo: no es un dibujo aparte, es el mismo logo
+// recortado. Por eso reusa `pR` y el cuadrado tal cual están.
+const isoMinX = Math.min(bbR.x1, xR)
+const isoMaxX = xCuadrado + CUADRADO
+const isoMinY = Math.min(bbR.y1, cuadradoTop)
+const isoMaxY = Math.max(bbR.y2, cuadradoBottom)
+
+const ivbX = isoMinX - MARGEN
+const ivbY = isoMinY - MARGEN
+const ivbW = (isoMaxX - isoMinX) + MARGEN * 2
+const ivbH = (isoMaxY - isoMinY) + MARGEN * 2
+
+function isotipo(tinta) {
+  const r = 0.0125 * SIZE
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${ivbX.toFixed(2)} ${ivbY.toFixed(2)} ${ivbW.toFixed(2)} ${ivbH.toFixed(2)}" width="${Math.round(ivbW)}" height="${Math.round(ivbH)}" role="img" aria-label="RAW Design">
+  <title>RAW Design</title>
+  <path d="${pR.toPathData(3)}" fill="${tinta}"/>
+  <rect x="${xCuadrado.toFixed(2)}" y="${cuadradoTop.toFixed(2)}" width="${CUADRADO.toFixed(2)}" height="${CUADRADO.toFixed(2)}" rx="${r.toFixed(2)}" fill="${ACENTO}"/>
+</svg>
+`
+}
+
+/**
+ * Isotipo dentro de una baldosa redondeada: el ícono de la app.
+ *
+ * Va centrado por su CAJA REAL, no por la del texto. La itálica y el cuadrado
+ * tiran el peso a la derecha, así que centrar por la caja tipográfica deja el
+ * dibujo visiblemente corrido.
+ */
+function baldosa(fondo = TINTA_CLARA, tinta = TINTA_OSCURA) {
+  const L = 32                       // lienzo del ícono
+  const margen = 0.18 * L            // aire alrededor del dibujo
+  const util = L - margen * 2
+  const escala = Math.min(util / ivbW, util / ivbH)
+  const dx = (L - ivbW * escala) / 2 - ivbX * escala
+  const dy = (L - ivbH * escala) / 2 - ivbY * escala
+  const r = 0.0125 * SIZE
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${L} ${L}" width="${L}" height="${L}" role="img" aria-label="RAW Design">
+  <title>RAW Design</title>
+  <rect width="${L}" height="${L}" rx="7" fill="${fondo}"/>
+  <g transform="translate(${dx.toFixed(3)} ${dy.toFixed(3)}) scale(${escala.toFixed(4)})">
+    <path d="${pR.toPathData(3)}" fill="${tinta}"/>
+    <rect x="${xCuadrado.toFixed(2)}" y="${cuadradoTop.toFixed(2)}" width="${CUADRADO.toFixed(2)}" height="${CUADRADO.toFixed(2)}" rx="${r.toFixed(2)}" fill="${ACENTO}"/>
+  </g>
+</svg>
+`
+}
+
+writeFileSync('logo-raw-isotipo.svg', isotipo(TINTA_CLARA))
+writeFileSync('logo-raw-isotipo-fondo-oscuro.svg', isotipo(TINTA_OSCURA))
+writeFileSync('logo-raw-icono.svg', baldosa())
+
 console.log('viewBox:', vbX.toFixed(1), vbY.toFixed(1), vbW.toFixed(1), vbH.toFixed(1))
 console.log('ancho total:', anchoTotal.toFixed(1), '| R:', anchoR.toFixed(1), '| AW:', anchoAW.toFixed(1))
-console.log('listo: logo-raw-design.svg + logo-raw-design-fondo-oscuro.svg')
+console.log('isotipo viewBox:', ivbX.toFixed(1), ivbY.toFixed(1), ivbW.toFixed(1), ivbH.toFixed(1))
+console.log('listo: logotipo (2) + isotipo (2) + icono (1)')

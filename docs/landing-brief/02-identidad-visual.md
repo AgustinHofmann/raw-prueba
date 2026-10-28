@@ -100,6 +100,12 @@ Desde el 2026-10-28 también hay archivo, en `docs/brand/`:
 |---|---|
 | `logo-raw-design.svg` | El principal. Letras en `#0b0c0f`, para fondos claros |
 | `logo-raw-design-fondo-oscuro.svg` | Letras en `#f6f5f1`, para fondos oscuros |
+| `logo-raw-isotipo.svg` | **La marca corta: la R y el punto.** Para cuando `R.AW` entero no entra o no se lee |
+| `logo-raw-isotipo-fondo-oscuro.svg` | El isotipo para fondos oscuros |
+| `logo-raw-icono.svg` | El isotipo dentro de una baldosa redondeada: ícono de app / avatar |
+
+El isotipo **no es un dibujo aparte**: es el mismo logotipo recortado, con las
+mismas proporciones. Si se cambia uno hay que regenerar los dos.
 
 Las letras están **convertidas a trazos**, no son texto: se ven igual en
 cualquier máquina sin tener Instrument Serif instalada. El fondo es
@@ -108,3 +114,16 @@ transparente y el cuadrado va en el acento `#bbec4d` en los dos.
 Se generan con el script de `docs/brand/` a partir de
 `InstrumentSerif-Italic.ttf`, respetando las proporciones reales del componente
 `src/components/Logo.tsx` (cuadrado y separación = 0.18 em, tracking -0.02 em).
+
+### ⚠️ El favicon de la app no sigue esto
+
+`public/favicon.svg` se dibujó antes y **se aparta de la marca en tres cosas**:
+usa Georgia en vez de Instrument Serif (y como va en `<text>`, cada máquina lo
+dibuja distinto), el verde es `#dfff57` en vez del acento `#bbec4d`, y el fondo
+es `#1b1d22` en vez de `#0b0c0f`.
+
+No se tocó todavía a propósito: la R de Instrument Serif es fina y a 16 px se
+lee **peor** que la Georgia negrita que hay ahora. Reemplazarlo pide antes
+resolver esa legibilidad (una R más pesada, o soltar la serif solo para el
+favicon). Mientras tanto, `logo-raw-icono.svg` es el ícono correcto para todo
+lo que no sea una pestaña del navegador.
