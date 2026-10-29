@@ -157,10 +157,10 @@ type HistoryEntry =
   // El desplazamiento, en cambio, vale igual antes y después.
   | { type: 'moveDelta'; objs: fabric.FabricObject[]; dx: number; dy: number }
   | { type: 'props';  obj: fabric.FabricObject; prev: Record<string, any> }
-  // Máscara de recorte: la forma de arriba recorta a las de abajo (Ctrl+7).
-  // Se guarda la forma —que sale del lienzo— y a quiénes recorta, para poder
-  // devolver las dos cosas.
-  | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; indiceForma: number }
+  // Máscara de recorte: la forma de arriba recorta a lo de abajo (Ctrl+7) y las
+  // dos cosas quedan dentro de un grupo. Se guarda el grupo para poder soltarlo,
+  // y la forma y el contenido para poder rearmarlo.
+  | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -2305,27 +2305,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // porque tocar una herramienta le cambia propiedades y lo obliga a
         // redibujarse, ya con el recorte bien calculado.
         clipPath.current?.setCoords()
-        // Las máscaras de recorte se rehacen desde `_mascara`: `clipPath` no se
+        // Los grupos de recorte se rehacen desde `_mascara`: `clipPath` no se
         // guarda (ver el guardado), así que sin esto el diseño abría sin recorte
-        // y mostrando entero lo que el diseñador había enmascarado. Objetos que
-        // compartían el mismo molde vuelven a compartir UNO solo, para que
-        // moverlo los siga recortando a todos igual.
-        const moldes = new Map<string, fabric.FabricObject>()
+        // y mostrando entero lo que el diseñador había enmascarado.
+        //
+        // El molde ya viene en coordenadas del grupo (origen al centro, posición
+        // relativa), así que se vuelve a colgar tal cual: no hay que recalcular
+        // nada contra el lienzo.
         for (const obj of revived) {
           obj.set({ strokeUniform: true })
           const guardada = (obj as any)._mascara
           if (guardada) {
             try {
-              const clave = JSON.stringify(guardada)
-              let molde = moldes.get(clave)
-              if (!molde) {
-                const [m] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
-                if (m) { prepararMascara(m); moldes.set(clave, m); molde = m }
+              const [molde] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
+              if (molde) {
+                ;(molde as any).absolutePositioned = false
+                molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
+                obj.clipPath = molde
+                // El molde ya se guardó en (0,0) y el grupo ya venía medido por
+                // él, así que acá solo hay que dejar la medida fija para que el
+                // próximo reacomodo no lo devuelva al tamaño del contenido.
+                if (obj instanceof fabric.Group) {
+                  try {
+                    obj.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
+                  } catch { /* recorta igual, solo queda el marco grande */ }
+                }
               }
-              if (molde) obj.set({ clipPath: molde })
             } catch (e) {
               // Una máscara rota no puede llevarse puesto el dibujo: se pierde
-              // el recorte y el objeto se ve entero, que es lo recuperable.
+              // el recorte y el contenido se ve entero, que es lo recuperable.
               delete (obj as any)._mascara
               console.warn('no se pudo restaurar una máscara de recorte', e)
             }
@@ -5925,9 +5933,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
           undoHistory.current.push(entry)
         } else if (entry.type === 'mascara') {
-          prepararMascara(entry.forma)         // rehacer: vuelve a recortar
-          canvas.remove(entry.forma)
-          aplicarMascara(entry.forma, entry.contenido)
+          entry.grupo = armarGrupoMascara(entry.contenido, entry.forma)   // rehacer
           undoHistory.current.push(entry)
           refreshLayersNow()
         } else if (entry.type === 'props') {
@@ -5999,15 +6005,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
           redoHistory.current.push(entry)
         } else if (entry.type === 'mascara') {
-          // deshacer: se suelta el recorte y la forma vuelve a su lugar en la pila
-          entry.contenido.forEach(o => {
-            o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-            delete (o as any)._mascara
-            o.dirty = true
-          })
-          devolverMascara(entry.forma)
-          canvas.insertAt(entry.indiceForma, entry.forma)
-          entry.forma.setCoords()
+          soltarGrupoMascara(entry.grupo)   // deshacer: se deshace el grupo
           redoHistory.current.push(entry)
           refreshLayersNow()
         } else if (entry.type === 'props') {
@@ -6253,7 +6251,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
       // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
       // al abrir, pero el de la máscara se perdería para siempre.
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -7009,10 +7007,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // ── Máscara de recorte (Ctrl+7 / Ctrl+Alt+7) ────────────────────────────────
   //
-  // Como en Illustrator: la forma de MÁS ARRIBA recorta a todo lo que quedó
-  // debajo en la selección. La forma sale del lienzo y pasa a ser el molde.
+  // Como en Illustrator: la forma va ARRIBA, el dibujo o la imagen abajo, se
+  // seleccionan los dos y la forma pasa a ser el molde.
   //
-  // Hay cuatro cosas que hay que hacer sí o sí, y cada una costó un intento:
+  // El resultado es **un grupo de recorte**: un solo objeto que lleva adentro el
+  // contenido y el molde. Eso es lo que hace Illustrator, y no es un detalle de
+  // implementación — es lo que arregla que:
+  //   · quede dando vueltas el marco de selección de una forma que ya no existe,
+  //   · el dibujo desaparezca al moverlo (el molde se movía con el lienzo, no
+  //     con el dibujo, así que el contenido se iba "fuera" del recorte),
+  //   · al soltar vuelva solo el contenido y se pierda la forma.
+  // Con el grupo, el molde viaja con el contenido: mover, escalar y rotar
+  // funcionan como con cualquier otro objeto.
+  //
+  // Cuatro trampas que hay que respetar sí o sí:
   //
   // 1. Las figuras nacen SIN relleno (son fichas técnicas, no ilustraciones). Un
   //    recorte recorta por su área RELLENA, así que sin relleno el área es cero
@@ -7020,57 +7028,96 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // 2. La forma viene con el recorte a la prenda colgado. Un recorte que a su
   //    vez tiene otro recorte adentro NO se puede revivir al abrir el archivo
   //    (Fabric tira `No class registered for undefined`). Se lo saca.
-  // 3. Hay que marcar `dirty` en cada objeto recortado. Los objetos se dibujan
-  //    a un caché propio; si el caché no se tira, el recorte se aplica sobre el
-  //    dibujo viejo y cada objeto muestra un pedazo distinto, escalonado en
-  //    diagonal. **Esto era lo que hacía fallar la máscara.**
+  // 3. Hay que marcar `dirty`. Los objetos se dibujan a un caché propio; si el
+  //    caché no se tira, el recorte se aplica sobre el dibujo viejo y sale
+  //    corrido, escalonado en diagonal. Esto es lo que hacía fallar la máscara.
   // 4. `clipPath` NO se guarda (el guardado lo borra a propósito, porque el
-  //    recorte a la prenda se repone solo). La forma se guarda aparte en
+  //    recorte a la prenda se repone solo). El molde se guarda aparte en
   //    `_mascara` y el recorte se rehace al abrir.
 
-  /** Deja una forma lista para usarse como molde de recorte. */
+  /** Deja una forma lista para usarse como molde, y devuelve cómo estaba. */
   function prepararMascara(forma: fabric.FabricObject) {
     const previo = {
       fill: forma.fill,
       opacity: forma.opacity,
-      clipPath: forma.clipPath,
-      absolutePositioned: (forma as any).absolutePositioned,
+      originX: forma.originX,
+      originY: forma.originY,
+      left: forma.left,
+      top: forma.top,
     }
-    ;(forma as any)._mascaraPrevio = previo
     forma.set({
       fill: '#000',            // el recorte es por área rellena, no por el trazo
       opacity: 1,
       clipPath: undefined,     // sin esto el archivo no se puede volver a abrir
     })
-    ;(forma as any).absolutePositioned = true   // el molde vive en coords del lienzo
-    forma.setCoords()
+    ;(forma as any).absolutePositioned = false   // el molde viaja CON el grupo
     return previo
   }
 
-  /** Vuelve a dejar la forma como estaba antes de ser molde. */
-  function devolverMascara(forma: fabric.FabricObject) {
-    const previo = (forma as any)._mascaraPrevio
-    if (previo) {
-      forma.set({ fill: previo.fill, opacity: previo.opacity })
-      ;(forma as any).absolutePositioned = previo.absolutePositioned
-      delete (forma as any)._mascaraPrevio
-    }
-    // El recorte a la prenda se repone acá y no desde `previo`: mientras la
-    // forma era molde pudieron cambiar las medidas, y el recorte guardado
-    // apuntaría a un molde de prenda que ya no existe.
-    forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-    forma.dirty = true
+  /**
+   * Coloca el molde en coordenadas del grupo.
+   *
+   * Un `clipPath` no absoluto se dibuja tomando como origen el CENTRO del
+   * objeto que recorta. Así que al molde se le pone origen al centro y su
+   * posición pasa a ser la distancia entre los dos centros.
+   */
+  function encajarMascaraEnGrupo(forma: fabric.FabricObject, grupo: fabric.Group, centroFormaAbs: fabric.Point) {
+    const cg = grupo.getCenterPoint()
+    forma.set({
+      originX: 'center', originY: 'center',
+      left: centroFormaAbs.x - cg.x,
+      top:  centroFormaAbs.y - cg.y,
+    })
+    forma.setCoords()
+    grupo.clipPath = forma
+    ajustarCajaAlMolde(grupo)
   }
 
-  /** Aplica una forma como máscara sobre una lista de objetos. */
-  function aplicarMascara(forma: fabric.FabricObject, contenido: fabric.FabricObject[]) {
-    const json = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
-    delete (json as any).clipPath
-    for (const o of contenido) {
-      o.clipPath = forma
-      ;(o as any)._mascara = json     // para poder rehacerlo al abrir el archivo
-      o.dirty = true                  // ← sin esto el recorte sale corrido
-    }
+  /**
+   * Hace que la caja del grupo sea la del MOLDE y no la del contenido.
+   *
+   * Por defecto un grupo se mide por sus hijos e ignora el recorte, así que
+   * quedaba dando vueltas el marco de selección de la forma grande que ya no se
+   * ve —y agarrarlo de una esquina vacía movía algo que no estaba ahí—.
+   *
+   * Dos detalles que no se pueden saltear:
+   *
+   * · Después del reacomodo hay que poner el molde en (0,0). Fabric centra el
+   *   grupo en `centro del contenido + desplazamiento del molde`, pero le deja
+   *   al molde ese mismo desplazamiento, así que se cuenta dos veces y el
+   *   recorte queda ~10 px corrido respecto del marco.
+   * · Y hay que dejarlo en medida fija. Si se queda con la estrategia del
+   *   recorte, el siguiente reacomodo volvería a sumar un desplazamiento que
+   *   ahora es cero, y el grupo se iría al centro del contenido otra vez.
+   */
+  function ajustarCajaAlMolde(grupo: fabric.Group) {
+    const forma = grupo.clipPath as fabric.FabricObject | undefined
+    if (!forma) return
+    try {
+      grupo.layoutManager = new fabric.LayoutManager(new fabric.ClipPathLayout())
+      grupo.triggerLayout()
+      forma.set({ left: 0, top: 0 })
+      forma.setCoords()
+      grupo.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
+    } catch { /* sin esto el marco queda grande, pero recorta igual */ }
+    grupo.setCoords()
+    grupo.dirty = true           // ← sin esto el recorte sale corrido
+  }
+
+  /** Arma el grupo de recorte a partir del contenido y la forma. */
+  function armarGrupoMascara(contenido: fabric.FabricObject[], forma: fabric.FabricObject): fabric.Group {
+    const canvas = fc.current!
+    const centroForma = forma.getCenterPoint()
+    const previo = prepararMascara(forma)
+    canvas.remove(forma)                 // el molde deja de ser objeto del lienzo
+    const grupo = makeGroup(contenido)   // el contenido pasa a ser un solo objeto
+    encajarMascaraEnGrupo(forma, grupo, centroForma)
+    // Se guarda CÓMO ERA la forma (relleno, opacidad) para poder devolvérsela
+    // al soltar, y el molde ya encajado para poder rehacerlo al abrir el archivo.
+    // El grupo no lleva además el recorte a la prenda: Fabric admite uno solo.
+    ;(grupo as any)._mascaraPrevio = previo
+    ;(grupo as any)._mascara = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
+    return grupo
   }
 
   function hacerMascara() {
@@ -7078,7 +7125,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas) return
     const activo = canvas.getActiveObject()
     if (!activo || activo.type !== 'activeselection') {
-      onToast?.('Elegí al menos dos cosas: la de arriba recorta a las de abajo.')
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
     }
     // El orden de apilado manda, no el orden en que se fueron clickeando.
@@ -7087,54 +7134,88 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       .filter(o => !mockupObjects.current.includes(o))
       .sort((a, b) => todos.indexOf(a) - todos.indexOf(b))
     if (elegidos.length < 2) {
-      onToast?.('Elegí al menos dos cosas: la de arriba recorta a las de abajo.')
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
     }
     const forma = elegidos[elegidos.length - 1]
     const contenido = elegidos.slice(0, -1)
-    const indiceForma = todos.indexOf(forma)
 
     canvas.discardActiveObject()     // devuelve coordenadas absolutas a los hijos
-    prepararMascara(forma)
-    canvas.remove(forma)             // el molde deja de ser un objeto del lienzo
-    aplicarMascara(forma, contenido)
+    const grupo = armarGrupoMascara(contenido, forma)
 
-    undoHistory.current.push({ type: 'mascara', forma, contenido, indiceForma })
+    undoHistory.current.push({ type: 'mascara', forma, contenido, grupo })
     redoHistory.current = []
-    canvas.setActiveObject(new fabric.ActiveSelection(contenido, { canvas }))
+    canvas.setActiveObject(grupo)
     canvas.requestRenderAll()
     refreshLayersNow()
     onToast?.('Máscara de recorte aplicada · Ctrl+Alt+7 para soltarla')
   }
 
+  /** Deshace un grupo de recorte: vuelven el contenido Y la forma. */
+  function soltarGrupoMascara(grupo: fabric.Group): fabric.FabricObject[] {
+    const canvas = fc.current!
+    const forma = grupo.clipPath as fabric.FabricObject | undefined
+    const previo = (grupo as any)._mascaraPrevio
+
+    // Dónde y cómo queda la forma al salir del grupo. Se saca de la matriz del
+    // grupo y no de una resta de posiciones: si el grupo se movió Y ADEMÁS se
+    // escaló o se rotó, una resta devolvería la forma al tamaño y al ángulo que
+    // tenía al entrar, y dejaría de calzar con el dibujo.
+    let destino: { centro: fabric.Point; escalaX: number; escalaY: number; angulo: number } | null = null
+    if (forma) {
+      const m = grupo.calcTransformMatrix()
+      const d = fabric.util.qrDecompose(m)
+      destino = {
+        centro: fabric.util.transformPoint(new fabric.Point(forma.left ?? 0, forma.top ?? 0), m),
+        escalaX: (forma.scaleX ?? 1) * d.scaleX,
+        escalaY: (forma.scaleY ?? 1) * d.scaleY,
+        angulo:  (forma.angle ?? 0) + d.angle,
+      }
+    }
+
+    grupo.clipPath = undefined
+    const hijos = dissolveGroup(grupo)
+    hijos.forEach(o => {
+      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
+      o.dirty = true
+    })
+
+    if (forma && destino) {
+      // La forma vuelve a ser un objeto normal, con el aspecto que tenía antes
+      // de ser molde y donde quedó después de mover el grupo.
+      if (previo) forma.set({ fill: previo.fill, opacity: previo.opacity })
+      forma.set({
+        originX: 'center', originY: 'center',
+        left: destino.centro.x, top: destino.centro.y,
+        scaleX: destino.escalaX, scaleY: destino.escalaY, angle: destino.angulo,
+        selectable: true, evented: true,
+      })
+      ;(forma as any).absolutePositioned = false
+      forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
+      forma.dirty = true
+      canvas.add(forma)                // va arriba, como estaba antes
+      forma.setCoords()
+    }
+    return forma ? [...hijos, forma] : hijos
+  }
+
   function soltarMascara() {
     const canvas = fc.current
     if (!canvas) return
-    const activos = (canvas.getActiveObjects?.() ?? []).filter(o => (o as any)._mascara)
-    // Sin nada seleccionado se sueltan todas: después de aplicarla, la forma ya
-    // no está en el lienzo y puede no ser obvio qué hay que seleccionar.
+    const esMascara = (o: fabric.FabricObject) => !!(o as any)._mascara && o.type === 'group'
+    const activos = (canvas.getActiveObjects?.() ?? []).filter(esMascara) as fabric.Group[]
+    // Sin nada seleccionado se sueltan todas: así no hay que adivinar cuál.
     const objetivos = activos.length
       ? activos
-      : canvas.getObjects().filter(o => (o as any)._mascara)
+      : (canvas.getObjects().filter(esMascara) as fabric.Group[])
     if (!objetivos.length) {
       onToast?.('No hay ninguna máscara de recorte para soltar.')
       return
     }
-    // Varios objetos pueden compartir el mismo molde: se devuelve una sola vez.
-    const formas = new Set<fabric.FabricObject>()
-    for (const o of objetivos) {
-      const f = o.clipPath as fabric.FabricObject | undefined
-      if (f) formas.add(f)
-      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-      delete (o as any)._mascara
-      o.dirty = true
-    }
-    for (const f of formas) {
-      devolverMascara(f)
-      canvas.add(f)                 // la forma vuelve a ser un objeto editable
-      f.setCoords()
-    }
+    const sueltos: fabric.FabricObject[] = []
+    for (const g of objetivos) sueltos.push(...soltarGrupoMascara(g))
     redoHistory.current = []
+    if (sueltos.length) canvas.setActiveObject(new fabric.ActiveSelection(sueltos, { canvas }))
     canvas.requestRenderAll()
     refreshLayersNow()
     onToast?.('Máscara soltada')
