@@ -907,6 +907,36 @@ function findNearestBezierSeg(
   return best
 }
 
+// Proyecta un punto sobre un segmento recto: dónde cae, su t y a qué distancia.
+function proyectarEnSegmento(p: fabric.Point, a: fabric.Point, b: fabric.Point) {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
+  const punto = new fabric.Point(a.x + t * dx, a.y + t * dy)
+  return { t, punto, dist: Math.hypot(p.x - punto.x, p.y - punto.y) }
+}
+
+// Como nearPathSegmentIdx, pero ademas dice EN QUE PUNTO del segmento cayo el
+// click. Hace falta porque el ancla nueva va sobre el trazo y no donde se solto
+// el mouse: insertando el click crudo el trazo pega un tiron al agregar.
+function nearStraightSeg(
+  positions: fabric.Point[], pt: fabric.Point, threshold: number,
+): { idx: number; punto: fabric.Point } | null {
+  for (let i = 0; i < positions.length - 1; i++) {
+    const r = proyectarEnSegmento(pt, positions[i], positions[i + 1])
+    if (r.dist < threshold) return { idx: i + 1, punto: r.punto }
+  }
+  return null
+}
+
+// El punto exacto sobre un segmento (curvo o recto) en el parametro t.
+function puntoEnCmd(cmds: BCmd[], cmdIdx: number, t: number): fabric.Point {
+  const cmd  = cmds[cmdIdx]
+  const prev = cmds[cmdIdx - 1].pts[cmds[cmdIdx - 1].pts.length - 1]
+  if (cmd.type === 'C') return splitCubicAt(prev, cmd.pts[0], cmd.pts[1], cmd.pts[2], t)[2]
+  return lerpPt(prev, cmd.pts[0], t)
+}
+
 // Inserta un ancla en un BCmd[] usando De Casteljau y retorna el nuevo array de cmds.
 function insertIntoBezierCmds(cmds: BCmd[], cmdIdx: number, t: number): BCmd[] {
   const out = cmds.map(c => ({ type: c.type, pts: c.pts.map(p => new fabric.Point(p.x, p.y)) }))
@@ -3239,11 +3269,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 return
               }
             } else {
-              // Path recto: inserción simple por distancia al segmento
-              const insertIdx = nearPathSegmentIdx(editObj, pt, 8)
-              if (insertIdx >= 0) {
-                const positions = getAnchorPositions(editObj)
-                positions.splice(insertIdx, 0, pt)
+              // Path recto: el ancla nueva va sobre el segmento, no donde se
+              // soltó el mouse. Mismo motivo que en la pluma de curvatura: se
+              // admite clickear hasta 8 px lejos del trazo, y metiendo el click
+              // crudo el trazo se corría esos 8 px al agregar un punto.
+              const positions = getAnchorPositions(editObj)
+              const hit = nearStraightSeg(positions, pt, 8)
+              const insertIdx = hit ? hit.idx : -1
+              if (hit) {
+                positions.splice(insertIdx, 0, hit.punto)
                 clearAnchorHandles(aHandles, canvas); aHandles = []
                 const newObj = rebuildFromAnchors(editObj, positions, canvas, undoHistory, clipPath.current)
                 editObj = newObj
@@ -3616,31 +3650,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // ¿Click cerca de un segmento? → insertar anclaje
         if (editObj) {
           const anchorPositions = getAnchorPositions(editObj)
-          const nearExisting = anchorPositions.some(p =>
-            Math.hypot(pt.x - p.x, pt.y - p.y) < ANCHOR_HIT * 2)
-          if (!nearExisting) {
+          {
             const rawCmds = (editObj as any).path
               ? ((editObj as fabric.Path).path as any[][]) : null
             const isBezier = !!rawCmds && rawCmds.some((c: any[]) => c[0] === 'C')
             const isClosed = !!rawCmds && rawCmds.some((c: any[]) => c[0] === 'Z')
 
             let insertIdx = -1
+            // El ancla nueva va SOBRE el trazo, en el punto donde se lo tocó.
+            // Antes se insertaba el click crudo: como se admite clickear hasta
+            // 12 px lejos de la curva, agregar un punto le pegaba un tirón de
+            // hasta 12 px al trazo.
+            let insertPt: fabric.Point = pt
+
             if (isBezier) {
               const bzCmds = extractBezierCmds(editObj)
               const hit = findNearestBezierSeg(bzCmds, pt, 12)
-              if (hit) insertIdx = hit.cmdIdx
+              if (hit) {
+                insertIdx = hit.cmdIdx
+                insertPt  = puntoEnCmd(bzCmds, hit.cmdIdx, hit.t)
+              }
             } else {
-              insertIdx = nearPathSegmentIdx(editObj, pt, 8)
+              const hit = nearStraightSeg(anchorPositions, pt, 8)
+              if (hit) { insertIdx = hit.idx; insertPt = hit.punto }
             }
 
             // Si no se encontró segmento, comprobar el segmento de cierre Z
             if (insertIdx < 0 && isClosed && anchorPositions.length >= 2) {
               const last  = anchorPositions[anchorPositions.length - 1]
               const first = anchorPositions[0]
-              if (distPointToSegment(pt.x, pt.y, last.x, last.y, first.x, first.y) < 12) {
-                insertIdx = anchorPositions.length
-              }
+              const r = proyectarEnSegmento(pt, last, first)
+              if (r.dist < 12) { insertIdx = anchorPositions.length; insertPt = r.punto }
             }
+
+            // Un ancla pegada a otra no se ve y deja el trazado degenerado (dos
+            // puntos en el mismo lugar hacen que la curva pierda su tangente).
+            // Esto reemplaza al viejo "no insertar cerca de un ancla", que
+            // medía 22 px alrededor de CADA punto: en un trazo con los puntos a
+            // menos de 44 px eso tapaba el segmento entero y no dejaba insertar
+            // en ningún lado. Clickear encima de un ancla ya se resuelve arriba,
+            // donde se agarra el handle.
+            if (insertIdx >= 0 && anchorPositions.some(p =>
+              Math.hypot(insertPt.x - p.x, insertPt.y - p.y) < 2)) insertIdx = -1
 
             if (insertIdx >= 0) {
               const newSmooth = new Set<number>()
@@ -3656,7 +3707,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               smoothAnchors = newSmooth
 
               const positions = anchorPositions
-              positions.splice(insertIdx, 0, pt)
+              positions.splice(insertIdx, 0, insertPt)
               clearAnchorHandles(aHandles, canvas); aHandles = []
               const oldClip2 = (editObj as any).clipPath as fabric.Group | undefined
               let pathStr: string
