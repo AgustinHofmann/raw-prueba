@@ -157,6 +157,10 @@ type HistoryEntry =
   // El desplazamiento, en cambio, vale igual antes y después.
   | { type: 'moveDelta'; objs: fabric.FabricObject[]; dx: number; dy: number }
   | { type: 'props';  obj: fabric.FabricObject; prev: Record<string, any> }
+  // Máscara de recorte: la forma de arriba recorta a lo de abajo (Ctrl+7) y las
+  // dos cosas quedan dentro de un grupo. Se guarda el grupo para poder soltarlo,
+  // y la forma y el contenido para poder rearmarlo.
+  | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -903,6 +907,36 @@ function findNearestBezierSeg(
   return best
 }
 
+// Proyecta un punto sobre un segmento recto: dónde cae, su t y a qué distancia.
+function proyectarEnSegmento(p: fabric.Point, a: fabric.Point, b: fabric.Point) {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
+  const punto = new fabric.Point(a.x + t * dx, a.y + t * dy)
+  return { t, punto, dist: Math.hypot(p.x - punto.x, p.y - punto.y) }
+}
+
+// Como nearPathSegmentIdx, pero ademas dice EN QUE PUNTO del segmento cayo el
+// click. Hace falta porque el ancla nueva va sobre el trazo y no donde se solto
+// el mouse: insertando el click crudo el trazo pega un tiron al agregar.
+function nearStraightSeg(
+  positions: fabric.Point[], pt: fabric.Point, threshold: number,
+): { idx: number; punto: fabric.Point } | null {
+  for (let i = 0; i < positions.length - 1; i++) {
+    const r = proyectarEnSegmento(pt, positions[i], positions[i + 1])
+    if (r.dist < threshold) return { idx: i + 1, punto: r.punto }
+  }
+  return null
+}
+
+// El punto exacto sobre un segmento (curvo o recto) en el parametro t.
+function puntoEnCmd(cmds: BCmd[], cmdIdx: number, t: number): fabric.Point {
+  const cmd  = cmds[cmdIdx]
+  const prev = cmds[cmdIdx - 1].pts[cmds[cmdIdx - 1].pts.length - 1]
+  if (cmd.type === 'C') return splitCubicAt(prev, cmd.pts[0], cmd.pts[1], cmd.pts[2], t)[2]
+  return lerpPt(prev, cmd.pts[0], t)
+}
+
 // Inserta un ancla en un BCmd[] usando De Casteljau y retorna el nuevo array de cmds.
 function insertIntoBezierCmds(cmds: BCmd[], cmdIdx: number, t: number): BCmd[] {
   const out = cmds.map(c => ({ type: c.type, pts: c.pts.map(p => new fabric.Point(p.x, p.y)) }))
@@ -1333,6 +1367,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // que Ctrl+Z borre el ULTIMO punto puesto, en vez de deshacer lo ya guardado.
   const penDraftRef   = useRef<{ hasDraft: () => boolean; cancel: () => void; undoPoint: () => void } | null>(null)
   const clipEnabledRef = useRef(true)
+  /** Hay un guardado en curso soltando la selección: ignorar sus eventos. */
+  const guardandoRef = useRef(false)
   // false desde que el lienzo se destruye: al cerrar el editor, la limpieza de la
   // herramienta corre DESPUES del dispose() y no puede seguir tocandolo.
   const canvasAlive   = useRef(true)
@@ -1961,6 +1997,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // strip it when the user has clipping turned off so drawings show outside the shirt)
     canvas.on('object:added', (e: any) => {
       const o = e.target
+      // Una máscara de recorte no es "el recorte a la prenda": apagar ese
+      // interruptor no tiene por qué soltarla.
+      if (o && (o as any)._mascara) return
       if (o && !mockupObjects.current.includes(o) && !clipEnabledRef.current) {
         o.clipPath = undefined
         o.dirty = true
@@ -1984,9 +2023,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       else if (a.type === 'group')           setSelKind('group')
       else setSelKind('single')
     }
-    canvas.on('selection:created', (e: any) => { setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
-    canvas.on('selection:updated', (e: any) => { setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
-    canvas.on('selection:cleared', () => { setSelectedObj(null); setSelKind('none') })
+    // `guardandoRef` tapa el ir y venir de la selección que hace el guardado
+    // para poder leer coordenadas absolutas: sin esto el panel derecho
+    // parpadeaba solo cada vez que saltaba el autoguardado.
+    canvas.on('selection:created', (e: any) => { if (guardandoRef.current) return; setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
+    canvas.on('selection:updated', (e: any) => { if (guardandoRef.current) return; setSelectedObj(e.selected?.[0] ?? null); syncSelKind() })
+    canvas.on('selection:cleared', () => { if (guardandoRef.current) return; setSelectedObj(null); setSelKind('none') })
 
     // Illustrator-style path highlight: 1px blue stroke along the selected path(s)
     let hoverObj: fabric.FabricObject | null = null
@@ -2078,12 +2120,24 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           }
           ctx.stroke()
         } else {
-          // Objetos sin path (rect, texto, etc.): contorno por sus 4 esquinas en coords de escena.
-          const c = (obj as any).aCoords as { tl:any; tr:any; br:any; bl:any } | undefined
-          if (!c) return
+          // Objetos sin path (rect, texto, imagen): contorno por sus 4 esquinas.
+          //
+          // Va `getCoords()` y NO `aCoords`. Parecen lo mismo y no lo son:
+          // cuando el objeto está dentro de una selección múltiple, `aCoords`
+          // queda en coordenadas RELATIVAS al grupo, mientras que `getCoords()`
+          // les aplica la matriz del grupo y devuelve las de la escena.
+          //
+          // Usando `aCoords` el contorno se dibujaba lejos del objeto, arriba a
+          // la izquierda: parecía que se había seleccionado "algo invisible"
+          // afuera. Con un solo objeto no se notaba —sin grupo las dos son la
+          // misma cosa—, solo al seleccionar dos o más. Los trazados (la rama de
+          // arriba) nunca tuvieron el problema porque `calcTransformMatrix()` sí
+          // incluye al grupo.
+          const c = obj.getCoords?.() as { x:number; y:number }[] | undefined
+          if (!c || c.length < 4) return
           const tp = (p: {x:number;y:number}) =>
             [vpt[0]*p.x + vpt[2]*p.y + vpt[4], vpt[1]*p.x + vpt[3]*p.y + vpt[5]] as const
-          const [tlx,tly]=tp(c.tl), [trx,try_]=tp(c.tr), [brx,bry]=tp(c.br), [blx,bly]=tp(c.bl)
+          const [tlx,tly]=tp(c[0]), [trx,try_]=tp(c[1]), [brx,bry]=tp(c[2]), [blx,bly]=tp(c[3])
           ctx.beginPath(); ctx.moveTo(tlx,tly); ctx.lineTo(trx,try_); ctx.lineTo(brx,bry); ctx.lineTo(blx,bly); ctx.closePath(); ctx.stroke()
         }
       }
@@ -2281,9 +2335,41 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // porque tocar una herramienta le cambia propiedades y lo obliga a
         // redibujarse, ya con el recorte bien calculado.
         clipPath.current?.setCoords()
+        // Los grupos de recorte se rehacen desde `_mascara`: `clipPath` no se
+        // guarda (ver el guardado), así que sin esto el diseño abría sin recorte
+        // y mostrando entero lo que el diseñador había enmascarado.
+        //
+        // El molde ya viene en coordenadas del grupo (origen al centro, posición
+        // relativa), así que se vuelve a colgar tal cual: no hay que recalcular
+        // nada contra el lienzo.
         for (const obj of revived) {
           obj.set({ strokeUniform: true })
-          if (!(obj instanceof fabric.IText) && clipPath.current) obj.set({ clipPath: clipPath.current })
+          const guardada = (obj as any)._mascara
+          if (guardada) {
+            try {
+              const [molde] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
+              if (molde) {
+                ;(molde as any).absolutePositioned = false
+                molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
+                obj.clipPath = molde
+                // El molde ya se guardó en (0,0) y el grupo ya venía medido por
+                // él, así que acá solo hay que dejar la medida fija para que el
+                // próximo reacomodo no lo devuelva al tamaño del contenido.
+                if (obj instanceof fabric.Group) {
+                  try {
+                    obj.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
+                  } catch { /* recorta igual, solo queda el marco grande */ }
+                }
+              }
+            } catch (e) {
+              // Una máscara rota no puede llevarse puesto el dibujo: se pierde
+              // el recorte y el contenido se ve entero, que es lo recuperable.
+              delete (obj as any)._mascara
+              console.warn('no se pudo restaurar una máscara de recorte', e)
+            }
+          } else if (!(obj instanceof fabric.IText) && clipPath.current) {
+            obj.set({ clipPath: clipPath.current })
+          }
           canvas.add(obj)
           obj.setCoords()
           obj.dirty = true          // tira el dibujo cacheado y lo rehace
@@ -3183,11 +3269,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 return
               }
             } else {
-              // Path recto: inserción simple por distancia al segmento
-              const insertIdx = nearPathSegmentIdx(editObj, pt, 8)
-              if (insertIdx >= 0) {
-                const positions = getAnchorPositions(editObj)
-                positions.splice(insertIdx, 0, pt)
+              // Path recto: el ancla nueva va sobre el segmento, no donde se
+              // soltó el mouse. Mismo motivo que en la pluma de curvatura: se
+              // admite clickear hasta 8 px lejos del trazo, y metiendo el click
+              // crudo el trazo se corría esos 8 px al agregar un punto.
+              const positions = getAnchorPositions(editObj)
+              const hit = nearStraightSeg(positions, pt, 8)
+              const insertIdx = hit ? hit.idx : -1
+              if (hit) {
+                positions.splice(insertIdx, 0, hit.punto)
                 clearAnchorHandles(aHandles, canvas); aHandles = []
                 const newObj = rebuildFromAnchors(editObj, positions, canvas, undoHistory, clipPath.current)
                 editObj = newObj
@@ -3560,31 +3650,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // ¿Click cerca de un segmento? → insertar anclaje
         if (editObj) {
           const anchorPositions = getAnchorPositions(editObj)
-          const nearExisting = anchorPositions.some(p =>
-            Math.hypot(pt.x - p.x, pt.y - p.y) < ANCHOR_HIT * 2)
-          if (!nearExisting) {
+          {
             const rawCmds = (editObj as any).path
               ? ((editObj as fabric.Path).path as any[][]) : null
             const isBezier = !!rawCmds && rawCmds.some((c: any[]) => c[0] === 'C')
             const isClosed = !!rawCmds && rawCmds.some((c: any[]) => c[0] === 'Z')
 
             let insertIdx = -1
+            // El ancla nueva va SOBRE el trazo, en el punto donde se lo tocó.
+            // Antes se insertaba el click crudo: como se admite clickear hasta
+            // 12 px lejos de la curva, agregar un punto le pegaba un tirón de
+            // hasta 12 px al trazo.
+            let insertPt: fabric.Point = pt
+
             if (isBezier) {
               const bzCmds = extractBezierCmds(editObj)
               const hit = findNearestBezierSeg(bzCmds, pt, 12)
-              if (hit) insertIdx = hit.cmdIdx
+              if (hit) {
+                insertIdx = hit.cmdIdx
+                insertPt  = puntoEnCmd(bzCmds, hit.cmdIdx, hit.t)
+              }
             } else {
-              insertIdx = nearPathSegmentIdx(editObj, pt, 8)
+              const hit = nearStraightSeg(anchorPositions, pt, 8)
+              if (hit) { insertIdx = hit.idx; insertPt = hit.punto }
             }
 
             // Si no se encontró segmento, comprobar el segmento de cierre Z
             if (insertIdx < 0 && isClosed && anchorPositions.length >= 2) {
               const last  = anchorPositions[anchorPositions.length - 1]
               const first = anchorPositions[0]
-              if (distPointToSegment(pt.x, pt.y, last.x, last.y, first.x, first.y) < 12) {
-                insertIdx = anchorPositions.length
-              }
+              const r = proyectarEnSegmento(pt, last, first)
+              if (r.dist < 12) { insertIdx = anchorPositions.length; insertPt = r.punto }
             }
+
+            // Un ancla pegada a otra no se ve y deja el trazado degenerado (dos
+            // puntos en el mismo lugar hacen que la curva pierda su tangente).
+            // Esto reemplaza al viejo "no insertar cerca de un ancla", que
+            // medía 22 px alrededor de CADA punto: en un trazo con los puntos a
+            // menos de 44 px eso tapaba el segmento entero y no dejaba insertar
+            // en ningún lado. Clickear encima de un ancla ya se resuelve arriba,
+            // donde se agarra el handle.
+            if (insertIdx >= 0 && anchorPositions.some(p =>
+              Math.hypot(insertPt.x - p.x, insertPt.y - p.y) < 2)) insertIdx = -1
 
             if (insertIdx >= 0) {
               const newSmooth = new Set<number>()
@@ -3600,7 +3707,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               smoothAnchors = newSmooth
 
               const positions = anchorPositions
-              positions.splice(insertIdx, 0, pt)
+              positions.splice(insertIdx, 0, insertPt)
               clearAnchorHandles(aHandles, canvas); aHandles = []
               const oldClip2 = (editObj as any).clipPath as fabric.Group | undefined
               let pathStr: string
@@ -4350,10 +4457,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (tex && esTexturaValida(tex.kind)) {
           setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
         } else setActiveTexKind(null)
-        setPropX(Math.round(obj.left ?? 0))
-        setPropY(Math.round(obj.top  ?? 0))
-        setPropW(Math.round((obj.width  ?? 0) * Math.abs(obj.scaleX ?? 1)))
-        setPropH(Math.round((obj.height ?? 0) * Math.abs(obj.scaleY ?? 1)))
+        // X/Y/W/H de lo que hay seleccionado.
+        //
+        // Con varios objetos se muestra la caja de TODA la selección, no la del
+        // primero: `obj.left` de un hijo está en coordenadas relativas al grupo,
+        // así que el panel llegaba a decir X = -190 con todo el diseño dentro
+        // del lienzo. Eso no es un número que el diseñador pueda usar.
+        // Se mide sobre la SELECCIÓN y no sobre el primer hijo. Y tiene que ser
+        // el mismo objeto que después escriben applyX/applyY/applyW/applyH
+        // (que trabajan sobre `getActiveObject()`), o el panel mostraría un
+        // número y al tocarlo movería otra cosa.
+        const activo = canvas.getActiveObject()
+        const medido = activo?.type === 'activeselection' ? activo : obj
+        setPropX(Math.round(medido.left ?? 0))
+        setPropY(Math.round(medido.top  ?? 0))
+        setPropW(Math.round((medido.width  ?? 0) * Math.abs(medido.scaleX ?? 1)))
+        setPropH(Math.round((medido.height ?? 0) * Math.abs(medido.scaleY ?? 1)))
         setPropAngle(Math.round((obj.angle ?? 0) * 10) / 10)
         setPropOpacity(Math.round((obj.opacity ?? 1) * 100))
         if (obj instanceof fabric.IText) {
@@ -5704,6 +5823,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         return
       }
 
+      // Ctrl+7 — máscara de recorte / Ctrl+Alt+7 — soltarla (igual que Illustrator).
+      // Se mira `e.code` además de `e.key`: con Alt puesto, algunos teclados
+      // mandan otro carácter en `e.key` y el atajo no llegaba nunca.
+      if (ctrl && (e.key === '7' || e.code === 'Digit7' || e.code === 'Numpad7')) {
+        e.preventDefault()
+        if (e.altKey) soltarMascara()
+        else hacerMascara()
+        return
+      }
+
       // Ctrl+D — duplicar el/los objeto(s) seleccionado(s)
       if (ctrl && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault()
@@ -5854,6 +5983,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const signo = 1    // rehacer: se vuelve a aplicar el desplazamiento
           entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
           undoHistory.current.push(entry)
+        } else if (entry.type === 'mascara') {
+          entry.grupo = armarGrupoMascara(entry.contenido, entry.forma)   // rehacer
+          undoHistory.current.push(entry)
+          refreshLayersNow()
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -5922,6 +6055,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const signo = -1   // deshacer: se resta el desplazamiento
           entry.objs.forEach(o => { o.set({ left: (o.left ?? 0) + signo * entry.dx, top: (o.top ?? 0) + signo * entry.dy }); o.setCoords() })
           redoHistory.current.push(entry)
+        } else if (entry.type === 'mascara') {
+          soltarGrupoMascara(entry.grupo)   // deshacer: se deshace el grupo
+          redoHistory.current.push(entry)
+          refreshLayersNow()
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -6124,6 +6261,37 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Toda prenda tiene piezas. Si no hay ninguna es que el molde no cargó, y
     // guardar ahora sería reemplazar la pintura guardada por una prenda vacía.
     if (!mockupObjects.current.length) return null
+
+    // Guardar CON VARIAS COSAS SELECCIONADAS mandaba el diseño a cualquier lado.
+    //
+    // Mientras hay una selección múltiple, Fabric pone las coordenadas de cada
+    // hijo en relación al centro de la selección, no al lienzo. El guardado las
+    // escribía tal cual, así que al reabrir el proyecto los objetos aparecían
+    // corridos muy arriba a la izquierda —o directamente fuera del lienzo— y el
+    // diseño parecía perdido. El autoguardado salta solo, así que alcanzaba con
+    // dejar dos cosas seleccionadas y esperar.
+    //
+    // Soltar la selección devuelve las coordenadas absolutas; se repone igual
+    // que estaba apenas termina de serializar.
+    const selPrevia = canvas.getActiveObject()
+    const hijosSel = selPrevia?.type === 'activeselection'
+      ? (selPrevia as fabric.ActiveSelection).getObjects()
+      : null
+    if (hijosSel) {
+      guardandoRef.current = true     // que el panel no parpadee por esto
+      canvas.discardActiveObject()
+    }
+    try {
+      return serializarProyecto(canvas)
+    } finally {
+      if (hijosSel) {
+        canvas.setActiveObject(new fabric.ActiveSelection(hijosSel, { canvas }))
+        guardandoRef.current = false
+      }
+    }
+  }
+
+  function serializarProyecto(canvas: fabric.Canvas): { thumbnail: string; canvasJson: string } | null {
     const userObjs = canvas.getObjects()
       // Fuera la prenda (se reconstruye desde las medidas) y fuera lo temporal:
       // los tiradores de anclaje y los previews del lapiz y de la pluma son
@@ -6131,7 +6299,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // dejar de mover el mouse, o sea EN MEDIO del trazo. Asi se guardaban
       // circulitos azules y lineas punteadas como si fueran parte del diseno.
       .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp)
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen']); delete j.clipPath; return j })
+      // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
+      // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
+      // al abrir, pero el de la máscara se perdería para siempre.
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -6250,6 +6421,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     canvas.getObjects().forEach(o => {
       if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+      if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
       o.clipPath = clipEnabledRef.current ? cg : undefined
       o.dirty = true
     })
@@ -6460,6 +6632,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+        if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -6655,6 +6828,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
+        if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -6880,6 +7054,222 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const active = canvas.getActiveObject()
     if (!active || active.type !== 'group') return
     ungroupTarget(active as fabric.Group)
+  }
+
+  // ── Máscara de recorte (Ctrl+7 / Ctrl+Alt+7) ────────────────────────────────
+  //
+  // Como en Illustrator: la forma va ARRIBA, el dibujo o la imagen abajo, se
+  // seleccionan los dos y la forma pasa a ser el molde.
+  //
+  // El resultado es **un grupo de recorte**: un solo objeto que lleva adentro el
+  // contenido y el molde. Eso es lo que hace Illustrator, y no es un detalle de
+  // implementación — es lo que arregla que:
+  //   · quede dando vueltas el marco de selección de una forma que ya no existe,
+  //   · el dibujo desaparezca al moverlo (el molde se movía con el lienzo, no
+  //     con el dibujo, así que el contenido se iba "fuera" del recorte),
+  //   · al soltar vuelva solo el contenido y se pierda la forma.
+  // Con el grupo, el molde viaja con el contenido: mover, escalar y rotar
+  // funcionan como con cualquier otro objeto.
+  //
+  // Cuatro trampas que hay que respetar sí o sí:
+  //
+  // 1. Las figuras nacen SIN relleno (son fichas técnicas, no ilustraciones). Un
+  //    recorte recorta por su área RELLENA, así que sin relleno el área es cero
+  //    y se come todo. Se le fuerza un relleno opaco y se anota el que tenía.
+  // 2. La forma viene con el recorte a la prenda colgado. Un recorte que a su
+  //    vez tiene otro recorte adentro NO se puede revivir al abrir el archivo
+  //    (Fabric tira `No class registered for undefined`). Se lo saca.
+  // 3. Hay que marcar `dirty`. Los objetos se dibujan a un caché propio; si el
+  //    caché no se tira, el recorte se aplica sobre el dibujo viejo y sale
+  //    corrido, escalonado en diagonal. Esto es lo que hacía fallar la máscara.
+  // 4. `clipPath` NO se guarda (el guardado lo borra a propósito, porque el
+  //    recorte a la prenda se repone solo). El molde se guarda aparte en
+  //    `_mascara` y el recorte se rehace al abrir.
+
+  /** Deja una forma lista para usarse como molde, y devuelve cómo estaba. */
+  function prepararMascara(forma: fabric.FabricObject) {
+    const previo = {
+      fill: forma.fill,
+      opacity: forma.opacity,
+      originX: forma.originX,
+      originY: forma.originY,
+      left: forma.left,
+      top: forma.top,
+    }
+    forma.set({
+      fill: '#000',            // el recorte es por área rellena, no por el trazo
+      opacity: 1,
+      clipPath: undefined,     // sin esto el archivo no se puede volver a abrir
+    })
+    ;(forma as any).absolutePositioned = false   // el molde viaja CON el grupo
+    return previo
+  }
+
+  /**
+   * Coloca el molde en coordenadas del grupo.
+   *
+   * Un `clipPath` no absoluto se dibuja tomando como origen el CENTRO del
+   * objeto que recorta. Así que al molde se le pone origen al centro y su
+   * posición pasa a ser la distancia entre los dos centros.
+   */
+  function encajarMascaraEnGrupo(forma: fabric.FabricObject, grupo: fabric.Group, centroFormaAbs: fabric.Point) {
+    const cg = grupo.getCenterPoint()
+    forma.set({
+      originX: 'center', originY: 'center',
+      left: centroFormaAbs.x - cg.x,
+      top:  centroFormaAbs.y - cg.y,
+    })
+    forma.setCoords()
+    grupo.clipPath = forma
+    ajustarCajaAlMolde(grupo)
+  }
+
+  /**
+   * Hace que la caja del grupo sea la del MOLDE y no la del contenido.
+   *
+   * Por defecto un grupo se mide por sus hijos e ignora el recorte, así que
+   * quedaba dando vueltas el marco de selección de la forma grande que ya no se
+   * ve —y agarrarlo de una esquina vacía movía algo que no estaba ahí—.
+   *
+   * Dos detalles que no se pueden saltear:
+   *
+   * · Después del reacomodo hay que poner el molde en (0,0). Fabric centra el
+   *   grupo en `centro del contenido + desplazamiento del molde`, pero le deja
+   *   al molde ese mismo desplazamiento, así que se cuenta dos veces y el
+   *   recorte queda ~10 px corrido respecto del marco.
+   * · Y hay que dejarlo en medida fija. Si se queda con la estrategia del
+   *   recorte, el siguiente reacomodo volvería a sumar un desplazamiento que
+   *   ahora es cero, y el grupo se iría al centro del contenido otra vez.
+   */
+  function ajustarCajaAlMolde(grupo: fabric.Group) {
+    const forma = grupo.clipPath as fabric.FabricObject | undefined
+    if (!forma) return
+    try {
+      grupo.layoutManager = new fabric.LayoutManager(new fabric.ClipPathLayout())
+      grupo.triggerLayout()
+      forma.set({ left: 0, top: 0 })
+      forma.setCoords()
+      grupo.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
+    } catch { /* sin esto el marco queda grande, pero recorta igual */ }
+    grupo.setCoords()
+    grupo.dirty = true           // ← sin esto el recorte sale corrido
+  }
+
+  /** Arma el grupo de recorte a partir del contenido y la forma. */
+  function armarGrupoMascara(contenido: fabric.FabricObject[], forma: fabric.FabricObject): fabric.Group {
+    const canvas = fc.current!
+    const centroForma = forma.getCenterPoint()
+    const previo = prepararMascara(forma)
+    canvas.remove(forma)                 // el molde deja de ser objeto del lienzo
+    const grupo = makeGroup(contenido)   // el contenido pasa a ser un solo objeto
+    encajarMascaraEnGrupo(forma, grupo, centroForma)
+    // Se guarda CÓMO ERA la forma (relleno, opacidad) para poder devolvérsela
+    // al soltar, y el molde ya encajado para poder rehacerlo al abrir el archivo.
+    // El grupo no lleva además el recorte a la prenda: Fabric admite uno solo.
+    ;(grupo as any)._mascaraPrevio = previo
+    ;(grupo as any)._mascara = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
+    return grupo
+  }
+
+  function hacerMascara() {
+    const canvas = fc.current
+    if (!canvas) return
+    const activo = canvas.getActiveObject()
+    if (!activo || activo.type !== 'activeselection') {
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
+      return
+    }
+    // El orden de apilado manda, no el orden en que se fueron clickeando.
+    const todos = canvas.getObjects()
+    const elegidos = (activo as fabric.ActiveSelection).getObjects()
+      .filter(o => !mockupObjects.current.includes(o))
+      .sort((a, b) => todos.indexOf(a) - todos.indexOf(b))
+    if (elegidos.length < 2) {
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
+      return
+    }
+    const forma = elegidos[elegidos.length - 1]
+    const contenido = elegidos.slice(0, -1)
+
+    canvas.discardActiveObject()     // devuelve coordenadas absolutas a los hijos
+    const grupo = armarGrupoMascara(contenido, forma)
+
+    undoHistory.current.push({ type: 'mascara', forma, contenido, grupo })
+    redoHistory.current = []
+    canvas.setActiveObject(grupo)
+    canvas.requestRenderAll()
+    refreshLayersNow()
+    onToast?.('Máscara de recorte aplicada · Ctrl+Alt+7 para soltarla')
+  }
+
+  /** Deshace un grupo de recorte: vuelven el contenido Y la forma. */
+  function soltarGrupoMascara(grupo: fabric.Group): fabric.FabricObject[] {
+    const canvas = fc.current!
+    const forma = grupo.clipPath as fabric.FabricObject | undefined
+    const previo = (grupo as any)._mascaraPrevio
+
+    // Dónde y cómo queda la forma al salir del grupo. Se saca de la matriz del
+    // grupo y no de una resta de posiciones: si el grupo se movió Y ADEMÁS se
+    // escaló o se rotó, una resta devolvería la forma al tamaño y al ángulo que
+    // tenía al entrar, y dejaría de calzar con el dibujo.
+    let destino: { centro: fabric.Point; escalaX: number; escalaY: number; angulo: number } | null = null
+    if (forma) {
+      const m = grupo.calcTransformMatrix()
+      const d = fabric.util.qrDecompose(m)
+      destino = {
+        centro: fabric.util.transformPoint(new fabric.Point(forma.left ?? 0, forma.top ?? 0), m),
+        escalaX: (forma.scaleX ?? 1) * d.scaleX,
+        escalaY: (forma.scaleY ?? 1) * d.scaleY,
+        angulo:  (forma.angle ?? 0) + d.angle,
+      }
+    }
+
+    grupo.clipPath = undefined
+    const hijos = dissolveGroup(grupo)
+    hijos.forEach(o => {
+      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
+      o.dirty = true
+    })
+
+    if (forma && destino) {
+      // La forma vuelve a ser un objeto normal, con el aspecto que tenía antes
+      // de ser molde y donde quedó después de mover el grupo.
+      if (previo) forma.set({ fill: previo.fill, opacity: previo.opacity })
+      forma.set({
+        originX: 'center', originY: 'center',
+        left: destino.centro.x, top: destino.centro.y,
+        scaleX: destino.escalaX, scaleY: destino.escalaY, angle: destino.angulo,
+        selectable: true, evented: true,
+      })
+      ;(forma as any).absolutePositioned = false
+      forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
+      forma.dirty = true
+      canvas.add(forma)                // va arriba, como estaba antes
+      forma.setCoords()
+    }
+    return forma ? [...hijos, forma] : hijos
+  }
+
+  function soltarMascara() {
+    const canvas = fc.current
+    if (!canvas) return
+    const esMascara = (o: fabric.FabricObject) => !!(o as any)._mascara && o.type === 'group'
+    const activos = (canvas.getActiveObjects?.() ?? []).filter(esMascara) as fabric.Group[]
+    // Sin nada seleccionado se sueltan todas: así no hay que adivinar cuál.
+    const objetivos = activos.length
+      ? activos
+      : (canvas.getObjects().filter(esMascara) as fabric.Group[])
+    if (!objetivos.length) {
+      onToast?.('No hay ninguna máscara de recorte para soltar.')
+      return
+    }
+    const sueltos: fabric.FabricObject[] = []
+    for (const g of objetivos) sueltos.push(...soltarGrupoMascara(g))
+    redoHistory.current = []
+    if (sueltos.length) canvas.setActiveObject(new fabric.ActiveSelection(sueltos, { canvas }))
+    canvas.requestRenderAll()
+    refreshLayersNow()
+    onToast?.('Máscara soltada')
   }
 
   // Desagrupa un grupo concreto (sirve para botón, atajo y menú contextual).
@@ -7413,6 +7803,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             {selKind === 'multi' && (
               <button className="btn btn-ghost" onClick={groupSelection} style={{ justifyContent: 'center', fontSize: 12 }}>
                 ⊞ Agrupar selección <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+G</span>
+              </button>
+            )}
+            {selKind === 'multi' && (
+              <button className="btn btn-ghost" onClick={hacerMascara} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ✂ Máscara de recorte <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+7</span>
+              </button>
+            )}
+            {!!(selectedObj as any)?._mascara && (
+              <button className="btn btn-ghost" onClick={soltarMascara} style={{ justifyContent: 'center', fontSize: 12 }}>
+                ✂ Soltar máscara <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+Alt+7</span>
               </button>
             )}
             {selKind === 'group' && (
@@ -8299,6 +8699,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
             }}>
               {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
+              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { hacerMascara(); closeCtx() }} />}
+              {t && (t as any)._mascara && <CtxItem label="Soltar máscara de recorte" hint="Ctrl+Alt+7" onClick={() => { soltarMascara(); closeCtx() }} />}
               {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
               {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
               {grouped && !ctxMenu.isGroup && <CtxItem label="Desagrupar prenda" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g); closeCtx() }} />}

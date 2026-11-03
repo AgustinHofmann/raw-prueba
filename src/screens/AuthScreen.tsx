@@ -5,7 +5,24 @@ import Magnetic from '../components/Magnetic'
 
 type Mode = 'login' | 'signup'
 
-export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }) {
+interface Props {
+  /** Entrar sin cuenta. Solo en la primera pantalla: ahí todavía hay que elegir. */
+  onSinCuenta?: () => void
+  /**
+   * Cerrar y seguir trabajando. Solo cuando la pantalla se abre DESDE ADENTRO
+   * de la app, ya entrando sin cuenta: ahí hay trabajo atrás que no se puede
+   * tapar sin salida.
+   */
+  onCerrar?: () => void
+  /**
+   * Cuántos proyectos hay guardados en esta computadora. Si hay, se avisa que
+   * se suben: quien entró sin cuenta y ya diseñó necesita saber qué va a pasar
+   * con su trabajo ANTES de poner la contraseña, no después.
+   */
+  proyectosLocales?: number
+}
+
+export default function AuthScreen({ onSinCuenta, onCerrar, proyectosLocales = 0 }: Props) {
   const [mode, setMode]         = useState<Mode>('login')
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
@@ -23,6 +40,14 @@ export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }
     authAlcanzable().then(ok => { if (!cancelado) setServidorCaido(!ok) })
     return () => { cancelado = true }
   }, [])
+
+  // Escape cierra, pero solo cuando hay algo atrás a lo que volver.
+  useEffect(() => {
+    if (!onCerrar) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCerrar])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -82,6 +107,26 @@ export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }
         animation: 'rise 1.6s var(--ease) both',
       }} />
 
+      {/* Cerrar. Abierta desde adentro, esta pantalla tapa el trabajo del
+          diseñador: tiene que poder volver sin inventar una cuenta ni recargar. */}
+      {onCerrar && (
+        <button
+          onClick={onCerrar}
+          title="Seguir sin cuenta (Esc)"
+          aria-label="Cerrar"
+          style={{
+            position: 'absolute', top: 18, right: 20, zIndex: 2,
+            width: 32, height: 32, borderRadius: 'var(--radius)',
+            background: 'transparent', border: '1px solid var(--line)',
+            color: 'var(--muted)', cursor: 'pointer', fontSize: 14,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'color 0.12s var(--ease), border-color 0.12s var(--ease)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--fg)'; e.currentTarget.style.borderColor = 'var(--fg-2)' }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--muted)'; e.currentTarget.style.borderColor = 'var(--line)' }}
+        >✕</button>
+      )}
+
       <div style={{ position: 'relative', width: '100%', maxWidth: 400, padding: '0 20px' }}>
 
         {/* Logo + slogan de la marca. Va acá y en el onboarding porque cuál de
@@ -136,6 +181,24 @@ export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }
                   Entrar sin cuenta →
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Qué pasa con lo que ya diseñó sin cuenta. Va ANTES del formulario:
+              después de poner la contraseña ya es tarde para preguntarse si su
+              trabajo se iba a perder. No se pierde — se sube — pero eso hay que
+              decirlo, no dejarlo adivinar. */}
+          {proyectosLocales > 0 && !sent && (
+            <div style={{
+              marginBottom: 18, padding: '11px 13px', borderRadius: 'var(--radius-sm)',
+              background: 'var(--bg-2)', border: '1px solid var(--line-soft)',
+              fontSize: 12.5, color: 'var(--fg-2)', lineHeight: 1.55,
+            }}>
+              {proyectosLocales === 1
+                ? 'Tu proyecto de esta computadora '
+                : `Tus ${proyectosLocales} proyectos de esta computadora `}
+              <strong style={{ color: 'var(--fg)' }}>se suben a tu cuenta</strong>{' '}
+              al entrar. No se pierde nada.
             </div>
           )}
 
@@ -261,18 +324,19 @@ export default function AuthScreen({ onSinCuenta }: { onSinCuenta?: () => void }
             desde otra computadora, pero no debería ser el peaje para poder
             diseñar. Sin cuenta el programa funciona igual y todo se guarda en
             esta máquina. */}
-        {onSinCuenta && !sent && (
+        {(onSinCuenta || onCerrar) && !sent && (
           <div className="rise-4" style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--line-soft)', textAlign: 'center' }}>
             <button
-              onClick={onSinCuenta}
+              onClick={onCerrar ?? onSinCuenta}
               className="btn btn-ghost"
               style={{ width: '100%', justifyContent: 'center', fontSize: 13 }}
             >
-              Entrar sin cuenta
+              {onCerrar ? 'Seguir sin cuenta' : 'Entrar sin cuenta'}
             </button>
             <p style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-              Tus proyectos se guardan en esta computadora. Podés crear una cuenta
-              más adelante y se suben solos.
+              {onCerrar
+                ? 'Volvés a lo que estabas haciendo. Esta pantalla queda en el archivo, a la izquierda.'
+                : 'Tus proyectos se guardan en esta computadora. Podés crear una cuenta más adelante y se suben solos.'}
             </p>
           </div>
         )}
