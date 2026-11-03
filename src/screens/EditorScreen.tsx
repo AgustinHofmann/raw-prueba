@@ -2379,7 +2379,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               delete (obj as any)._mascara
               console.warn('no se pudo restaurar una máscara de recorte', e)
             }
-          } else if (!(obj instanceof fabric.IText) && clipPath.current) {
+          } else if (!(obj instanceof fabric.IText) && clipPath.current
+                     && !(obj as any)._fondo) {
+            // lo que va debajo de la prenda no se recorta contra ella
             obj.set({ clipPath: clipPath.current })
           }
           canvas.add(obj)
@@ -2389,6 +2391,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (fallados > 0) {
           onToast?.(`No se pudieron recuperar ${fallados} elemento${fallados > 1 ? 's' : ''} del diseño`)
         }
+        acomodarFondo()   // lo que el usuario había dejado debajo de la prenda vuelve abajo
         restoreGarmentPaint(design.garment)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
 
@@ -3465,6 +3468,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
+          acomodarFondo()                // ...pero sin taparle el fondo al usuario
         }
       }
 
@@ -6314,7 +6318,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
       // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
       // al abrir, pero el de la máscara se perdería para siempre.
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio', '_fondo']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -6434,6 +6438,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.getObjects().forEach(o => {
       if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
       if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+      if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
       o.clipPath = clipEnabledRef.current ? cg : undefined
       o.dirty = true
     })
@@ -6641,10 +6646,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * TEE_UNITS_PER_CM
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
         if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+        if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -6837,10 +6844,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * prendaParam.unidadesPorCm
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
         if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+        if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -7441,14 +7450,69 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     refreshLayersNow()
   }
 
+  /* ── Lo que va DEBAJO de la prenda ────────────────────────────────────────
+   *
+   * Hasta acá el molde estaba clavado al fondo: todas las funciones de orden
+   * tenían un piso en `mockupObjects.length` y nada podía pasar por debajo. Eso
+   * impedía poner una foto de referencia atrás y, sobre todo, impedía usar la
+   * prenda como molde de una máscara de recorte, porque una máscara necesita
+   * que el dibujo esté POR DEBAJO de la forma que lo recorta.
+   *
+   * Ahora la prenda es una capa más y se puede mandar algo abajo. Lo que queda
+   * abajo se marca `_fondo` y, mientras esté ahí, **no lleva el recorte a la
+   * prenda**: si lo llevara estaría recortado Y tapado a la vez, o sea
+   * invisible por partida doble, y parecería que la app se lo comió.
+   */
+
+  /** La posición del molde más bajo. Todo lo que esté por debajo es fondo. */
+  function indiceDelMolde(canvas: fabric.Canvas) {
+    const objs = canvas.getObjects()
+    let min = Infinity
+    for (const pieza of mockupObjects.current) {
+      const i = objs.indexOf(pieza)
+      if (i >= 0 && i < min) min = i
+    }
+    return min
+  }
+
+  /** Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte. */
+  function sincronizarFondo(obj: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas || mockupObjects.current.includes(obj)) return
+    const debajo = canvas.getObjects().indexOf(obj) < indiceDelMolde(canvas)
+    ;(obj as any)._fondo = debajo ? true : undefined
+    // El recorte a la prenda se saca al bajar y se repone al volver a subir,
+    // siempre que el interruptor esté puesto. Las máscaras y los textos no se tocan.
+    if (!(obj as any)._mascara && !(obj instanceof fabric.IText)) {
+      obj.clipPath = (!debajo && clipEnabledRef.current)
+        ? (clipPath.current ?? undefined)
+        : undefined
+    }
+    obj.dirty = true
+  }
+
+  /**
+   * Vuelve a hundir debajo del molde todo lo marcado como fondo.
+   *
+   * Hay que llamarla cada vez que la prenda se manda al fondo —al cambiar una
+   * medida se rehace entera— porque si no, el molde nuevo se mete por debajo
+   * del fondo y lo tapa.
+   */
+  function acomodarFondo() {
+    const canvas = fc.current
+    if (!canvas) return
+    const fondo = canvas.getObjects().filter(o => (o as any)._fondo)
+    for (let i = fondo.length - 1; i >= 0; i--) canvas.sendObjectToBack(fondo[i])
+  }
+
   function moveLayer(obj: fabric.FabricObject, dir: 'up' | 'down') {
     const canvas = fc.current
     if (!canvas) return
     const objs = canvas.getObjects()
     const idx  = objs.indexOf(obj)
-    const minIdx = mockupObjects.current.length  // mantener objetos por encima del mockup
     if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
-    if (dir === 'down' && idx > minIdx)        canvas.sendObjectBackwards(obj)
+    if (dir === 'down' && idx > 0)             canvas.sendObjectBackwards(obj)
+    sincronizarFondo(obj)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -7457,30 +7521,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function reorderLayerTo(from: fabric.FabricObject, to: fabric.FabricObject) {
     const canvas = fc.current
     if (!canvas || from === to) return
-    if (mockupObjects.current.includes(from) || mockupObjects.current.includes(to)) return
-    let toIdx = canvas.getObjects().indexOf(to)
-    const minIdx = mockupObjects.current.length
-    toIdx = Math.max(minIdx, toIdx)  // nunca por debajo del mockup
-    canvas.moveObjectTo(from, toIdx)
+    // La prenda no se arrastra (se rehace desde las medidas), pero sí se puede
+    // soltar algo sobre ella o debajo de ella.
+    if (mockupObjects.current.includes(from)) return
+    canvas.moveObjectTo(from, canvas.getObjects().indexOf(to))
+    sincronizarFondo(from)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
 
-  // Orden Z del objeto seleccionado (siempre por encima del mockup)
+  // Orden Z del objeto seleccionado. Puede quedar por debajo de la prenda.
   function reorderSelected(dir: 'front' | 'forward' | 'backward' | 'back') {
     const canvas = fc.current
     if (!canvas) return
     const obj = canvas.getActiveObject()
     if (!obj || mockupObjects.current.includes(obj)) return
-    const minIdx = mockupObjects.current.length
     const idx = canvas.getObjects().indexOf(obj)
     if (dir === 'front') canvas.bringObjectToFront(obj)
     else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
-    else if (dir === 'backward') { if (idx > minIdx) canvas.sendObjectBackwards(obj) }
-    else { // back: al fondo pero por encima del mockup
-      canvas.sendObjectToBack(obj)
-      for (let i = mockupObjects.current.length - 1; i >= 0; i--) canvas.sendObjectToBack(mockupObjects.current[i])
-    }
+    else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
+    else canvas.sendObjectToBack(obj)
+    sincronizarFondo(obj)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
