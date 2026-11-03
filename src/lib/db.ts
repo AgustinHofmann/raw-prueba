@@ -54,15 +54,6 @@ export async function upsertProject(p: Project, userId?: string): Promise<number
   return fila?.updated_at ?? null
 }
 
-// Guarda solo el techpack_json, sin tocar el resto del proyecto.
-export async function saveTechpackJson(id: string, json: string): Promise<void> {
-  const { error } = await supabase
-    .from('projects')
-    .update({ techpack_json: json, updated_at: Date.now() })
-    .eq('id', id)
-  if (error) throw error
-}
-
 // Borrar de verdad, no "pedir por favor".
 //
 // `delete()` a secas devuelve OK aunque no haya borrado NADA: si la regla de
@@ -149,6 +140,9 @@ function projectToRow(p: Project) {
     folder_id:   p.folderId,
     created_at:  p.createdAt,
     updated_at:  p.updatedAt,
+    // La ficha no viajaba: quedaba solo en el navegador donde se hizo. Va solo
+    // si está acá; sin descargar es null y mandarlo borraría la de la nube.
+    ...(p.techpackJson != null ? { techpack_json: p.techpackJson } : {}),
   }
 }
 
