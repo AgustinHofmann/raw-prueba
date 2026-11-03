@@ -5845,7 +5845,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (ctrl && (e.key === '7' || e.code === 'Digit7' || e.code === 'Numpad7')) {
         e.preventDefault()
         if (e.altKey) soltarMascara()
-        else hacerMascara()
+        else void hacerMascara()
         return
       }
 
@@ -7239,7 +7239,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return grupo
   }
 
-  function hacerMascara() {
+  async function hacerMascara() {
     const canvas = fc.current
     if (!canvas) return
     const activo = canvas.getActiveObject()
@@ -7250,16 +7250,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // El orden de apilado manda, no el orden en que se fueron clickeando.
     const todos = canvas.getObjects()
     const elegidos = (activo as fabric.ActiveSelection).getObjects()
-      .filter(o => !mockupObjects.current.includes(o))
       .sort((a, b) => todos.indexOf(a) - todos.indexOf(b))
     if (elegidos.length < 2) {
       onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
     }
-    const forma = elegidos[elegidos.length - 1]
-    const contenido = elegidos.slice(0, -1)
 
-    canvas.discardActiveObject()     // devuelve coordenadas absolutas a los hijos
+    let forma = elegidos[elegidos.length - 1]
+    // La prenda puede ser el MOLDE, pero nunca el contenido: no tiene sentido
+    // meter la remera adentro de un recorte.
+    const contenido = elegidos.slice(0, -1).filter(o => !mockupObjects.current.includes(o))
+    if (!contenido.length) {
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
+      return
+    }
+
+    /* Recortar con la prenda.
+     *
+     * Para esto hay que poner el dibujo DEBAJO de la prenda (Ctrl+Shift+[),
+     * porque la máscara usa siempre la forma de más arriba como molde.
+     *
+     * Se usa una COPIA de la pieza, no la pieza: la prenda se rehace entera
+     * cada vez que se toca una medida, así que si se la dejara consumida
+     * adentro del grupo se perdería el molde en el primer cambio. La copia
+     * queda marcada para no devolverla al lienzo al soltar la máscara, que si
+     * no dejaría una silueta de remera suelta encima del diseño.
+     *
+     * ⚠️ El costo, y conviene decirlo: una máscara NO sigue a las medidas. El
+     * botón "Recortado a la remera" recalcula el recorte solo; esto es una
+     * forma congelada en el momento en que se la aplicó.
+     */
+    // ⚠️ Soltar la selección ANTES de clonar. Mientras hay varias cosas
+    // seleccionadas, Fabric guarda las coordenadas de cada hijo en relación al
+    // centro de la selección: una copia hecha antes de este renglón se lleva
+    // esas coordenadas relativas y el molde aparece fuera del lienzo.
+    canvas.discardActiveObject()
+
+    if (mockupObjects.current.includes(forma)) {
+      const copia = await forma.clone()
+      ;(copia as any)._moldeDePrenda = true
+      forma = copia
+    }
+
     const grupo = armarGrupoMascara(contenido, forma)
 
     undoHistory.current.push({ type: 'mascara', forma, contenido, grupo })
@@ -7312,10 +7344,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ;(forma as any).absolutePositioned = false
       forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
       forma.dirty = true
-      canvas.add(forma)                // va arriba, como estaba antes
-      forma.setCoords()
+      // Si el molde era una copia de la prenda, no se devuelve: dejaría una
+      // silueta de remera suelta encima del diseño.
+      if (!(forma as any)._moldeDePrenda) {
+        canvas.add(forma)              // va arriba, como estaba antes
+        forma.setCoords()
+      }
     }
-    return forma ? [...hijos, forma] : hijos
+    return (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
   }
 
   function soltarMascara() {
@@ -7530,18 +7566,46 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     refreshLayersNow()
   }
 
-  // Orden Z del objeto seleccionado. Puede quedar por debajo de la prenda.
+  /**
+   * Orden Z de lo seleccionado. Funciona con una cosa o con varias.
+   *
+   * ⚠️ Con varias cosas seleccionadas Fabric entrega una `ActiveSelection`, que
+   * NO es un objeto del lienzo: no está en `getObjects()`, así que moverla no
+   * movía nada. Por eso parecía que la opción solo andaba con un objeto. Hay
+   * que mover a cada hijo por separado.
+   *
+   * Y hay que moverlos en el orden correcto o se dan vuelta entre ellos: para
+   * subir se arranca por el de más arriba y para bajar por el de más abajo, si
+   * no el primero que se mueve le gana el lugar al siguiente.
+   */
   function reorderSelected(dir: 'front' | 'forward' | 'backward' | 'back') {
     const canvas = fc.current
     if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (!obj || mockupObjects.current.includes(obj)) return
-    const idx = canvas.getObjects().indexOf(obj)
-    if (dir === 'front') canvas.bringObjectToFront(obj)
-    else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
-    else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
-    else canvas.sendObjectToBack(obj)
-    sincronizarFondo(obj)
+    const activo = canvas.getActiveObject()
+    if (!activo) return
+
+    const seleccionados = (activo.type === 'activeselection'
+      ? (activo as fabric.ActiveSelection).getObjects()
+      : [activo]
+    ).filter(o => !mockupObjects.current.includes(o))
+    if (!seleccionados.length) return
+
+    const apilado = canvas.getObjects()
+    seleccionados.sort((a, b) => apilado.indexOf(a) - apilado.indexOf(b))
+    // 'front' y 'backward' empiezan por el de abajo; 'forward' y 'back', por el de arriba
+    const enOrden = (dir === 'front' || dir === 'backward')
+      ? seleccionados
+      : [...seleccionados].reverse()
+
+    for (const obj of enOrden) {
+      const idx = canvas.getObjects().indexOf(obj)
+      if (dir === 'front') canvas.bringObjectToFront(obj)
+      else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
+      else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
+      else canvas.sendObjectToBack(obj)
+    }
+
+    seleccionados.forEach(sincronizarFondo)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -7926,7 +7990,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </button>
             )}
             {selKind === 'multi' && (
-              <button className="btn btn-ghost" onClick={hacerMascara} style={{ justifyContent: 'center', fontSize: 12 }}>
+              <button className="btn btn-ghost" onClick={() => void hacerMascara()} style={{ justifyContent: 'center', fontSize: 12 }}>
                 ✂ Máscara de recorte <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+7</span>
               </button>
             )}
@@ -8819,7 +8883,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
             }}>
               {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
-              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { hacerMascara(); closeCtx() }} />}
+              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { void hacerMascara(); closeCtx() }} />}
               {t && (t as any)._mascara && <CtxItem label="Soltar máscara de recorte" hint="Ctrl+Alt+7" onClick={() => { soltarMascara(); closeCtx() }} />}
               {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
               {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
