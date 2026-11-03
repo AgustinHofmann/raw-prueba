@@ -2351,6 +2351,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               if (molde) {
                 ;(molde as any).absolutePositioned = false
                 molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
+                // Los proyectos guardados antes del arreglo tienen el recorte a
+                // la prenda colgado de los hijos, y adentro de un grupo con
+                // molde eso los borra de la pantalla. Se los saca al abrir, así
+                // un archivo viejo se arregla solo.
+                if (obj instanceof fabric.Group) {
+                  for (const hijo of obj.getObjects()) {
+                    if ((hijo.clipPath as any)?.absolutePositioned) {
+                      hijo.clipPath = undefined
+                      hijo.dirty = true
+                    }
+                  }
+                }
                 obj.clipPath = molde
                 // El molde ya se guardó en (0,0) y el grupo ya venía medido por
                 // él, así que acá solo hay que dejar la medida fija para que el
@@ -7147,12 +7159,58 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     try {
       grupo.layoutManager = new fabric.LayoutManager(new fabric.ClipPathLayout())
       grupo.triggerLayout()
+
+      // ⚠️ Poner el molde en (0,0) arregla el recorte pero DESPLAZA el contenido
+      // esa misma distancia, y hay que devolverlo a mano.
+      //
+      // Esto era la otra mitad de "la máscara anda a veces sí y a veces no". El
+      // contenido quedaba corrido justo lo que el molde estuviera corrido del
+      // centro del dibujo: con el molde en el medio no se notaba nada, y cuanto
+      // más al costado se lo dibujaba, más se perdía — hasta desaparecer entero.
+      // Medido con un molde de 150x130 sobre un dibujo de 320x280: a 0, 20 y
+      // 40 px de corrimiento se veían 19160 px; a 60 px, 14590; a 80 px, 9460; y
+      // con el molde bien al costado, 0. También era lo que hacía que al soltar
+      // la máscara el dibujo apareciera movido.
+      const dx = forma.left ?? 0
+      const dy = forma.top ?? 0
       forma.set({ left: 0, top: 0 })
       forma.setCoords()
+      if (dx || dy) {
+        for (const hijo of grupo.getObjects()) {
+          hijo.set({ left: (hijo.left ?? 0) + dx, top: (hijo.top ?? 0) + dy })
+          hijo.setCoords()
+        }
+      }
+
       grupo.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
     } catch { /* sin esto el marco queda grande, pero recorta igual */ }
     grupo.setCoords()
     grupo.dirty = true           // ← sin esto el recorte sale corrido
+  }
+
+  /**
+   * Le saca al contenido el recorte a la prenda antes de que entre al grupo.
+   *
+   * ⚠️ Esto es lo que hacía que la máscara anduviera "a veces sí y a veces no".
+   * El recorte a la prenda está en coordenadas del LIENZO (`absolutePositioned`).
+   * Un grupo que tiene su propio molde se dibuja primero a un lienzo aparte, del
+   * tamaño del grupo; ahí adentro esas coordenadas del lienzo caen fuera de
+   * todo, así que el hijo se recorta contra la nada y **desaparece entero**.
+   *
+   * Medido: mismo dibujo y misma forma, 7450 px visibles si el contenido venía
+   * sin el recorte a la prenda y 0 px si venía con él. Por eso dependía de si
+   * "Recortado a la remera" estaba puesto cuando se dibujó.
+   *
+   * No hace falta recordar cuál era: al soltar la máscara, `soltarGrupoMascara`
+   * ya se lo repone mirando el interruptor, que además es más correcto que
+   * devolver el de antes.
+   */
+  function sacarRecorteDePrenda(objs: fabric.FabricObject[]) {
+    for (const o of objs) {
+      if (!o.clipPath) continue
+      o.clipPath = undefined
+      o.dirty = true
+    }
   }
 
   /** Arma el grupo de recorte a partir del contenido y la forma. */
@@ -7161,6 +7219,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const centroForma = forma.getCenterPoint()
     const previo = prepararMascara(forma)
     canvas.remove(forma)                 // el molde deja de ser objeto del lienzo
+    sacarRecorteDePrenda(contenido)      // ← sin esto el contenido desaparece
     const grupo = makeGroup(contenido)   // el contenido pasa a ser un solo objeto
     encajarMascaraEnGrupo(forma, grupo, centroForma)
     // Se guarda CÓMO ERA la forma (relleno, opacidad) para poder devolvérsela
