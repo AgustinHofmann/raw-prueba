@@ -16,9 +16,10 @@ migrations/0004_add_techpack.sql      projects.techpack_json (ficha técnica)
 migrations/0005_hardening.sql         integridad + privilegio mínimo
 migrations/0006_mockup_chomba.sql     mockup_id: entra chomba, queda hoodie
 migrations/0007_mockup_musculosa_short.sql  mockup_id: entran musculosa y short
+migrations/0008_hardening_cuotas.sql  cuotas por usuario + tablas nuevas cerradas
 ```
 
-- **Base nueva y vacía:** correr las siete en orden. El resultado es el mismo esquema final.
+- **Base nueva y vacía:** correr las ocho en orden. El resultado es el mismo esquema final.
 - **Base existente:** correr solo las pendientes.
 
 > Antes había además un `setup.sql` que duplicaba todo el esquema "para base nueva".
@@ -40,6 +41,7 @@ cat supabase/migrations/*.sql > /tmp/raw-design-full.sql
 | 0001, 0002, 0003 | aplicadas | mayo–julio 2026 |
 | 0004, 0005, 0006 | aplicadas | 18-ago-2026 |
 | 0007 | aplicada | 26-oct-2026 |
+| 0008 | aplicada | 04-nov-2026 |
 
 > El plan gratis **pausa el proyecto tras una semana sin uso**. Pausado, el dominio
 > `*.supabase.co` ni siquiera resuelve: la app cae en modo local sin avisar y nada sube
