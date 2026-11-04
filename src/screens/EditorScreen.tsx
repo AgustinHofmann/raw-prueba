@@ -2351,6 +2351,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               if (molde) {
                 ;(molde as any).absolutePositioned = false
                 molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
+                // Los proyectos guardados antes del arreglo tienen el recorte a
+                // la prenda colgado de los hijos, y adentro de un grupo con
+                // molde eso los borra de la pantalla. Se los saca al abrir, así
+                // un archivo viejo se arregla solo.
+                if (obj instanceof fabric.Group) {
+                  for (const hijo of obj.getObjects()) {
+                    if ((hijo.clipPath as any)?.absolutePositioned) {
+                      hijo.clipPath = undefined
+                      hijo.dirty = true
+                    }
+                  }
+                }
                 obj.clipPath = molde
                 // El molde ya se guardó en (0,0) y el grupo ya venía medido por
                 // él, así que acá solo hay que dejar la medida fija para que el
@@ -2367,7 +2379,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               delete (obj as any)._mascara
               console.warn('no se pudo restaurar una máscara de recorte', e)
             }
-          } else if (!(obj instanceof fabric.IText) && clipPath.current) {
+          } else if (!(obj instanceof fabric.IText) && clipPath.current
+                     && !(obj as any)._fondo) {
+            // lo que va debajo de la prenda no se recorta contra ella
             obj.set({ clipPath: clipPath.current })
           }
           canvas.add(obj)
@@ -2377,6 +2391,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (fallados > 0) {
           onToast?.(`No se pudieron recuperar ${fallados} elemento${fallados > 1 ? 's' : ''} del diseño`)
         }
+        acomodarFondo()   // lo que el usuario había dejado debajo de la prenda vuelve abajo
         restoreGarmentPaint(design.garment)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
 
@@ -3453,6 +3468,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
+          acomodarFondo()                // ...pero sin taparle el fondo al usuario
         }
       }
 
@@ -5829,7 +5845,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (ctrl && (e.key === '7' || e.code === 'Digit7' || e.code === 'Numpad7')) {
         e.preventDefault()
         if (e.altKey) soltarMascara()
-        else hacerMascara()
+        else void hacerMascara()
         return
       }
 
@@ -6302,7 +6318,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
       // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
       // al abrir, pero el de la máscara se perdería para siempre.
-      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio']); delete j.clipPath; return j })
+      .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio', '_fondo']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
     // vuelve a construir desde las medidas y después se le repone la pintura.
@@ -6422,6 +6438,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.getObjects().forEach(o => {
       if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
       if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+      if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
       o.clipPath = clipEnabledRef.current ? cg : undefined
       o.dirty = true
     })
@@ -6629,10 +6646,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * TEE_UNITS_PER_CM
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
         if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+        if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -6825,10 +6844,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * prendaParam.unidadesPorCm
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
+    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
         if ((o as any)._mascara) return   // tiene máscara de recorte: no se pisa
+        if ((o as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
         o.clipPath = clipEnabledRef.current ? cg : undefined
         o.dirty = true
       })
@@ -7147,12 +7168,58 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     try {
       grupo.layoutManager = new fabric.LayoutManager(new fabric.ClipPathLayout())
       grupo.triggerLayout()
+
+      // ⚠️ Poner el molde en (0,0) arregla el recorte pero DESPLAZA el contenido
+      // esa misma distancia, y hay que devolverlo a mano.
+      //
+      // Esto era la otra mitad de "la máscara anda a veces sí y a veces no". El
+      // contenido quedaba corrido justo lo que el molde estuviera corrido del
+      // centro del dibujo: con el molde en el medio no se notaba nada, y cuanto
+      // más al costado se lo dibujaba, más se perdía — hasta desaparecer entero.
+      // Medido con un molde de 150x130 sobre un dibujo de 320x280: a 0, 20 y
+      // 40 px de corrimiento se veían 19160 px; a 60 px, 14590; a 80 px, 9460; y
+      // con el molde bien al costado, 0. También era lo que hacía que al soltar
+      // la máscara el dibujo apareciera movido.
+      const dx = forma.left ?? 0
+      const dy = forma.top ?? 0
       forma.set({ left: 0, top: 0 })
       forma.setCoords()
+      if (dx || dy) {
+        for (const hijo of grupo.getObjects()) {
+          hijo.set({ left: (hijo.left ?? 0) + dx, top: (hijo.top ?? 0) + dy })
+          hijo.setCoords()
+        }
+      }
+
       grupo.layoutManager = new fabric.LayoutManager(new fabric.FixedLayout())
     } catch { /* sin esto el marco queda grande, pero recorta igual */ }
     grupo.setCoords()
     grupo.dirty = true           // ← sin esto el recorte sale corrido
+  }
+
+  /**
+   * Le saca al contenido el recorte a la prenda antes de que entre al grupo.
+   *
+   * ⚠️ Esto es lo que hacía que la máscara anduviera "a veces sí y a veces no".
+   * El recorte a la prenda está en coordenadas del LIENZO (`absolutePositioned`).
+   * Un grupo que tiene su propio molde se dibuja primero a un lienzo aparte, del
+   * tamaño del grupo; ahí adentro esas coordenadas del lienzo caen fuera de
+   * todo, así que el hijo se recorta contra la nada y **desaparece entero**.
+   *
+   * Medido: mismo dibujo y misma forma, 7450 px visibles si el contenido venía
+   * sin el recorte a la prenda y 0 px si venía con él. Por eso dependía de si
+   * "Recortado a la remera" estaba puesto cuando se dibujó.
+   *
+   * No hace falta recordar cuál era: al soltar la máscara, `soltarGrupoMascara`
+   * ya se lo repone mirando el interruptor, que además es más correcto que
+   * devolver el de antes.
+   */
+  function sacarRecorteDePrenda(objs: fabric.FabricObject[]) {
+    for (const o of objs) {
+      if (!o.clipPath) continue
+      o.clipPath = undefined
+      o.dirty = true
+    }
   }
 
   /** Arma el grupo de recorte a partir del contenido y la forma. */
@@ -7161,6 +7228,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const centroForma = forma.getCenterPoint()
     const previo = prepararMascara(forma)
     canvas.remove(forma)                 // el molde deja de ser objeto del lienzo
+    sacarRecorteDePrenda(contenido)      // ← sin esto el contenido desaparece
     const grupo = makeGroup(contenido)   // el contenido pasa a ser un solo objeto
     encajarMascaraEnGrupo(forma, grupo, centroForma)
     // Se guarda CÓMO ERA la forma (relleno, opacidad) para poder devolvérsela
@@ -7171,7 +7239,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return grupo
   }
 
-  function hacerMascara() {
+  async function hacerMascara() {
     const canvas = fc.current
     if (!canvas) return
     const activo = canvas.getActiveObject()
@@ -7182,16 +7250,48 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // El orden de apilado manda, no el orden en que se fueron clickeando.
     const todos = canvas.getObjects()
     const elegidos = (activo as fabric.ActiveSelection).getObjects()
-      .filter(o => !mockupObjects.current.includes(o))
       .sort((a, b) => todos.indexOf(a) - todos.indexOf(b))
     if (elegidos.length < 2) {
       onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
     }
-    const forma = elegidos[elegidos.length - 1]
-    const contenido = elegidos.slice(0, -1)
 
-    canvas.discardActiveObject()     // devuelve coordenadas absolutas a los hijos
+    let forma = elegidos[elegidos.length - 1]
+    // La prenda puede ser el MOLDE, pero nunca el contenido: no tiene sentido
+    // meter la remera adentro de un recorte.
+    const contenido = elegidos.slice(0, -1).filter(o => !mockupObjects.current.includes(o))
+    if (!contenido.length) {
+      onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
+      return
+    }
+
+    /* Recortar con la prenda.
+     *
+     * Para esto hay que poner el dibujo DEBAJO de la prenda (Ctrl+Shift+[),
+     * porque la máscara usa siempre la forma de más arriba como molde.
+     *
+     * Se usa una COPIA de la pieza, no la pieza: la prenda se rehace entera
+     * cada vez que se toca una medida, así que si se la dejara consumida
+     * adentro del grupo se perdería el molde en el primer cambio. La copia
+     * queda marcada para no devolverla al lienzo al soltar la máscara, que si
+     * no dejaría una silueta de remera suelta encima del diseño.
+     *
+     * ⚠️ El costo, y conviene decirlo: una máscara NO sigue a las medidas. El
+     * botón "Recortado a la remera" recalcula el recorte solo; esto es una
+     * forma congelada en el momento en que se la aplicó.
+     */
+    // ⚠️ Soltar la selección ANTES de clonar. Mientras hay varias cosas
+    // seleccionadas, Fabric guarda las coordenadas de cada hijo en relación al
+    // centro de la selección: una copia hecha antes de este renglón se lleva
+    // esas coordenadas relativas y el molde aparece fuera del lienzo.
+    canvas.discardActiveObject()
+
+    if (mockupObjects.current.includes(forma)) {
+      const copia = await forma.clone()
+      ;(copia as any)._moldeDePrenda = true
+      forma = copia
+    }
+
     const grupo = armarGrupoMascara(contenido, forma)
 
     undoHistory.current.push({ type: 'mascara', forma, contenido, grupo })
@@ -7244,10 +7344,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ;(forma as any).absolutePositioned = false
       forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
       forma.dirty = true
-      canvas.add(forma)                // va arriba, como estaba antes
-      forma.setCoords()
+      // Si el molde era una copia de la prenda, no se devuelve: dejaría una
+      // silueta de remera suelta encima del diseño.
+      if (!(forma as any)._moldeDePrenda) {
+        canvas.add(forma)              // va arriba, como estaba antes
+        forma.setCoords()
+      }
     }
-    return forma ? [...hijos, forma] : hijos
+    return (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
   }
 
   function soltarMascara() {
@@ -7382,14 +7486,69 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     refreshLayersNow()
   }
 
+  /* ── Lo que va DEBAJO de la prenda ────────────────────────────────────────
+   *
+   * Hasta acá el molde estaba clavado al fondo: todas las funciones de orden
+   * tenían un piso en `mockupObjects.length` y nada podía pasar por debajo. Eso
+   * impedía poner una foto de referencia atrás y, sobre todo, impedía usar la
+   * prenda como molde de una máscara de recorte, porque una máscara necesita
+   * que el dibujo esté POR DEBAJO de la forma que lo recorta.
+   *
+   * Ahora la prenda es una capa más y se puede mandar algo abajo. Lo que queda
+   * abajo se marca `_fondo` y, mientras esté ahí, **no lleva el recorte a la
+   * prenda**: si lo llevara estaría recortado Y tapado a la vez, o sea
+   * invisible por partida doble, y parecería que la app se lo comió.
+   */
+
+  /** La posición del molde más bajo. Todo lo que esté por debajo es fondo. */
+  function indiceDelMolde(canvas: fabric.Canvas) {
+    const objs = canvas.getObjects()
+    let min = Infinity
+    for (const pieza of mockupObjects.current) {
+      const i = objs.indexOf(pieza)
+      if (i >= 0 && i < min) min = i
+    }
+    return min
+  }
+
+  /** Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte. */
+  function sincronizarFondo(obj: fabric.FabricObject) {
+    const canvas = fc.current
+    if (!canvas || mockupObjects.current.includes(obj)) return
+    const debajo = canvas.getObjects().indexOf(obj) < indiceDelMolde(canvas)
+    ;(obj as any)._fondo = debajo ? true : undefined
+    // El recorte a la prenda se saca al bajar y se repone al volver a subir,
+    // siempre que el interruptor esté puesto. Las máscaras y los textos no se tocan.
+    if (!(obj as any)._mascara && !(obj instanceof fabric.IText)) {
+      obj.clipPath = (!debajo && clipEnabledRef.current)
+        ? (clipPath.current ?? undefined)
+        : undefined
+    }
+    obj.dirty = true
+  }
+
+  /**
+   * Vuelve a hundir debajo del molde todo lo marcado como fondo.
+   *
+   * Hay que llamarla cada vez que la prenda se manda al fondo —al cambiar una
+   * medida se rehace entera— porque si no, el molde nuevo se mete por debajo
+   * del fondo y lo tapa.
+   */
+  function acomodarFondo() {
+    const canvas = fc.current
+    if (!canvas) return
+    const fondo = canvas.getObjects().filter(o => (o as any)._fondo)
+    for (let i = fondo.length - 1; i >= 0; i--) canvas.sendObjectToBack(fondo[i])
+  }
+
   function moveLayer(obj: fabric.FabricObject, dir: 'up' | 'down') {
     const canvas = fc.current
     if (!canvas) return
     const objs = canvas.getObjects()
     const idx  = objs.indexOf(obj)
-    const minIdx = mockupObjects.current.length  // mantener objetos por encima del mockup
     if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
-    if (dir === 'down' && idx > minIdx)        canvas.sendObjectBackwards(obj)
+    if (dir === 'down' && idx > 0)             canvas.sendObjectBackwards(obj)
+    sincronizarFondo(obj)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -7398,30 +7557,55 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function reorderLayerTo(from: fabric.FabricObject, to: fabric.FabricObject) {
     const canvas = fc.current
     if (!canvas || from === to) return
-    if (mockupObjects.current.includes(from) || mockupObjects.current.includes(to)) return
-    let toIdx = canvas.getObjects().indexOf(to)
-    const minIdx = mockupObjects.current.length
-    toIdx = Math.max(minIdx, toIdx)  // nunca por debajo del mockup
-    canvas.moveObjectTo(from, toIdx)
+    // La prenda no se arrastra (se rehace desde las medidas), pero sí se puede
+    // soltar algo sobre ella o debajo de ella.
+    if (mockupObjects.current.includes(from)) return
+    canvas.moveObjectTo(from, canvas.getObjects().indexOf(to))
+    sincronizarFondo(from)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
 
-  // Orden Z del objeto seleccionado (siempre por encima del mockup)
+  /**
+   * Orden Z de lo seleccionado. Funciona con una cosa o con varias.
+   *
+   * ⚠️ Con varias cosas seleccionadas Fabric entrega una `ActiveSelection`, que
+   * NO es un objeto del lienzo: no está en `getObjects()`, así que moverla no
+   * movía nada. Por eso parecía que la opción solo andaba con un objeto. Hay
+   * que mover a cada hijo por separado.
+   *
+   * Y hay que moverlos en el orden correcto o se dan vuelta entre ellos: para
+   * subir se arranca por el de más arriba y para bajar por el de más abajo, si
+   * no el primero que se mueve le gana el lugar al siguiente.
+   */
   function reorderSelected(dir: 'front' | 'forward' | 'backward' | 'back') {
     const canvas = fc.current
     if (!canvas) return
-    const obj = canvas.getActiveObject()
-    if (!obj || mockupObjects.current.includes(obj)) return
-    const minIdx = mockupObjects.current.length
-    const idx = canvas.getObjects().indexOf(obj)
-    if (dir === 'front') canvas.bringObjectToFront(obj)
-    else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
-    else if (dir === 'backward') { if (idx > minIdx) canvas.sendObjectBackwards(obj) }
-    else { // back: al fondo pero por encima del mockup
-      canvas.sendObjectToBack(obj)
-      for (let i = mockupObjects.current.length - 1; i >= 0; i--) canvas.sendObjectToBack(mockupObjects.current[i])
+    const activo = canvas.getActiveObject()
+    if (!activo) return
+
+    const seleccionados = (activo.type === 'activeselection'
+      ? (activo as fabric.ActiveSelection).getObjects()
+      : [activo]
+    ).filter(o => !mockupObjects.current.includes(o))
+    if (!seleccionados.length) return
+
+    const apilado = canvas.getObjects()
+    seleccionados.sort((a, b) => apilado.indexOf(a) - apilado.indexOf(b))
+    // 'front' y 'backward' empiezan por el de abajo; 'forward' y 'back', por el de arriba
+    const enOrden = (dir === 'front' || dir === 'backward')
+      ? seleccionados
+      : [...seleccionados].reverse()
+
+    for (const obj of enOrden) {
+      const idx = canvas.getObjects().indexOf(obj)
+      if (dir === 'front') canvas.bringObjectToFront(obj)
+      else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
+      else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
+      else canvas.sendObjectToBack(obj)
     }
+
+    seleccionados.forEach(sincronizarFondo)
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -7806,7 +7990,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               </button>
             )}
             {selKind === 'multi' && (
-              <button className="btn btn-ghost" onClick={hacerMascara} style={{ justifyContent: 'center', fontSize: 12 }}>
+              <button className="btn btn-ghost" onClick={() => void hacerMascara()} style={{ justifyContent: 'center', fontSize: 12 }}>
                 ✂ Máscara de recorte <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+7</span>
               </button>
             )}
@@ -8699,7 +8883,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
             }}>
               {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
-              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { hacerMascara(); closeCtx() }} />}
+              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { void hacerMascara(); closeCtx() }} />}
               {t && (t as any)._mascara && <CtxItem label="Soltar máscara de recorte" hint="Ctrl+Alt+7" onClick={() => { soltarMascara(); closeCtx() }} />}
               {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
               {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
