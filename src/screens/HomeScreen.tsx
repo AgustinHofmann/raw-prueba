@@ -45,7 +45,9 @@ function proyectoImportado(data: unknown, carpetas: Folder[]): Project | null {
     if (s == null) return null
     try { JSON.parse(s); return s } catch { return null }
   }
-  const name = texto(d.name, 200)?.trim()
+  // Los topes son los de la base (0003): uno más holgado acá dejaba pasar un
+  // nombre que la nube después rechaza, y el proyecto no subía nunca.
+  const name = texto(d.name, 120)?.trim()
   if (!name || !MOCKUPS_VALIDOS.includes(d.mockupId as Project['mockupId'])) return null
   const thumb = texto(d.thumbnail, 3_000_000)
   return {
@@ -58,7 +60,7 @@ function proyectoImportado(data: unknown, carpetas: Folder[]): Project | null {
     colors: Array.isArray(d.colors)
       ? d.colors.filter((c): c is string => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).slice(0, 64)
       : [],
-    tag: texto(d.tag, 100) ?? '',
+    tag: texto(d.tag, 40) ?? '',
     folderId: carpetas.some(f => f.id === d.folderId) ? d.folderId as string : null,
     createdAt: typeof d.createdAt === 'number' && isFinite(d.createdAt) ? d.createdAt : Date.now(),
     updatedAt: Date.now(),
