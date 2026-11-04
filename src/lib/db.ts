@@ -107,7 +107,7 @@ export async function deleteFolder(id: string): Promise<void> {
 // una prenda hay que sumarla también ahí con una migración: la musculosa y el
 // short se agregaron solo acá, la base rechazaba cada guardado y los proyectos
 // nunca llegaban a la cuenta (ver supabase/migrations/0007).
-const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants', 'musculosa', 'short']
+export const MOCKUPS_VALIDOS: Project['mockupId'][] = ['tshirt', 'chomba', 'pants', 'musculosa', 'short']
 function normalizeMockupId(v: unknown): Project['mockupId'] {
   return MOCKUPS_VALIDOS.includes(v as Project['mockupId']) ? v as Project['mockupId'] : 'tshirt'
 }

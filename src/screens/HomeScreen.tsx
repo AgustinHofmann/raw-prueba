@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Project, Folder } from '../types/project'
+import { MOCKUPS_VALIDOS } from '../lib/db'
 
 interface Props {
   projects: Project[]
@@ -24,6 +25,44 @@ const MOCKUP_LABELS: Record<string, string> = {
   pants: 'Pantalón',
   musculosa: 'Musculosa',
   short: 'Short',
+}
+
+/**
+ * Arma un proyecto a partir de un archivo importado, o null si no sirve.
+ *
+ * El archivo viene de afuera y lo pudo armar cualquiera. Antes se copiaba
+ * entero tal cual llegaba: campos inventados, una carpeta de otra cuenta,
+ * textos de cualquier tamaño o una miniatura que apuntaba a otro servidor
+ * (y se descargaba sola al mostrar la tarjeta). Ahora pasa solo lo que la app
+ * conoce, con los mismos límites que pone la base.
+ */
+function proyectoImportado(data: unknown, carpetas: Folder[]): Project | null {
+  if (!data || typeof data !== 'object') return null
+  const d = data as Record<string, unknown>
+  const texto = (v: unknown, max: number) => (typeof v === 'string' && v.length <= max ? v : null)
+  const json = (v: unknown, max: number) => {
+    const s = texto(v, max)
+    if (s == null) return null
+    try { JSON.parse(s); return s } catch { return null }
+  }
+  const name = texto(d.name, 200)?.trim()
+  if (!name || !MOCKUPS_VALIDOS.includes(d.mockupId as Project['mockupId'])) return null
+  const thumb = texto(d.thumbnail, 3_000_000)
+  return {
+    id: crypto.randomUUID(),
+    name,
+    mockupId: d.mockupId as Project['mockupId'],
+    thumbnail: thumb && /^data:image\/(png|jpeg|webp);base64,/.test(thumb) ? thumb : null,
+    canvasJson: json(d.canvasJson, 12_000_000),
+    techpackJson: json(d.techpackJson, 4_000_000),
+    colors: Array.isArray(d.colors)
+      ? d.colors.filter((c): c is string => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).slice(0, 64)
+      : [],
+    tag: texto(d.tag, 100) ?? '',
+    folderId: carpetas.some(f => f.id === d.folderId) ? d.folderId as string : null,
+    createdAt: typeof d.createdAt === 'number' && isFinite(d.createdAt) ? d.createdAt : Date.now(),
+    updatedAt: Date.now(),
+  }
 }
 
 export default function HomeScreen({
@@ -91,12 +130,19 @@ export default function HomeScreen({
     const file = e.target.files?.[0]
     if (!file) return
     e.target.value = ''
+    // Más grande que la suma de lo que acepta la base no puede ser un proyecto,
+    // y leer un archivo enorme como texto congela la pestaña.
+    if (file.size > 25_000_000) {
+      setImportError('El archivo es demasiado grande para ser un proyecto RAW.')
+      setTimeout(() => setImportError(null), 3000)
+      return
+    }
     const reader = new FileReader()
     reader.onload = ev => {
       try {
-        const data = JSON.parse(ev.target?.result as string) as Project
-        if (!data.id || !data.name || !data.mockupId) throw new Error('Formato inválido')
-        onImportProject({ ...data, id: crypto.randomUUID(), updatedAt: Date.now() })
+        const p = proyectoImportado(JSON.parse(ev.target?.result as string), folders)
+        if (!p) throw new Error('Formato inválido')
+        onImportProject(p)
         setImportError(null)
       } catch {
         setImportError('El archivo no es un proyecto RAW válido.')

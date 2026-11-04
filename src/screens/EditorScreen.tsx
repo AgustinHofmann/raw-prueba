@@ -1193,6 +1193,27 @@ const UNIDADES: Record<string, Record<string, number>> = {
   px: { px: 1 },
 }
 
+/**
+ * ¿El objeto guardado pide algo a otro servidor?
+ *
+ * Todo lo que la app guarda viaja embebido (data URL). Un proyecto importado,
+ * en cambio, lo pudo armar cualquiera: una imagen apuntando afuera se descarga
+ * sola al abrirlo, y con eso el que armó el archivo sabe quién lo abrió, cuándo
+ * y desde qué IP.
+ */
+function cargaDeAfuera(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false
+  for (const [k, x] of Object.entries(v)) {
+    if ((k === 'src' || k === 'source') && typeof x === 'string') {
+      try {
+        const u = new URL(x, location.href)
+        if (u.protocol !== 'data:' && u.origin !== location.origin) return true
+      } catch { return true }
+    } else if (typeof x === 'object' && cargaDeAfuera(x)) return true
+  }
+  return false
+}
+
 /** Evalua + - * / y parentesis. Devuelve null si el texto no es una expresion
  *  valida y completa — a medias no se confirma nada. */
 function evaluarExpresion(txt: string): number | null {
@@ -2318,6 +2339,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const revived: fabric.FabricObject[] = []
         let fallados = 0
         for (const raw of design.objects) {
+          if (cargaDeAfuera(raw)) {
+            fallados++
+            console.warn('se descartó un objeto que pedía contenido a otro servidor')
+            continue
+          }
           try {
             const [obj] = await (fabric.util as any).enlivenObjects([raw]) as fabric.FabricObject[]
             if (cancelled) return
