@@ -100,20 +100,28 @@ export default function App() {
       if (event === 'SIGNED_OUT') {
         localStorage.removeItem('raw.sinCuenta')
         setSinCuenta(false)
+        // Las pestañas abiertas son de la cuenta que salió: quedaban a la vista
+        // del siguiente que se sentara en la computadora.
+        setOpenTabs([])
+        setActive(null)
+        setRoute('home')
       }
     })
     return () => { clearTimeout(rescate); subscription.unsubscribe() }
   }, [])
 
-  // Carga lo que hay en la máquina. No espera a la red ni a la sesión: los
-  // proyectos ya están acá, así que la app abre igual sin internet.
+  // Carga lo que hay en la máquina. No espera a la red: los proyectos ya están
+  // acá, así que la app abre igual sin internet. Sí espera a saber quién entró,
+  // y se vuelve a leer cuando cambia la cuenta: en un navegador compartido cada
+  // uno ve solo lo suyo.
   useEffect(() => {
+    if (!authReady) return
     setLoading(true)
-    Promise.all([listProjects(), listFolders()])
+    Promise.all([listProjects(user?.id), listFolders(user?.id)])
       .then(([p, f]) => { setProjects(p); setFolders(f) })
       .catch(() => showToast('Error al leer los proyectos guardados'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [authReady, user?.id])
 
   // Con sesión, pone de acuerdo lo local con la nube: sube lo que hiciste sin
   // internet y baja lo que hiciste en otra computadora.

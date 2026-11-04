@@ -27,6 +27,19 @@ import type { Project, Folder } from '../types/project'
 /** Un borrado hecho sin conexión, esperando a poder aplicarse en la nube. */
 interface Tombstone { id: string; kind: 'project' | 'folder'; at: number }
 
+/**
+ * De qué cuenta es lo guardado en este navegador.
+ *
+ * La base local es UNA por navegador, no por cuenta. Sin esta marca, en una
+ * computadora compartida (las del laboratorio) el que entraba después veía el
+ * archivo del anterior, y al sincronizar los diseños que el otro no había
+ * llegado a subir se subían a SU cuenta. Sin dueño = hecho sin cuenta: se
+ * muestra a cualquiera y se sube a la primera cuenta que entre, que es lo que
+ * promete "podés crear una cuenta más adelante y se suben solos".
+ */
+type ConDuenio = { duenio?: string }
+const esDe = (r: ConDuenio, userId?: string) => !r.duenio || r.duenio === userId
+
 export const isOnline = () => (typeof navigator === 'undefined' ? true : navigator.onLine !== false)
 
 /**
@@ -82,12 +95,13 @@ export async function cloudReady(): Promise<boolean> {
 
 // ─── Lectura ─────────────────────────────────────────────────────────────────
 
-export async function listProjects(): Promise<Project[]> {
-  const all = await idbGetAll<Project>(STORE_PROJECTS)
-  return all.sort((a, b) => b.updatedAt - a.updatedAt)
+export async function listProjects(userId?: string): Promise<Project[]> {
+  const all = await idbGetAll<Project & ConDuenio>(STORE_PROJECTS)
+  return all.filter(p => esDe(p, userId)).sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-export const listFolders = () => idbGetAll<Folder>(STORE_FOLDERS)
+export const listFolders = (userId?: string) =>
+  idbGetAll<Folder & ConDuenio>(STORE_FOLDERS).then(fs => fs.filter(f => esDe(f, userId)))
 
 /**
  * El dibujo de un proyecto. Sale de local; si el proyecto vino de la nube y
@@ -139,7 +153,7 @@ export async function getTechpack(id: string): Promise<string | null> {
  * Con esta marca la regla deja de depender de relojes: si acá hay algo sin
  * subir, acá está lo bueno.
  */
-type Pendiente = Project & {
+type Pendiente = Project & ConDuenio & {
   pendienteDeSubir?: boolean
   /**
    * La fecha que tenía la copia de la NUBE la última vez que este dispositivo la
@@ -183,7 +197,12 @@ export async function saveProject(
   // muestra un permiso, el usuario entiende por que se lo estan pidiendo.
   void pedirAlmacenamientoDurable()
   const previo = await idbGet<Pendiente>(STORE_PROJECTS, p.id)
-  const conMarca: Pendiente = { ...p, pendienteDeSubir: true, nubeVistaEn: previo?.nubeVistaEn }
+  const conMarca: Pendiente = {
+    ...p, pendienteDeSubir: true, nubeVistaEn: previo?.nubeVistaEn,
+    // Sin sesión no se le saca el dueño: el editor de alguien que acaba de
+    // cerrar sesión puede autoguardar una vez más, y eso sigue siendo suyo.
+    duenio: userId ?? previo?.duenio,
+  }
   const ok = (await idbPut(STORE_PROJECTS, conMarca)) !== null
   void pushProject(conMarca, userId)
   return ok
@@ -211,6 +230,7 @@ async function pushProject(p: Pendiente, userId?: string): Promise<void> {
         // Ahora la nube tiene EXACTAMENTE lo que hay acá, y se anota con qué
         // fecha quedó: así el próximo sync sabe que nadie más la tocó.
         nubeVistaEn: fechaServidor ?? actual.nubeVistaEn,
+        duenio: userId ?? actual.duenio,
       })
     }
   } catch { /* queda marcado como pendiente para el próximo sync */ }
@@ -229,7 +249,8 @@ export async function saveTechpack(id: string, json: string, userId?: string): P
 }
 
 export async function saveFolder(f: Folder, userId?: string): Promise<void> {
-  await idbPut(STORE_FOLDERS, f)
+  const previa = await idbGet<Folder & ConDuenio>(STORE_FOLDERS, f.id)
+  await idbPut(STORE_FOLDERS, { ...f, duenio: userId ?? previa?.duenio })
   await idbDelete(STORE_DELETED, f.id)   // crear/renombrar una carpeta sí la revive
   // La subida va de fondo, igual que la de un proyecto: la carpeta ya está
   // creada en esta máquina. Esperándola, crear una carpeta tardaba lo mismo que
@@ -332,7 +353,7 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
     // mejor no sincronizar que sincronizar contra una respuesta que no llegó.
     const [nubeCarpetas, localesCarpetas] = await Promise.all([
       conPlazo(fetchFolders().then(v => v as Folder[] | null), null),
-      listFolders(),
+      listFolders(userId),   // lo de otra cuenta de este navegador no se toca
     ])
     if (nubeCarpetas === null) return null
     const carpetas = new Map<string, Folder>()
@@ -343,13 +364,14 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
         await conPlazo(upsertFolder(f, userId).then(() => true), false)   /* si no, el próximo sync */
       }
     }
-    for (const f of carpetas.values()) await idbPut(STORE_FOLDERS, f)
+    for (const f of carpetas.values()) await idbPut(STORE_FOLDERS, { ...f, duenio: userId })
 
     // 3. Proyectos. La lista de la nube viene sin el dibujo (es pesado), así que
     //    de los que ganan arriba hay que bajar el contenido aparte.
     const [nubeLista, locales] = await Promise.all([
       conPlazo(fetchProjects().then(v => v as Project[] | null), null),
-      listProjects(),
+      // Ni se sube ni se borra lo de otra cuenta: para este sync no existe.
+      listProjects(userId),
     ])
     if (nubeLista === null) return null   // mismo criterio que con las carpetas
     const nube = nubeLista
@@ -371,6 +393,7 @@ export async function syncWithCloud(userId?: string): Promise<{ projects: Projec
         techpackJson: techpackJson ?? local?.techpackJson ?? null,
         pendienteDeSubir: false,
         nubeVistaEn: remoto.updatedAt,
+        duenio: userId,
       }
       porId.set(remoto.id, completo)
       await idbPut(STORE_PROJECTS, completo)
