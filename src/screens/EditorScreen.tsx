@@ -630,6 +630,22 @@ const GARMENT_NAMES: Record<string, string> = {
   tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón', musculosa: 'Musculosa', short: 'Short',
 }
 
+/** Los colores con que se pide la tela al proveedor, con el nombre del taller. */
+const COLORES_PRENDA: { nombre: string; hex: string }[] = [
+  { nombre: 'Blanco',        hex: '#f4f4f1' },
+  { nombre: 'Crudo',         hex: '#e9e2d0' },
+  { nombre: 'Gris melange',  hex: '#a3a3a1' },
+  { nombre: 'Gris topo',     hex: '#5c5853' },
+  { nombre: 'Negro',         hex: '#1d1d1b' },
+  { nombre: 'Azul marino',   hex: '#1f2a44' },
+  { nombre: 'Azul francia',  hex: '#2f5bb7' },
+  { nombre: 'Celeste',       hex: '#75aadb' },
+  { nombre: 'Verde inglés',  hex: '#1f4d3a' },
+  { nombre: 'Verde militar', hex: '#5b6b3a' },
+  { nombre: 'Bordó',         hex: '#6b1f2a' },
+  { nombre: 'Rojo',          hex: '#b3262e' },
+]
+
 // Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
 // La chomba son ~105 porque el archivo trae dos prendas (frente y espalda) una
 // al lado de la otra; el pantalón son ~42, que es lo que mide plancheado.
@@ -8736,6 +8752,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                     : <><IconCheck /> Terminar (volver a toda la prenda)</>}
                 </button>
               )}
+
+              {/* Pintar la prenda de un color liso era lo más básico y lo más
+                  escondido: balde, agregar color, abrir el selector, escribir el
+                  código y saber que el doble clic pinta todo. Ahora es un clic,
+                  con los colores con que se compra la tela. */}
+              <div className="label" style={{ marginBottom: 6 }}>Color liso</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, marginBottom: 16 }}>
+                {COLORES_PRENDA.map(c => (
+                  <button key={c.hex} title={c.nombre} aria-label={c.nombre}
+                    onClick={() => {
+                      const { targets, label } = fillTargets()
+                      applyFillToTargets(targets, o => applyPaint(o, { fill: c.hex, base: c.hex }), `${c.nombre} aplicado`, label)
+                    }}
+                    style={{ aspectRatio: '1', borderRadius: 7, cursor: 'pointer', padding: 0,
+                      background: c.hex, border: '1px solid var(--line)' }} />
+                ))}
+              </div>
 
               {/* ── Telas, todas juntas ───────────────────────────────────────
                   Antes estaban repartidas en tres listas (los estampados que
