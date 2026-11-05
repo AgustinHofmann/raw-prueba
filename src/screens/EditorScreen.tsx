@@ -11,6 +11,7 @@ import { readSvgColors, sortColorsByArea, recolorSvg, dominantColor, tintImage,
 import { transformPath } from '../utils/pathWarp'
 import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import ColorPicker from '../components/ColorPicker'
+import { Scissors, Eye, Hand } from 'lucide-react'
 import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
@@ -8020,7 +8021,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               transition: 'all 0.15s var(--ease)',
             }}
           >
-            <span style={{ fontSize: 13 }}>{clipEnabled ? '✂️' : '👁'}</span>
+            {clipEnabled ? <Scissors size={13} /> : <Eye size={13} />}
             <span>{clipEnabled ? 'Recortado a la remera' : 'Mostrando todo'}</span>
           </button>
           {vectorizing && (
@@ -8136,7 +8137,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   color: measureEdit ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
                 }}
               >
-                {measureEdit ? '✋ Arrastrando medidas (tocá para salir)' : '✋ Ajustar arrastrando en la remera'}
+                <Hand size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                {measureEdit ? 'Arrastrando medidas (tocá para salir)' : 'Ajustar arrastrando en la remera'}
               </button>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {MEASURE_GROUPS.map(g => {
@@ -8310,7 +8312,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               title="Quitar el fondo de la imagen (fondos lisos)"
               style={{ justifyContent: 'center', fontSize: 12 }}
             >
-              ✂️ Quitar fondo
+              <Scissors size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />Quitar fondo
             </button>
           )}
           {isText && (

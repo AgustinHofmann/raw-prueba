@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
+import { ImagePlus, ScanLine, Save, Download, FileText } from 'lucide-react'
 import Logo from './Logo'
 import { Project, Tab, tabKey } from '../types/project'
 
@@ -173,7 +174,7 @@ export default function ChromeBar({
               onMouseEnter={e => { if (!active) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' }}}
               onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-2)' }}}
             >
-              {isTP && <span style={{ fontSize: 11, flexShrink: 0 }}>📄</span>}
+              {isTP && <FileText size={12} style={{ flexShrink: 0 }} />}
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 112 }}>{t.project.name}</span>
               {isTP && <span className="mono" style={{ fontSize: 8, color: 'var(--muted)', flexShrink: 0, letterSpacing: '0.04em' }}>TP</span>}
               <span
@@ -259,12 +260,12 @@ export default function ChromeBar({
                     boxShadow: 'var(--shadow-lg)', minWidth: 220, padding: 6,
                     display: 'flex', flexDirection: 'column', gap: 2,
                   }}>
-                    <MenuItem icon="📥" label="Importar imagen"   hint="colocar tal cual" onClick={() => pickImage(onPlaceImage)} />
-                    <MenuItem icon="🔀" label="Calco de imagen"   hint="vectorizar"       onClick={() => pickImage(onImportImage)} />
+                    <MenuItem icon={<ImagePlus size={15} />} label="Importar imagen"   hint="colocar tal cual" onClick={() => pickImage(onPlaceImage)} />
+                    <MenuItem icon={<ScanLine size={15} />} label="Calco de imagen"   hint="vectorizar"       onClick={() => pickImage(onImportImage)} />
                     <div style={{ height: 1, background: 'var(--line-soft)', margin: '4px 0' }} />
-                    <MenuItem icon="💾" label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
-                    <MenuItem icon="⬇" label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
-                    <MenuItem icon="📄" label="Tech Pack"          hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
+                    <MenuItem icon={<Save size={15} />} label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
+                    <MenuItem icon={<Download size={15} />} label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
+                    <MenuItem icon={<FileText size={15} />} label="Tech Pack"          hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
                   </div>
                 </>
               )}
@@ -322,7 +323,7 @@ export default function ChromeBar({
 }
 
 function MenuItem({ icon, label, hint, onClick }: {
-  icon: string; label: string; hint?: string; onClick: () => void
+  icon: ReactNode; label: string; hint?: string; onClick: () => void
 }) {
   return (
     <button
@@ -337,7 +338,7 @@ function MenuItem({ icon, label, hint, onClick }: {
       onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
       onMouseLeave={e => e.currentTarget.style.background = 'none'}
     >
-      <span style={{ fontSize: 15, width: 18, textAlign: 'center', flexShrink: 0 }}>{icon}</span>
+      <span style={{ width: 18, display: 'inline-flex', justifyContent: 'center', flexShrink: 0, color: 'var(--fg-2)' }}>{icon}</span>
       <span style={{ flex: 1 }}>{label}</span>
       {hint && <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{hint}</span>}
     </button>
