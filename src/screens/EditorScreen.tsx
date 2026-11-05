@@ -2227,6 +2227,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         .filter(o => o !== obj && !mockupObjects.current.includes(o) && o.visible !== false && o.evented !== false)
         .map(o => o.getBoundingRect())
       const mb = mockupBounds(); if (mb) cands.push(mb as any)
+      // Y cada vista por su lado: con frente y espalda juntos, el centro de la
+      // caja de todo no es el centro de ninguna prenda.
+      const vs = vistas(); if (vs.length > 1) cands.push(...(vs as any[]))
       const mvX = [b.left, b.left + b.width / 2, b.left + b.width]
       const mvY = [b.top, b.top + b.height / 2, b.top + b.height]
       let bestX = { d: Infinity, x: 0, y1: 0, y2: 0 }
@@ -5655,10 +5658,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // algo por encima del hombro (una capucha), habría que darle su propio HPS.
   // El tamaño es el del dibujo sin rotar, el mismo que escriben applyW/applyH.
   function enPrenda(o: fabric.FabricObject): { ancho: number; alto: number; centro: number; arriba: number } | null {
-    const ppc = pxPerCmRef.current, mb = mockupBounds()
-    if (!(ppc > 0) || !mb) return null
+    const ppc = pxPerCmRef.current
     o.setCoords()
     const b = o.getBoundingRect()
+    const mb = vistaDe(b)
+    if (!(ppc > 0) || !mb) return null
     const r1 = (n: number) => Math.round(n * 10) / 10
     return {
       ancho:  r1((o.width  ?? 0) * Math.abs(o.scaleX ?? 1) / ppc),
@@ -5668,10 +5672,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }
   }
   function moverEnPrenda(eje: 'centro' | 'arriba', cm: number) {
-    const obj = fc.current?.getActiveObject(), ppc = pxPerCmRef.current, mb = mockupBounds()
-    if (!obj || !(ppc > 0) || !mb) return
+    const obj = fc.current?.getActiveObject(), ppc = pxPerCmRef.current
+    if (!obj || !(ppc > 0)) return
     obj.setCoords()
     const b = obj.getBoundingRect()
+    const mb = vistaDe(b)
+    if (!mb) return
     if (eje === 'centro') obj.set({ left: (obj.left ?? 0) + (mb.left + mb.width / 2 + cm * ppc) - (b.left + b.width / 2) })
     else                  obj.set({ top:  (obj.top  ?? 0) + (mb.top + cm * ppc) - b.top })
     obj.setCoords(); fc.current?.requestRenderAll()
@@ -5788,8 +5794,25 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // Caja combinada del mockup (remera) — usada por el snapping / guías inteligentes.
-  function mockupBounds(): { left: number; top: number; width: number; height: number } | null {
-    const m = mockupObjects.current
+  // Frente y espalda por separado. Chomba, musculosa y short traen las dos
+  // vistas una al lado de la otra: el centro de la caja de TODO cae en el hueco
+  // entre ambas, y desde ahí no se puede medir dónde va un estampado.
+  function vistas(): { left: number; top: number; width: number; height: number }[] {
+    const esB = prendaParam?.segundaMitad
+    const deUna = (b: boolean) => mockupObjects.current.filter(o => !!esB?.(String((o as any)._srcId ?? '')) === b)
+    return [mockupBounds(esB ? deUna(false) : undefined), esB ? mockupBounds(deUna(true)) : null]
+      .filter((v): v is NonNullable<typeof v> => !!v)
+  }
+  /** La vista donde está una caja: la que tiene su centro, o la más cercana. */
+  function vistaDe(b: { left: number; width: number }) {
+    const cx = b.left + b.width / 2
+    const vs = vistas()
+    return vs.find(v => cx >= v.left && cx <= v.left + v.width)
+      ?? vs.sort((p, q) => Math.abs(p.left + p.width / 2 - cx) - Math.abs(q.left + q.width / 2 - cx))[0]
+      ?? null
+  }
+
+  function mockupBounds(m = mockupObjects.current): { left: number; top: number; width: number; height: number } | null {
     if (!m.length) return null
     const r = m.map(o => o.getBoundingRect())
     const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
