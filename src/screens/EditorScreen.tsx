@@ -2012,6 +2012,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       preserveObjectStacking: true,  // el objeto seleccionado mantiene su orden Z (no salta al frente)
     })
     fc.current = canvas
+    // La limpieza lo pone en false al destruir el lienzo y nada lo volvía a
+    // prender: después del primer desmontaje (abrir otro proyecto, o el doble
+    // montaje de desarrollo) todo lo que lo consultaba creía que no había lienzo.
+    canvasAlive.current = true
 
     // Mantener el canvas ajustado al área disponible (F11, Ctrl+/-, redimensionar ventana).
     // Se conserva el centro de lo que estabas mirando trasladando el viewport por la mitad
