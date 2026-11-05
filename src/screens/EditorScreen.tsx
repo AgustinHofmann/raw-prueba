@@ -1331,7 +1331,9 @@ function NumberField({
   }
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: fullWidth ? '100%' : undefined }}>
-      <div style={{ position: 'relative', width: fullWidth ? '100%' : width }}>
+      {/* A todo lo ancho, el campo se queda con lo que deja la unidad: con
+          width 100% la unidad quedaba afuera de la columna, cortada. */}
+      <div style={{ position: 'relative', ...(fullWidth ? { flex: 1, minWidth: 0 } : { width }) }}>
         <input
           type="text" inputMode="decimal"
           value={shown}
@@ -1591,6 +1593,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [propY,         setPropY]         = useState(0)
   const [propW,         setPropW]         = useState(0)
   const [propH,         setPropH]         = useState(0)
+  const [propCm,        setPropCm]        = useState<{ ancho: number; alto: number; centro: number; arriba: number } | null>(null)
   const [propAngle,     setPropAngle]     = useState(0)
   const [propOpacity,    setPropOpacity]    = useState(100)
   const [propFontFamily, setPropFontFamily] = useState('Arial')
@@ -2257,9 +2260,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           ? (v / ppc).toFixed(1).replace('.', ',') + ' cm'
           : Math.round(v) + ' px'
         const bb = obj.getBoundingRect()
+        // Sobre una prenda importa dónde queda, no cuánto se movió: es el dato
+        // que se le pasa al taller ("centrado, a 8 cm del cuello").
+        const p = enPrenda(obj)
+        const c1 = (v: number) => Math.abs(v).toFixed(1).replace('.', ',') + ' cm'
+        const desdeArriba = project.mockupId === 'pants' || project.mockupId === 'short' ? 'de la cintura' : 'del hombro'
         medidaViva.current = {
           x: bb.left + bb.width, y: bb.top + bb.height,
-          texto: `${fmt(dx)}  ${fmt(dy)}`,
+          texto: p
+            ? `${p.centro === 0 ? 'centrado' : p.centro < 0 ? '← ' + c1(p.centro) : c1(p.centro) + ' →'}  ·  ${p.arriba.toFixed(1).replace('.', ',')} cm ${desdeArriba}`
+            : `${fmt(dx)}  ${fmt(dy)}`,
         }
       }
     }
@@ -4554,6 +4564,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         setPropY(Math.round(medido.top  ?? 0))
         setPropW(Math.round((medido.width  ?? 0) * Math.abs(medido.scaleX ?? 1)))
         setPropH(Math.round((medido.height ?? 0) * Math.abs(medido.scaleY ?? 1)))
+        setPropCm(mockupObjects.current.includes(medido) ? null : enPrenda(medido))
         setPropAngle(Math.round((obj.angle ?? 0) * 10) / 10)
         setPropOpacity(Math.round((obj.opacity ?? 1) * 100))
         if (obj instanceof fabric.IText) {
@@ -5636,6 +5647,45 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const obj = fc.current?.getActiveObject()
     if (obj) { obj.set({ top: val }); obj.setCoords(); fc.current?.requestRenderAll() }
   }
+  // Dónde está algo sobre la prenda, con las referencias que usa el taller para
+  // ubicar un estampado: cuánto se corre de la línea del centro y cuánto baja
+  // desde lo más alto de la prenda (el punto alto del hombro, HPS, o la cintura
+  // en pantalón y short).
+  // shortcut: lo más alto se toma de la caja de la prenda; si un modelo tuviera
+  // algo por encima del hombro (una capucha), habría que darle su propio HPS.
+  // El tamaño es el del dibujo sin rotar, el mismo que escriben applyW/applyH.
+  function enPrenda(o: fabric.FabricObject): { ancho: number; alto: number; centro: number; arriba: number } | null {
+    const ppc = pxPerCmRef.current, mb = mockupBounds()
+    if (!(ppc > 0) || !mb) return null
+    o.setCoords()
+    const b = o.getBoundingRect()
+    const r1 = (n: number) => Math.round(n * 10) / 10
+    return {
+      ancho:  r1((o.width  ?? 0) * Math.abs(o.scaleX ?? 1) / ppc),
+      alto:   r1((o.height ?? 0) * Math.abs(o.scaleY ?? 1) / ppc),
+      centro: r1((b.left + b.width / 2 - (mb.left + mb.width / 2)) / ppc),
+      arriba: r1((b.top - mb.top) / ppc),
+    }
+  }
+  function moverEnPrenda(eje: 'centro' | 'arriba', cm: number) {
+    const obj = fc.current?.getActiveObject(), ppc = pxPerCmRef.current, mb = mockupBounds()
+    if (!obj || !(ppc > 0) || !mb) return
+    obj.setCoords()
+    const b = obj.getBoundingRect()
+    if (eje === 'centro') obj.set({ left: (obj.left ?? 0) + (mb.left + mb.width / 2 + cm * ppc) - (b.left + b.width / 2) })
+    else                  obj.set({ top:  (obj.top  ?? 0) + (mb.top + cm * ppc) - b.top })
+    obj.setCoords(); fc.current?.requestRenderAll()
+    setPropCm(enPrenda(obj))
+  }
+  function tamanoEnPrenda(eje: 'ancho' | 'alto', cm: number) {
+    const ppc = pxPerCmRef.current
+    if (!(ppc > 0)) return
+    const px = Math.max(1, cm * ppc)
+    if (eje === 'ancho') applyW(px); else applyH(px)
+    const obj = fc.current?.getActiveObject()
+    if (obj) setPropCm(enPrenda(obj))
+  }
+
   function applyW(val: number) {
     const v = Math.max(1, val)
     setPropW(v)
@@ -8422,6 +8472,28 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           {hasSel && (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Transformar</div>
+              {/* Sobre una prenda, en cm y desde el centro y el cuello: así se pide
+                  un estampado al taller. Los px del lienzo no le sirven a nadie. */}
+              {propCm ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                  {([
+                    ['Ancho', propCm.ancho, (v: number) => tamanoEnPrenda('ancho', v), 0.1, 'Ancho del dibujo'],
+                    ['Alto',  propCm.alto,  (v: number) => tamanoEnPrenda('alto', v),  0.1, 'Alto del dibujo'],
+                    ['Del centro', propCm.centro, (v: number) => moverEnPrenda('centro', v), undefined,
+                      'Cuánto se corre el medio del dibujo de la línea del centro de la prenda. 0 = centrado; negativo, a la izquierda mirando el dibujo'],
+                    [project.mockupId === 'pants' || project.mockupId === 'short' ? 'De la cintura' : 'Del hombro',
+                      propCm.arriba, (v: number) => moverEnPrenda('arriba', v), undefined,
+                      project.mockupId === 'pants' || project.mockupId === 'short'
+                        ? 'Del borde de la cintura al borde de arriba del dibujo'
+                        : 'Del punto alto del hombro, al lado del cuello (HPS), al borde de arriba del dibujo. Es la referencia con que el taller ubica un estampado'],
+                  ] as const).map(([label, val, fn, min, ayuda]) => (
+                    <div key={label} title={ayuda}>
+                      <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginBottom: 3, fontFamily: 'var(--ui)', letterSpacing: '0.1em', textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+                      <NumberField value={val} onChange={fn} step={0.5} min={min} suffix="cm" fullWidth />
+                    </div>
+                  ))}
+                </div>
+              ) : (<>
               {/* X / Y */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
                 {([['X', propX, applyX], ['Y', propY, applyY]] as const).map(([label, val, fn]) => (
@@ -8440,6 +8512,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   </div>
                 ))}
               </div>
+              </>)}
               {/* Rotación */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <span className="label">Rotación</span>
