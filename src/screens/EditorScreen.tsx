@@ -2301,6 +2301,19 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       setMoldeFallido(true)
     }
     const design = project.canvasJson ? parseDesign(project.canvasJson) : null
+    // La prenda vuelve al MISMO lugar del lienzo donde estaba al guardar.
+    //
+    // Su encuadre se calculaba al abrir con el tamaño del lienzo de ese momento,
+    // pero lo dibujado encima se guarda en coordenadas fijas del lienzo. Abrir el
+    // proyecto con otra ventana (o el panel derecho más ancho) ponía la prenda en
+    // otro lugar y a otra escala, y logos, textos y números quedaban corridos y
+    // fuera de la prenda. Con el encuadre guardado, la prenda no se mueve y lo de
+    // encima tampoco; lo único que cambia con la ventana es qué parte se ve.
+    const marco = design?.garment?.marco
+    if (marco && [marco.sc, marco.ox, marco.oy].every(n => typeof n === 'number' && isFinite(n)) && marco.sc > 0) {
+      if (project.mockupId === 'tshirt') teeFitRef.current = { ...marco }
+      else prendaFitRef.current = { ...marco }
+    }
     if (design?.garment?.measures) {
       const m = { ...DEFAULT_MEASURES, ...design.garment.measures }
       measuresRef.current = m
@@ -2425,6 +2438,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // aplicara antes, el ajuste automático del lienzo al colocar la prenda
         // lo pisaría y volveríamos al 100% centrado.
         aplicarVista(design.vista)
+        // Con una ventana más chica que la del guardado, el zoom de entonces deja
+        // la prenda cortada: en ese caso se ve entera en vez de respetarlo.
+        if (!prendaVisible()) verPrendaEntera()
 
         // Las tipografías del diseño hay que CARGARLAS al abrirlo.
         //
@@ -4899,6 +4915,44 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return project.mockupId === 'tshirt' ? teeFitRef.current : prendaFitRef.current
   }
 
+  /**
+   * Cuánto se movió la prenda entera desde que se armó: centrarla, arrastrarla
+   * con el molde desbloqueado, las flechas, o deshacer cualquiera de esas.
+   * Cada pieza recuerda dónde la puso el encuadre, así no hace falta seguir uno
+   * por uno todos los caminos que mueven la prenda.
+   */
+  function corrimientoPrenda(): { dx: number; dy: number } {
+    // Gana el corrimiento que comparte la mayoría de las piezas: con el molde
+    // desbloqueado se puede mover UNA sola, y eso no es mover la prenda.
+    const votos = new Map<string, { dx: number; dy: number; n: number }>()
+    for (const o of mockupObjects.current) {
+      const fl = (o as any)._fitLeft, ft = (o as any)._fitTop
+      if (typeof fl !== 'number' || typeof ft !== 'number') continue
+      const dx = (o.left ?? 0) - fl, dy = (o.top ?? 0) - ft
+      const k = `${dx.toFixed(1)},${dy.toFixed(1)}`
+      const v = votos.get(k)
+      if (v) v.n++; else votos.set(k, { dx, dy, n: 1 })
+    }
+    let mejor = { dx: 0, dy: 0, n: 0 }
+    for (const v of votos.values()) if (v.n > mejor.n) mejor = v
+    return { dx: mejor.dx, dy: mejor.dy }
+  }
+
+  /** El encuadre donde la prenda está DE VERDAD, que es el que se guarda. */
+  function marcoActual(): { sc: number; ox: number; oy: number } | undefined {
+    const f = encuadreActual()
+    if (!f) return undefined
+    const { dx, dy } = corrimientoPrenda()
+    return { sc: f.sc, ox: f.ox + dx, oy: f.oy + dy }
+  }
+
+  /** Antes de rehacer la prenda se suma al encuadre lo que se movió, para que
+   *  cambiar una medida no la devuelva al lugar de antes de moverla. */
+  function plegarCorrimiento(f: { sc: number; ox: number; oy: number }) {
+    const { dx, dy } = corrimientoPrenda()
+    f.ox += dx; f.oy += dy
+  }
+
   /** Los puntos de un trazo, en coordenadas del LIENZO. */
   function puntosDelTrazo(obj: fabric.FabricObject): Punto[] {
     const m = obj.calcTransformMatrix()
@@ -6352,6 +6406,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       measures: measuresRef.current,
       medidas:  medidasRef.current,
       medidasV: 2,
+      marco:    marcoActual(),
       cortes:   cortesRef.current,
       pieces: mockupObjects.current.map(o => ({
         key:  (o as any)._pieceKey as string | undefined,
@@ -6424,14 +6479,64 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
   }
 
-  function resetView() {
+  /** Dónde está la prenda en el lienzo, sin contar el zoom. */
+  function cajaPrenda(): { x1: number; y1: number; x2: number; y2: number } | null {
     const canvas = fc.current
-    if (!canvas) return
-    canvas.setZoom(1)
-    canvas.absolutePan(new fabric.Point(0, 0))
+    const objs = mockupObjects.current
+    if (!canvas || !objs.length) return null
+    // Se mide con el zoom apagado: la caja es del DIBUJO, no de lo que se ve.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+    for (const o of objs) {
+      if (o.visible === false) continue
+      const r = o.getBoundingRect()
+      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
+      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
+    }
+    if (vpt) canvas.viewportTransform = vpt
+    return Number.isFinite(x1) && x2 > x1 && y2 > y1 ? { x1, y1, x2, y2 } : null
+  }
+
+  /** Zoom con el que la prenda entra con un respiro; nunca acerca más del 100%. */
+  function zoomParaVerEntera(c: { x1: number; y1: number; x2: number; y2: number }): number {
+    const canvas = fc.current!
+    const margen = 0.94
+    return Math.min(1, (canvas.getWidth() * margen) / (c.x2 - c.x1), (canvas.getHeight() * margen) / (c.y2 - c.y1))
+  }
+
+  /**
+   * Acerca o aleja la VISTA hasta que la prenda entra entera.
+   *
+   * Desde que la prenda vuelve al lugar donde se guardó, su tamaño en el lienzo
+   * es el de la ventana de aquel momento. Abierta en una más chica quedaba
+   * cortada; esto mueve solo lo que se ve, no la prenda ni lo dibujado encima.
+   */
+  function verPrendaEntera() {
+    const canvas = fc.current
+    const c = cajaPrenda()
+    if (!canvas || !c) return
+    const W = canvas.getWidth(), H = canvas.getHeight()
+    const z = zoomParaVerEntera(c)
+    canvas.setViewportTransform([z, 0, 0, z, W / 2 - z * (c.x1 + c.x2) / 2, H / 2 - z * (c.y1 + c.y2) / 2])
     canvas.requestRenderAll()
-    setZoom(1)
+    setZoom(z)
     setPanned(false)
+  }
+
+  /** ¿Con la vista de ahora se ve la prenda completa? */
+  function prendaVisible(): boolean {
+    const canvas = fc.current
+    const c = cajaPrenda()
+    const vpt = canvas?.viewportTransform
+    if (!canvas || !c || !vpt) return true
+    const [z, , , , tx, ty] = vpt
+    return c.x1 * z + tx >= -1 && c.y1 * z + ty >= -1
+        && c.x2 * z + tx <= canvas.getWidth() + 1 && c.y2 * z + ty <= canvas.getHeight() + 1
+  }
+
+  function resetView() {
+    verPrendaEntera()
     vistaCambiada()
   }
 
@@ -6492,63 +6597,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const objs = mockupObjects.current
     if (!objs.length) return
     if (panned && !encuadreAuto.current) return
-
-    // Se mide con el zoom apagado: la caja de la prenda es del DIBUJO, no de lo
-    // que se ve ahora.
-    const vpt = canvas.viewportTransform
-    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
-    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
-    for (const o of objs) {
-      if (o.visible === false) continue
-      const r = o.getBoundingRect()
-      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
-      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
-    }
-    if (vpt) canvas.viewportTransform = vpt
-    if (!isFinite(x1) || x2 <= x1 || y2 <= y1) return
-
-    const W = canvas.getWidth(), H = canvas.getHeight()
-    const margen = 0.94                       // un respiro contra los bordes
-    const z = Math.min(1, (W * margen) / (x2 - x1), (H * margen) / (y2 - y1))
-
+    const c = cajaPrenda()
+    if (!c) return
+    const z = zoomParaVerEntera(c)
     if (z >= 0.999 && !encuadreAuto.current) return   // entra sola y nadie tocó nada
     encuadreAuto.current = z < 0.999
-    const cxG = (x1 + x2) / 2, cyG = (y1 + y2) / 2
-    canvas.setViewportTransform([z, 0, 0, z, W / 2 - cxG * z, H / 2 - cyG * z])
-    canvas.requestRenderAll()
-    setZoom(z)
-    setPanned(false)
+    verPrendaEntera()
   }
 
+  // Centra la VISTA en la prenda; la prenda no se mueve.
+  //
+  // Antes corría las piezas al centro del lienzo y dejaba atrás todo lo dibujado
+  // encima: centrar desacomodaba el diseño. Casi no se notaba porque la prenda
+  // ya abría centrada, pero desde que vuelve al lugar donde se guardó pasaba
+  // cada vez que se abría el proyecto con otra ventana.
   function centrarPrenda() {
-    const canvas = fc.current
-    if (!canvas) return
-    const objs = mockupObjects.current
-    if (!objs.length) return
-
-    // Se mide con el zoom apagado: si no, "el centro" sería el centro de lo que
-    // se ve ahora y la prenda quedaría centrada en otro lado al alejar.
-    const vpt = canvas.viewportTransform
-    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
-    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
-    for (const o of objs) {
-      const r = o.getBoundingRect()
-      x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top)
-      x2 = Math.max(x2, r.left + r.width); y2 = Math.max(y2, r.top + r.height)
-    }
-    const dx = canvas.getWidth() / 2 - (x1 + x2) / 2
-    const dy = canvas.getHeight() / 2 - (y1 + y2) / 2
-    if (vpt) canvas.viewportTransform = vpt
-
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) { onToast?.('La prenda ya está centrada'); return }
-
-    const antes = objs.map(snapGeom)
-    objs.forEach(o => { o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy }); o.setCoords() })
-    undoHistory.current.push({ type: 'transform', items: antes })
-    redoHistory.current = []
-    void rebuildGarmentClip()
-    markDirty()
-    canvas.requestRenderAll()
+    verPrendaEntera()
+    vistaCambiada()
     onToast?.('Prenda centrada')
   }
 
@@ -6646,8 +6711,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
       teeFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
     }
+    plegarCorrimiento(teeFitRef.current)
     const { sc, ox, oy } = teeFitRef.current
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
+    objs.forEach(o => { (o as any)._fitLeft = o.left; (o as any)._fitTop = o.top })
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
     remapearHistorial(piezasViejas, objs)
@@ -6836,8 +6903,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
       prendaFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
     }
+    plegarCorrimiento(prendaFitRef.current)
     const { sc, ox, oy } = prendaFitRef.current
     objs.forEach(o => o.set({ left: (o.left ?? 0) * sc + ox, top: (o.top ?? 0) * sc + oy, scaleX: sc, scaleY: sc }))
+    objs.forEach(o => { (o as any)._fitLeft = o.left; (o as any)._fitTop = o.top })
     objs.forEach(o => canvas.add(o))
     mockupObjects.current = objs
     remapearHistorial(piezasViejas, objs)
@@ -9642,6 +9711,8 @@ interface SavedGarment {
   measures?: Measures; medidas?: Medidas; pieces?: SavedPiece[]; cortes?: SavedCorte[]
   /** 2 = las medidas ya estan en la escala real del dibujo. Sin esto, son viejas. */
   medidasV?: number
+  /** Donde estaba la prenda en el lienzo (escala y corrimiento) al guardar. */
+  marco?: { sc: number; ox: number; oy: number }
 }
 
 /**
