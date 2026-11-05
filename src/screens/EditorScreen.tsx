@@ -8008,7 +8008,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           {/* Toggle: recortar / mostrar lo que está fuera de la remera */}
           <button
             onClick={toggleClip}
-            title={clipEnabled ? 'Mostrar lo que está fuera de la remera' : 'Recortar a la remera (ocultar lo de afuera)'}
+            title={clipEnabled ? 'Mostrar lo que está fuera de la prenda' : 'Recortar a la prenda (ocultar lo de afuera)'}
             style={{
               position: 'absolute', top: 14, left: 14, zIndex: 20,
               display: 'flex', alignItems: 'center', gap: 7,
@@ -8022,7 +8022,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             }}
           >
             {clipEnabled ? <Scissors size={13} /> : <Eye size={13} />}
-            <span>{clipEnabled ? 'Recortado a la remera' : 'Mostrando todo'}</span>
+            <span>{clipEnabled ? 'Recortado a la prenda' : 'Mostrando todo'}</span>
           </button>
           {vectorizing && (
             <div style={{
