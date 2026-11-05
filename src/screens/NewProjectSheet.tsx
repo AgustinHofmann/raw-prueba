@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Project, Folder } from '../types/project'
 import Magnetic from '../components/Magnetic'
+import { PLANTILLAS, plantillaPorId } from '../lib/plantillas'
 
 const MOCKUPS = [
   { id: 'tshirt' as const, label: 'Remera',   icon: '/mockups/tshirt.svg' },
@@ -20,6 +21,21 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
   const [name, setName]       = useState('Sin título')
   const [mockup, setMockup]   = useState<Project['mockupId']>('tshirt')
   const [folderId, setFolder] = useState<string | null>(null)
+  const [plantilla, setPlantilla] = useState<string | null>(null)
+
+  // Una plantilla trae su prenda. Elegir otra prenda después la descarta: sus
+  // textos están ubicados para esa prenda y no para cualquiera.
+  function elegirPlantilla(id: string | null) {
+    setPlantilla(id)
+    const p = plantillaPorId(id)
+    if (!p) return
+    setMockup(p.mockupId)
+    if (name === 'Sin título' || PLANTILLAS.some(x => x.nombre === name)) setName(p.nombre)
+  }
+  function elegirPrenda(id: Project['mockupId']) {
+    setMockup(id)
+    if (plantillaPorId(plantilla)?.mockupId !== id) setPlantilla(null)
+  }
 
   function handleCreate() {
     const now = Date.now()
@@ -35,6 +51,7 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
       folderId,
       createdAt: now,
       updatedAt: now,
+      ...(plantilla ? { plantilla } : {}),
     })
   }
 
@@ -83,12 +100,42 @@ export default function NewProjectSheet({ folders, onConfirm, onCancel }: Props)
           />
         </div>
 
+        {/* Para no arrancar de una prenda vacía: ver algo armado enseña más
+            rápido qué se puede hacer que cualquier explicación. */}
+        <div>
+          <div className="label" style={{ marginBottom: 10 }}>Empezar con</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {[{ id: null, nombre: 'En blanco', descripcion: 'Solo la prenda', color: null as string | null }, ...PLANTILLAS].map(p => {
+              const activa = plantilla === p.id
+              return (
+                <button key={p.id ?? 'blanco'} onClick={() => elegirPlantilla(p.id)} style={{
+                  padding: '10px 12px', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
+                  background: activa ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',
+                  border: '1.5px solid ' + (activa ? 'var(--accent)' : 'var(--line)'),
+                  fontFamily: 'var(--ui)', color: 'var(--fg)', transition: 'all 0.15s var(--ease)',
+                }}>
+                  <span style={{
+                    width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                    background: p.color ?? 'transparent',
+                    border: '1px ' + (p.color ? 'solid' : 'dashed') + ' var(--line)',
+                  }} />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 12 }}>{p.nombre}</span>
+                    <span style={{ display: 'block', fontSize: 10.5, color: 'var(--muted)', lineHeight: 1.3, marginTop: 2 }}>{p.descripcion}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
         {/* Garment */}
         <div>
           <div className="label" style={{ marginBottom: 10 }}>Prenda</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
             {MOCKUPS.map(m => (
-              <button key={m.id} onClick={() => setMockup(m.id)} style={{
+              <button key={m.id} onClick={() => elegirPrenda(m.id)} style={{
                 padding: '16px 8px', borderRadius: 'var(--radius-lg)', cursor: 'pointer',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
                 background: mockup === m.id ? 'color-mix(in oklch, var(--accent) 12%, var(--surface))' : 'var(--surface)',

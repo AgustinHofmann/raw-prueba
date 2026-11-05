@@ -12,6 +12,7 @@ import { transformPath } from '../utils/pathWarp'
 import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import ColorPicker from '../components/ColorPicker'
 import { Scissors, Eye, Hand } from 'lucide-react'
+import { plantillaPorId, type Plantilla } from '../lib/plantillas'
 import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
@@ -2521,6 +2522,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.on('object:removed',  markDirtyReal)
       canvas.on('object:modified', markDirtyReal)
       autosaveListo.current = true
+      // Solo un proyecto que todavía no tiene nada guardado: después de guardarse
+      // es un proyecto como cualquier otro.
+      const receta = design ? null : plantillaPorId(project.plantilla)
+      if (receta) void aplicarPlantilla(receta)
 
       canvas.renderAll()
 
@@ -5687,6 +5692,39 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     obj.setCoords(); fc.current?.requestRenderAll()
     setPropCm(enPrenda(obj))
   }
+  // Arma una plantilla sobre la prenda recién dibujada: pinta la tela y pone
+  // cada texto con su ancho y su lugar en cm. No entra al historial: es el
+  // punto de partida, no un cambio que el diseñador quiera deshacer.
+  async function aplicarPlantilla(p: Plantilla) {
+    const canvas = fc.current, ppc = pxPerCmRef.current, mb = vistas()[0]   // el frente
+    if (!canvas || !(ppc > 0) || !mb) return
+    for (const o of fillableGarmentPieces()) {
+      if (!(o as any)._rawInner) applyPaint(o, { fill: p.color, base: p.color })
+    }
+    syncInnerShade()
+    for (const t of p.textos) {
+      if ((GOOGLE_FONTS as readonly string[]).includes(t.fuente)) await loadGoogleFont(t.fuente)
+      // Mientras cargaba la letra el lienzo pudo cambiar (se cerró o se rehízo).
+      if (!canvasAlive.current || fc.current !== canvas) return
+      // Se mide con un tamaño de referencia y se lleva al ancho pedido cambiando
+      // el cuerpo de letra, no la escala: así "Tamaño" muestra el valor real.
+      const tx = new fabric.IText(t.texto, {
+        fontSize: 100, fontFamily: t.fuente, fill: t.color, stroke: undefined, strokeWidth: 0,
+        selectable: true, evented: true, perPixelTargetFind: false, strokeUniform: true,
+      })
+      tx.set({ fontSize: Math.round(1000 * (t.ancho * ppc) / (tx.width || 1)) / 10 })
+      tx.initDimensions()
+      tx.set({
+        left: mb.left + mb.width / 2 + t.centro * ppc - (tx.width ?? 0) / 2,
+        top:  mb.top + t.arriba * ppc,
+      })
+      tx.setCoords()
+      canvas.add(tx)
+    }
+    canvas.requestRenderAll()
+    markDirty()
+  }
+
   function tamanoEnPrenda(eje: 'ancho' | 'alto', cm: number) {
     const ppc = pxPerCmRef.current
     if (!(ppc > 0)) return

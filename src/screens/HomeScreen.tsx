@@ -341,7 +341,7 @@ export default function HomeScreen({
           }}>
             <span style={{ fontSize: 32 }}>✦</span>
             <p style={{ fontSize: 14 }}>
-              {search ? 'Sin resultados.' : activeFolderId ? 'Carpeta vacía.' : 'Todavía no hay proyectos.'}
+              {search ? 'Sin resultados.' : activeFolderId ? 'Carpeta vacía.' : 'Todavía no hay proyectos. Empezá en blanco o con una plantilla.'}
             </p>
             {!search && !activeFolderId && (
               <button className="btn btn-primary" onClick={onNewProject} style={{ padding: '10px 18px', fontSize: 13 }}>

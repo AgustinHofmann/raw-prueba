@@ -10,6 +10,8 @@ export interface Project {
   folderId: string | null
   createdAt: number
   updatedAt: number
+  /** Receta con que se arma al abrirlo por primera vez (ver lib/plantillas). */
+  plantilla?: string
 }
 
 export interface Folder {
