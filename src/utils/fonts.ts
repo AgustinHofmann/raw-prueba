@@ -19,11 +19,18 @@ export const GOOGLE_FONTS = [
 
 export type GoogleFont = typeof GOOGLE_FONTS[number]
 
-const loadedGoogleFonts = new Set<string>()
+// Se guarda la carga y no solo "ya se pidió": con un Set, la segunda llamada
+// volvía enseguida aunque la letra todavía no hubiera llegado, y lo que se
+// midiera en ese momento se medía con la letra de reemplazo.
+const loadedGoogleFonts = new Map<string, Promise<void>>()
 
-export async function loadGoogleFont(family: string): Promise<void> {
-  if (loadedGoogleFonts.has(family)) return
-  loadedGoogleFonts.add(family)
+export function loadGoogleFont(family: string): Promise<void> {
+  let carga = loadedGoogleFonts.get(family)
+  if (!carga) { carga = cargarGoogleFont(family); loadedGoogleFonts.set(family, carga) }
+  return carga
+}
+
+async function cargarGoogleFont(family: string): Promise<void> {
   const link = document.createElement('link')
   link.rel = 'stylesheet'
   link.href = `https://fonts.googleapis.com/css2?family=${family.replace(/ /g, '+')}&display=swap`
