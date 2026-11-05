@@ -55,6 +55,7 @@ export default function ColorPicker({ value, onChange, size = 32, title }: Props
   const [hsv, setHsv] = useState<[number, number, number]>(() => hexAHsv(value))
   const [texto, setTexto] = useState(value)
   const cajaRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const areaRef = useRef<HTMLDivElement>(null)
   const tonoRef = useRef<HTMLDivElement>(null)
   // Mientras se arrastra, el color lo manda el usuario: si se sincronizara con
@@ -72,12 +73,16 @@ export default function ColorPicker({ value, onChange, size = 32, title }: Props
       if (!cajaRef.current?.contains(e.target as Node)) setAbierto(false)
     }
     const tecla = (e: KeyboardEvent) => { if (e.key === 'Escape') setAbierto(false) }
-    // En captura: el lienzo de abajo se queda con muchos clics.
+    // En captura, las dos: el lienzo de abajo se queda con muchos clics, y los
+    // atajos del editor se quedaban con el Escape antes de que llegara acá.
     document.addEventListener('mousedown', fuera, true)
-    document.addEventListener('keydown', tecla)
+    document.addEventListener('keydown', tecla, true)
+    // El panel de la derecha tiene scroll: abierto cerca del borde de abajo, el
+    // selector quedaba cortado y el campo del código fuera de la pantalla.
+    requestAnimationFrame(() => panelRef.current?.scrollIntoView({ block: 'nearest' }))
     return () => {
       document.removeEventListener('mousedown', fuera, true)
-      document.removeEventListener('keydown', tecla)
+      document.removeEventListener('keydown', tecla, true)
     }
   }, [abierto])
 
@@ -130,6 +135,7 @@ export default function ColorPicker({ value, onChange, size = 32, title }: Props
 
       {abierto && (
         <div
+          ref={panelRef}
           style={{
             // El panel de la derecha es angosto y recorta lo que se sale, así
             // que el selector tiene que entrar adentro: no puede abrirse hacia
