@@ -1619,6 +1619,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const medidasRef  = useRef<Medidas>(medidas)
   const piezasRef   = useRef<PiezaSvg[]>([])            // el dibujo original, sin deformar
   const prendaFitRef = useRef<{ sc: number; ox: number; oy: number } | null>(null)
+  /** La caja del molde (con las medidas por defecto) con la que se calcula el
+   *  encuadre. Sirve para recalcular el encuadre que habría dado otro lienzo. */
+  const cajaMoldeRef = useRef<{ bx: number; by: number; bw: number; bh: number } | null>(null)
   // Separación original entre frente y espalda (chomba), medida una sola vez.
   const huecoMitadesRef = useRef<number | null>(null)
   useEffect(() => { medidasRef.current = medidas }, [medidas])
@@ -2310,7 +2313,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // fuera de la prenda. Con el encuadre guardado, la prenda no se mueve y lo de
     // encima tampoco; lo único que cambia con la ventana es qué parte se ve.
     const marco = design?.garment?.marco
-    if (marco && [marco.sc, marco.ox, marco.oy].every(n => typeof n === 'number' && isFinite(n)) && marco.sc > 0) {
+    const traeMarco = !!marco && [marco.sc, marco.ox, marco.oy].every(n => typeof n === 'number' && isFinite(n)) && marco.sc > 0
+    if (marco && traeMarco) {
       if (project.mockupId === 'tshirt') teeFitRef.current = { ...marco }
       else prendaFitRef.current = { ...marco }
     }
@@ -2441,6 +2445,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // Con una ventana más chica que la del guardado, el zoom de entonces deja
         // la prenda cortada: en ese caso se ve entera en vez de respetarlo.
         if (!prendaVisible()) verPrendaEntera()
+        // Guardado antes de que existiera el encuadre: se deduce de la miniatura.
+        if (!traeMarco && revived.length && project.thumbnail) void recuperarEncuadreViejo(project.thumbnail)
 
         // Las tipografías del diseño hay que CARGARLAS al abrirlo.
         //
@@ -6535,6 +6541,171 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         && c.x2 * z + tx <= canvas.getWidth() + 1 && c.y2 * z + ty <= canvas.getHeight() + 1
   }
 
+  /**
+   * Devuelve la prenda al lugar donde estaba en un proyecto guardado antes de
+   * que se guardara el encuadre.
+   *
+   * Esos proyectos no dicen dónde estaba la prenda, pero la miniatura sí: es un
+   * recorte justo alrededor de la prenda, tomado al guardar, con lo dibujado
+   * encima en su lugar. El encuadre viejo solo dependía del tamaño del lienzo de
+   * entonces, así que se prueban tamaños de lienzo, se dibuja lo del usuario en
+   * el recorte que habría dado cada uno, y gana el que coincide con la
+   * miniatura. Solo se aplica si coincide claramente mejor que el de ahora.
+   */
+  async function recuperarEncuadreViejo(miniatura: string) {
+    const canvas = fc.current
+    const molde = cajaMoldeRef.current
+    const f1 = encuadreActual()
+    const c1 = cajaPrenda()
+    if (!canvas || !molde || !f1 || !c1) return
+    const usuario = canvas.getObjects().filter(o =>
+      !(o as any)._rawMockup && !(o as any)._rawTemp && o.visible !== false)
+    if (!usuario.length) return
+
+    const img = await new Promise<HTMLImageElement | null>(res => {
+      const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = miniatura
+    })
+    if (!img || !img.width || !img.height || canvas !== fc.current) return
+    // La búsqueda frena la pantalla unos segundos (una sola vez por proyecto):
+    // se avisa antes y se deja pintar el aviso.
+    onToast?.('Acomodando la prenda como la dejaste…')
+    // Con la pestaña en segundo plano el navegador no da cuadros: sin el plazo,
+    // la búsqueda quedaba esperando para siempre.
+    await new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 150) })
+    if (canvas !== fc.current) return
+    // La caja de la prenda medida en unidades del molde: no depende del lienzo.
+    const u = { x1: (c1.x1 - f1.ox) / f1.sc, y1: (c1.y1 - f1.oy) / f1.sc,
+                x2: (c1.x2 - f1.ox) / f1.sc, y2: (c1.y2 - f1.oy) / f1.sc }
+    const encuadreDe = (CW: number, CH: number) => {
+      const p = Math.min(CW, CH) * 0.12
+      const sc = Math.min((CW - p * 2) / molde.bw, (CH - p * 2) / molde.bh)
+      return sc > 0 ? { sc, ox: (CW - molde.bw * sc) / 2 - molde.bx * sc, oy: (CH - molde.bh * sc) / 2 - molde.by * sc } : null
+    }
+    /** El recorte que hacía la miniatura con un encuadre dado (ver garmentThumbnail). */
+    const recorteDe = (f: { sc: number; ox: number; oy: number }) => {
+      const x1 = u.x1 * f.sc + f.ox, y1 = u.y1 * f.sc + f.oy
+      const x2 = u.x2 * f.sc + f.ox, y2 = u.y2 * f.sc + f.oy
+      const pad = Math.max(x2 - x1, y2 - y1) * 0.04
+      return { left: x1 - pad, top: y1 - pad, width: x2 - x1 + pad * 2, height: y2 - y1 + pad * 2 }
+    }
+
+    // El recorte de la prenda está fijado a donde está AHORA: mientras se busca
+    // se saca, para ver lo dibujado entero. Todo esto es sincrónico, así que no
+    // llega a dibujarse en pantalla.
+    const recortes = usuario.map(o => o.clipPath)
+    usuario.forEach(o => { if (!(o as any)._mascara) o.clipPath = undefined })
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    const esUsuario = new Set(usuario)
+    const soloUsuario = (o: unknown) => esUsuario.has(o as fabric.FabricObject)
+    const esPrenda = new Set(mockupObjects.current)
+    const soloPrenda = (o: unknown) => esPrenda.has(o as fabric.FabricObject)
+    const pixeles = (el: HTMLCanvasElement) =>
+      ({ w: el.width, h: el.height, d: el.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, el.width, el.height).data })
+
+    // La miniatura a un alto dado, y la prenda sola recortada igual. La prenda no
+    // hace falta moverla para cada prueba: el recorte siempre es alrededor de
+    // ella, así que se ve idéntica con cualquier encuadre.
+    // Se busca rápido en chico y se afina en grande: a baja resolución varios
+    // encuadres parecidos empatan.
+    const referencia = (RH: number) => {
+      const RW = Math.max(8, Math.round(img.width * RH / img.height))
+      const el = document.createElement('canvas'); el.width = RW; el.height = RH
+      const ctx = el.getContext('2d', { willReadFrequently: true })!
+      ctx.drawImage(img, 0, 0, RW, RH)
+      const r1 = recorteDe(f1)
+      const prenda = pixeles(canvas.toCanvasElement(RH / r1.height, { ...r1, filter: soloPrenda }))
+      const ref = ctx.getImageData(0, 0, RW, RH).data
+      // Dónde la miniatura tiene algo dibujado: donde no coincide con la prenda sola.
+      const conObjeto = new Uint8Array(RW * RH)
+      for (let y = 0; y < RH; y++) for (let x = 0; x < RW; x++) {
+        const j = (y * RW + x) * 4
+        if (y >= prenda.h || x >= prenda.w || ref[j + 3] < 128) continue
+        const ip = (y * prenda.w + x) * 4
+        if (prenda.d[ip + 3] < 128) continue
+        const dif = Math.abs(prenda.d[ip] - ref[j]) + Math.abs(prenda.d[ip + 1] - ref[j + 1]) + Math.abs(prenda.d[ip + 2] - ref[j + 2])
+        if (dif > 90) conObjeto[y * RW + x] = 1
+      }
+      return { RH, RW, ref, prenda, conObjeto }
+    }
+
+    /**
+     * Qué tan distinta es la miniatura de la escena armada con un encuadre: la
+     * prenda y, encima, lo dibujado. Se mira donde hay algo dibujado en
+     * CUALQUIERA de las dos: así cuenta tanto dónde cae lo dibujado como dónde
+     * DEBERÍA estar. Mirando solo lo primero, con objetos chicos sobre una tela
+     * con manchas (el camuflaje) ganaba un encuadre equivocado que dejaba las
+     * estrellas sobre manchas claras.
+     */
+    const diferencia = (f: { sc: number; ox: number; oy: number }, { RH, RW, ref, prenda, conObjeto }: ReturnType<typeof referencia>) => {
+      const r = recorteDe(f)
+      const obj = pixeles(canvas.toCanvasElement(RH / r.height, { ...r, filter: soloUsuario }))
+      let suma = 0, n = 0
+      for (let y = 0; y < RH; y++) for (let x = 0; x < RW; x++) {
+        const j = (y * RW + x) * 4
+        const ip = y < prenda.h && x < prenda.w ? (y * prenda.w + x) * 4 : -1
+        const io = y < obj.h && x < obj.w ? (y * obj.w + x) * 4 : -1
+        const hayPrenda = ip >= 0 && prenda.d[ip + 3] >= 128
+        // Lo dibujado está recortado contra la prenda: fuera de ella no se ve.
+        const hayObj = hayPrenda && io >= 0 && obj.d[io + 3] >= 128
+        const hayRef = ref[j + 3] >= 128
+        // Solo cuentan los píxeles con algo dibujado, en la miniatura o en la
+        // prueba: la tela es igual en todos los encuadres y taparía la diferencia.
+        if (!hayObj && !conObjeto[y * RW + x]) continue
+        n++
+        if (hayPrenda !== hayRef) { suma += 384; continue }
+        const src = hayObj ? obj.d : prenda.d, k = hayObj ? io : ip
+        suma += Math.abs(src[k] - ref[j]) + Math.abs(src[k + 1] - ref[j + 1]) + Math.abs(src[k + 2] - ref[j + 2])
+      }
+      return n ? suma / n : Infinity
+    }
+
+    let mejor: { f: { sc: number; ox: number; oy: number }; d: number } | null = null
+    let actual = Infinity
+    try {
+      let r = referencia(40)
+      const probar = (CW: number, CH: number) => {
+        const f = encuadreDe(CW, CH)
+        if (!f) return
+        const d = diferencia(f, r)
+        if (!mejor || d < mejor.d) mejor = { f, d }
+      }
+      for (let CW = 360; CW <= 2600; CW += 100) for (let CH = 300; CH <= 1500; CH += 100) probar(CW, CH)
+      // Se afina dos veces alrededor del mejor, cada vez con más resolución. El
+      // lienzo de entonces sale del encuadre: la prenda quedaba centrada.
+      for (const [radio, paso, alto] of [[100, 20, 80], [10, 2, 160]]) {
+        const m = mejor as { f: { sc: number; ox: number; oy: number }; d: number } | null
+        if (!m) break
+        r = referencia(Math.min(alto, img.height))
+        mejor = { f: m.f, d: diferencia(m.f, r) }   // con la nueva resolución se vuelve a medir
+        const CW0 = Math.round((m.f.ox + (molde.bx + molde.bw / 2) * m.f.sc) * 2)
+        const CH0 = Math.round((m.f.oy + (molde.by + molde.bh / 2) * m.f.sc) * 2)
+        for (let CW = CW0 - radio; CW <= CW0 + radio; CW += paso)
+          for (let CH = CH0 - radio; CH <= CH0 + radio; CH += paso) probar(CW, CH)
+      }
+      actual = diferencia(f1, r)
+    } finally {
+      usuario.forEach((o, i) => { o.clipPath = recortes[i] })
+      if (vpt) canvas.viewportTransform = vpt
+    }
+
+    const elegido = mejor as { f: { sc: number; ox: number; oy: number }; d: number } | null
+    if (!elegido || canvas !== fc.current) return
+    // Solo si coincide claramente mejor que como abrió: si el proyecto ya se abrió
+    // con el mismo lienzo con que se guardó, no hay nada que arreglar.
+    // Lo que decide es la comparación con cómo abrió, no un número absoluto: los
+    // bordes semitransparentes de lo dibujado nunca coinciden pixel a pixel con
+    // la miniatura (ahí se mezclaron con la tela), así que ni el encuadre exacto
+    // da cero.
+    if (!(elegido.d < actual * 0.7)) return
+
+    if (project.mockupId === 'tshirt') { teeFitRef.current = { ...elegido.f }; placeTee(measuresRef.current, true) }
+    else { prendaFitRef.current = { ...elegido.f }; placePrenda(medidasRef.current, true) }
+    verPrendaEntera()
+    markDirty()   // se guarda con el encuadre: la próxima vez abre bien de una
+    onToast?.('La prenda volvió al lugar donde la dejaste')
+  }
+
   function resetView() {
     verPrendaEntera()
     vistaCambiada()
@@ -6710,6 +6881,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const pad = Math.min(CW, CH) * 0.12
       const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
       teeFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
+      cajaMoldeRef.current = { bx, by, bw, bh }
     }
     plegarCorrimiento(teeFitRef.current)
     const { sc, ox, oy } = teeFitRef.current
@@ -6902,6 +7074,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const pad = Math.min(CW, CH) * 0.12
       const sc0 = Math.min((CW - pad * 2) / bw, (CH - pad * 2) / bh)
       prendaFitRef.current = { sc: sc0, ox: (CW - bw * sc0) / 2 - bx * sc0, oy: (CH - bh * sc0) / 2 - by * sc0 }
+      cajaMoldeRef.current = { bx, by, bw, bh }
     }
     plegarCorrimiento(prendaFitRef.current)
     const { sc, ox, oy } = prendaFitRef.current
