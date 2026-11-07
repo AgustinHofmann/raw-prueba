@@ -499,6 +499,29 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
   }
 
   function renderMaterials() {
+    // El costo sale de lo que ya está en la tabla (consumo × precio) más lo que
+    // no es material (confección, estampado). Una fila sin precio no se cuenta
+    // como cero en silencio: se avisa, porque un costo de menos es peor que uno
+    // incompleto que dice que lo está.
+    const num = (s: string | undefined) => { const n = Number((s ?? '').trim().replace(/\./g, '').replace(',', '.')); return (s ?? '').trim() === '' || !isFinite(n) ? null : n }
+    const cant = (s: string | undefined) => { const n = Number((s ?? '').trim().replace(',', '.')); return (s ?? '').trim() === '' || !isFinite(n) ? null : n }
+    const plata = (n: number) => '$ ' + n.toLocaleString('es-AR', { maximumFractionDigits: 2 })
+    const subtotal = (r: BomRow) => { const c = cant(r.consumo), p = num(r.precio); return c != null && p != null ? c * p : null }
+    const materiales = doc.bom.reduce((t, r) => t + (subtotal(r) ?? 0), 0)
+    const sinPrecio = doc.bom.filter(r => subtotal(r) == null).length
+    const costos = doc.costos ?? { confeccion: '', estampado: '', cantidad: '' }
+    const porPrenda = materiales + (num(costos.confeccion) ?? 0) + (num(costos.estampado) ?? 0)
+    const cantidad = cant(costos.cantidad)
+    const patchCostos = (patch: Partial<typeof costos>) => update(d => ({ ...d, costos: { ...costos, ...patch } }))
+    const fila = (label: string, valor: React.ReactNode, fuerte = false) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderTop: fuerte ? '1px solid #111' : '1px solid #eee', fontWeight: fuerte ? 700 : 400, fontSize: 11 }}>
+        <span>{label}</span><span style={{ fontFamily: 'monospace' }}>{valor}</span>
+      </div>
+    )
+    const campo = (v: string, on: (s: string) => void, ph: string) => (
+      <input value={v} onChange={e => on(e.target.value)} placeholder={ph}
+        style={{ width: 90, textAlign: 'right', border: 'none', borderBottom: '1px solid #ccc', outline: 'none', fontSize: 11, fontFamily: 'monospace', padding: '2px 0', color: '#111', background: 'transparent' }} />
+    )
     return (
       <div>
         <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}>
@@ -511,6 +534,8 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
             <th style={{ ...th, width: 54 }}>Consumo</th>
             <th style={{ ...th, width: 34 }}>UOM</th>
             <th style={{ ...th, width: 100 }}>Proveedor</th>
+            <th style={{ ...th, width: 64 }} title="Precio por unidad de medida (UOM)">Precio u.</th>
+            <th style={{ ...th, width: 74 }}>Subtotal</th>
             <th style={{ ...th, width: 22 }} className="no-print"></th>
           </tr></thead>
           <tbody>
@@ -524,12 +549,31 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
                 <td style={td}><input style={ci} value={r.consumo} onChange={e => patchBom(r.id, { consumo: e.target.value })} /></td>
                 <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.uom} onChange={e => patchBom(r.id, { uom: e.target.value })} /></td>
                 <td style={td}><input style={ci} value={r.proveedor} onChange={e => patchBom(r.id, { proveedor: e.target.value })} /></td>
+                <td style={td}><input style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={r.precio ?? ''} onChange={e => patchBom(r.id, { precio: e.target.value })} /></td>
+                <td style={td}><div style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', color: '#333' }}>{subtotal(r) != null ? plata(subtotal(r)!) : '—'}</div></td>
                 <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removeBom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
               </tr>
             ))}
           </tbody>
         </table>
         <button className="no-print" onClick={addBom} style={addRowBtn}><Plus size={11} /> Agregar fila</button>
+
+        <div style={{ marginTop: 16, marginLeft: 'auto', width: 340 }}>
+          <SectionTitle>Costo estimado</SectionTitle>
+          <div style={{ marginTop: 6 }}>
+            {fila('Materiales (consumo × precio)', plata(materiales))}
+            {fila('Confección, por prenda', campo(costos.confeccion, v => patchCostos({ confeccion: v }), '$'))}
+            {fila('Estampado, por prenda', campo(costos.estampado, v => patchCostos({ estampado: v }), '$'))}
+            {fila('Costo por prenda', plata(porPrenda), true)}
+            {fila('Cantidad', campo(costos.cantidad, v => patchCostos({ cantidad: v }), 'u'))}
+            {cantidad != null && fila(`Costo de ${cantidad.toLocaleString('es-AR')} prendas`, plata(porPrenda * cantidad), true)}
+          </div>
+          {sinPrecio > 0 && (
+            <div style={{ fontSize: 9.5, color: '#a15c00', marginTop: 6 }}>
+              {sinPrecio === 1 ? 'Una fila no tiene' : `${sinPrecio} filas no tienen`} consumo o precio y no {sinPrecio === 1 ? 'entra' : 'entran'} en el costo.
+            </div>
+          )}
+        </div>
       </div>
     )
   }

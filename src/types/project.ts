@@ -85,6 +85,7 @@ export interface BomRow {
   consumo: string
   uom: string         // u / cm / m
   notas: string
+  precio?: string     // por unidad de medida (UOM); texto como el resto de la fila
 }
 
 // Fila de punto de medida (POM)
@@ -157,4 +158,6 @@ export interface TechPackDoc {
   annotations: Annotation[]
   notes: string
   meta: TechPackMeta
+  /** Lo que no sale de la lista de materiales, por prenda; y cuántas se hacen. */
+  costos?: { confeccion: string; estampado: string; cantidad: string }
 }
