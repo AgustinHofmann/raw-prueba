@@ -135,6 +135,46 @@ const EXTRA_POMS: Record<Project['mockupId'], { code: string; punto: string; htm
   ],
 }
 
+// ─── Graduación de talles ────────────────────────────────────────────────────
+// Cuánto cambia cada medida de un talle al siguiente, en cm. Son los saltos
+// típicos de punto (jersey, piqué) para medidas tomadas EN PLANO: el contorno
+// de pecho crece 4 cm por talle, así que el ancho de pecho en plano crece 2.
+// Son un punto de partida: cada marca tiene su tabla y se pisan en la ficha.
+const GRADO_TIPICO: Record<string, number> = {
+  'Largo total': 2, 'Ancho de pecho': 2, 'Ancho de cintura': 2, 'Ancho de hombros': 1.5,
+  'Ancho de cuello': 0.5, 'Profundidad de cuello': 0.5, 'Largo de manga': 1, 'Ancho de manga': 0.6,
+  'Alto de sisa': 1, 'Largo de tapeta': 0.5,
+  'Cintura': 2, 'Cintura relajada': 2, 'Cintura estirada': 2, 'Cadera': 2, 'Cadera / asiento': 2,
+  'Tiro delantero': 0.6, 'Tiro trasero': 0.8, 'Muslo': 1.2, 'Rodilla': 0.6, 'Boca de pierna': 0.5,
+}
+export const gradoTipico = (punto: string): number | null => GRADO_TIPICO[punto.trim()] ?? null
+
+/** El salto de una fila: el que se cargó, o el típico si la ficha es de antes. */
+export const gradoDe = (r: PomRow): number | null => r.grado === undefined ? gradoTipico(r.punto) : r.grado
+
+const ESCALA = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']
+
+/**
+ * Los talles de un rango como lo escribe la gente: "S–XL", "S-XL", "s a xl",
+ * o numérico ("38–46", de 2 en 2, como el pantalón). Null si no se entiende
+ * o si el talle base no está adentro: mejor no graduar que graduar mal.
+ */
+export function tallesDelRango(rango: string, base: string): string[] | null {
+  const partes = rango.trim().toUpperCase().split(/\s*(?:[–—-]|\bA\b)\s*/).filter(Boolean)
+  if (partes.length !== 2) return null
+  const b = base.trim().toUpperCase()
+  const [desde, hasta] = partes
+  if (/^\d+$/.test(desde) && /^\d+$/.test(hasta)) {
+    const lista: string[] = []
+    for (let n = +desde; n <= +hasta && lista.length < 12; n += 2) lista.push(String(n))
+    return lista.includes(b) ? lista : null
+  }
+  const i = ESCALA.indexOf(desde), j = ESCALA.indexOf(hasta)
+  if (i < 0 || j < i) return null
+  const lista = ESCALA.slice(i, j + 1)
+  return lista.includes(b) ? lista : null
+}
+
 function defaultPoms(mockupId: Project['mockupId'], measures: Record<string, number> | null): PomRow[] {
   // Estas tres no comparten la tabla de la remera: no tienen manga, o
   // directamente no son una prenda de arriba.

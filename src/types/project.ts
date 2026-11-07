@@ -95,6 +95,12 @@ export interface PomRow {
   comoMedir: string
   tolerancia: string  // ± cm
   base: number | null // valor del talle base (M)
+  /**
+   * Cuántos cm cambia de un talle al siguiente. `undefined` en las fichas de
+   * antes de la graduación (se usa el salto típico del punto); null si se
+   * borró a propósito (esa medida no se gradúa).
+   */
+  grado?: number | null
 }
 
 export type AnnotationKind = 'arrow' | 'leader' | 'callout' | 'bubble'

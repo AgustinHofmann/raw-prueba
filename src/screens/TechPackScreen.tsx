@@ -13,7 +13,7 @@ import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
   BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole, FichaDiseno,
 } from '../types/project'
-import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados } from '../lib/techpackTemplate'
+import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados, tallesDelRango, gradoDe } from '../lib/techpackTemplate'
 import { aRgb, aCmyk, nombreDeColor } from '../lib/colores'
 import AnnotationLayer, { type AnnTool } from './AnnotationLayer'
 
@@ -434,35 +434,65 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
     )
   }
 
+  // La tabla graduada: el talle base se carga (o lo trae el diseño) y los
+  // demás salen del salto de cada medida. Es la tabla que el taller necesita
+  // para cortar todos los talles, no solo el de muestra.
   function renderMeasures() {
+    const base = doc.meta.talleBase.trim() || 'M'
+    const talles = tallesDelRango(doc.meta.rangoTalles, base) ?? [base]
+    const iBase = talles.findIndex(t => t.toUpperCase() === base.toUpperCase())
+    const fmt = (n: number) => (Math.round(n * 10) / 10).toString().replace('.', ',')
     return (
       <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 1, display: 'flex' }}>{imageBox('measures', 'Puntos de medida', 520)}</div>
-        <div style={{ flex: 1.5, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 0.8, display: 'flex' }}>{imageBox('measures', 'Puntos de medida', 520)}</div>
+        <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}>
             <thead><tr>
-              <th style={{ ...th, width: 30 }}>#</th>
+              <th style={{ ...th, width: 26 }}>#</th>
               <th style={th}>Punto de medida</th>
               <th style={th}>Cómo medir</th>
-              <th style={{ ...th, width: 56 }}>Base</th>
-              <th style={{ ...th, width: 44 }}>Tol.±</th>
+              <th style={{ ...th, width: 38 }}>Tol.±</th>
+              <th style={{ ...th, width: 42 }} title="Cuántos cm cambia de un talle al siguiente">Salto</th>
+              {talles.map((t, i) => (
+                <th key={t} style={{ ...th, width: 44, textAlign: 'center', background: i === iBase ? '#4d5900' : th.background }}>{t}</th>
+              ))}
               <th style={{ ...th, width: 22 }} className="no-print"></th>
             </tr></thead>
             <tbody>
-              {doc.poms.map(r => (
-                <tr key={r.id}>
-                  <td style={td}><input style={{ ...ci, textAlign: 'center', fontWeight: 700 }} value={r.code} onChange={e => patchPom(r.id, { code: e.target.value })} /></td>
-                  <td style={td}><input style={ci} value={r.punto} onChange={e => patchPom(r.id, { punto: e.target.value })} /></td>
-                  <td style={td}><input style={ci} value={r.comoMedir} onChange={e => patchPom(r.id, { comoMedir: e.target.value })} /></td>
-                  <td style={td}><input style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={r.base ?? ''} onChange={e => patchPom(r.id, { base: e.target.value === '' ? null : Number(e.target.value) })} /></td>
-                  <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.tolerancia} onChange={e => patchPom(r.id, { tolerancia: e.target.value })} /></td>
-                  <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removePom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
-                </tr>
-              ))}
+              {doc.poms.map(r => {
+                const g = gradoDe(r)
+                return (
+                  <tr key={r.id}>
+                    <td style={td}><input style={{ ...ci, textAlign: 'center', fontWeight: 700 }} value={r.code} onChange={e => patchPom(r.id, { code: e.target.value })} /></td>
+                    <td style={td}><input style={ci} value={r.punto} onChange={e => patchPom(r.id, { punto: e.target.value })} /></td>
+                    <td style={td}><input style={ci} value={r.comoMedir} onChange={e => patchPom(r.id, { comoMedir: e.target.value })} /></td>
+                    <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.tolerancia} onChange={e => patchPom(r.id, { tolerancia: e.target.value })} /></td>
+                    <td style={td}><CeldaNum style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={g}
+                      onChange={n => patchPom(r.id, { grado: n })} /></td>
+                    {talles.map((t, i) => (
+                      <td key={t} style={{ ...td, background: i === iBase ? '#f4f7e6' : undefined }}>
+                        {i === iBase ? (
+                          <CeldaNum style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }} value={r.base}
+                            onChange={n => patchPom(r.id, { base: n })} />
+                        ) : (
+                          <div style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', color: '#333' }}>
+                            {r.base != null && g != null ? fmt(r.base + (i - iBase) * g) : '—'}
+                          </div>
+                        )}
+                      </td>
+                    ))}
+                    <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removePom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
           <button className="no-print" onClick={addPom} style={addRowBtn}><Plus size={11} /> Agregar medida</button>
-          {!measures && <div style={{ fontSize: 10, color: '#888', marginTop: 6 }}>El talle base se autocompleta para la remera paramétrica; acá cargalo a mano.</div>}
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 6 }}>
+            Medidas en cm, en plano. Talle {base} de muestra; los demás salen del salto de cada medida, que se puede corregir.
+            {talles.length === 1 && ' Para graduar, escribí el rango de talles como S–XL o 38–46.'}
+          </div>
+          {!measures && <div style={{ fontSize: 10, color: '#888', marginTop: 4 }}>El talle base se autocompleta para las prendas con medidas; acá cargalo a mano.</div>}
         </div>
       </div>
     )
@@ -538,6 +568,28 @@ function IconButton({ children, title, onClick, active }: { children: React.Reac
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface)' }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
     >{children}</button>
+  )
+}
+
+/**
+ * Celda numérica que deja escribir decimales. Convertir a número en cada tecla
+ * borraba la coma: "0," pasaba a ser 0 y no había forma de escribir 0,5. Lo
+ * escrito se guarda como texto hasta que es un número completo.
+ */
+function CeldaNum({ value, onChange, style }: { value: number | null; onChange: (n: number | null) => void; style: React.CSSProperties }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const num = (s: string) => { const n = Number(s.trim().replace(',', '.')); return s.trim() === '' || !isFinite(n) ? null : n }
+  return (
+    <input style={style} placeholder="—" inputMode="decimal"
+      value={draft ?? (value == null ? '' : String(value).replace('.', ','))}
+      onChange={e => {
+        const v = e.target.value
+        setDraft(v)
+        if (!/[.,]$/.test(v.trim()) && (v.trim() === '' || num(v) != null)) onChange(num(v))
+      }}
+      onBlur={() => { if (draft != null) { onChange(num(draft)); setDraft(null) } }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+    />
   )
 }
 
