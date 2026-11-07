@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import {
   ChevronLeft, ZoomIn, ZoomOut, Printer, X, Plus, GripVertical, Trash2,
   MousePointer2, ArrowUpRight, Minus, Hash, Circle, Image as ImageIcon,
-  Shirt, Ruler, Package, Palette, FileText, PencilRuler, type LucideIcon,
+  Shirt, Ruler, Package, Palette, FileText, PencilRuler, Stamp, type LucideIcon,
 } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent,
@@ -11,9 +11,10 @@ import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } 
 import { CSS } from '@dnd-kit/utilities'
 import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
-  BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole,
+  BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole, FichaDiseno,
 } from '../types/project'
-import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto } from '../lib/techpackTemplate'
+import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados } from '../lib/techpackTemplate'
+import { aRgb, aCmyk, nombreDeColor } from '../lib/colores'
 import AnnotationLayer, { type AnnTool } from './AnnotationLayer'
 
 interface Props {
@@ -21,6 +22,8 @@ interface Props {
   designer: string
   snapshot: string
   measures: Record<string, number> | null
+  /** Estampados y telas leídos del diseño al abrir la ficha. */
+  ficha?: FichaDiseno | null
   onSave: (doc: TechPackDoc) => void
   onBackToEditor: () => void
   onClose: () => void
@@ -31,7 +34,7 @@ const uid = () => crypto.randomUUID()
 const PAGE_W = 1123, PAGE_H = 794   // A4 apaisado a 96dpi
 
 const PAGE_ICON: Record<TechPackPageKind, LucideIcon> = {
-  design: Shirt, specs: PencilRuler, measures: Ruler, materials: Package, colorways: Palette, notes: FileText,
+  design: Shirt, prints: Stamp, specs: PencilRuler, measures: Ruler, materials: Package, colorways: Palette, notes: FileText,
 }
 
 const ANN_TOOLS: { tool: AnnTool; icon: LucideIcon; label: string }[] = [
@@ -52,14 +55,15 @@ const th: React.CSSProperties = { border: '1px solid #999', padding: '5px 7px', 
 const td: React.CSSProperties = { border: '1px solid #ccc', padding: 0, fontSize: 10.5, verticalAlign: 'top' }
 const ci: React.CSSProperties = { width: '100%', border: 'none', outline: 'none', padding: '5px 7px', fontSize: 10.5, fontFamily: 'Arial', color: '#111', background: 'transparent', boxSizing: 'border-box' }
 
-export default function TechPackScreen({ project, designer, snapshot, measures, onSave, onBackToEditor, onClose }: Props) {
+export default function TechPackScreen({ project, designer, snapshot, measures, ficha = null, onSave, onBackToEditor, onClose }: Props) {
   const [doc, setDoc] = useState<TechPackDoc>(() => {
     const guardado = parseTechPack(project.techpackJson)
     // Una ficha que ya existe se abre con el dibujo de la prenda PUESTO AL DIA.
     // Sin esto, el diseno seguia y la ficha se quedaba mostrando la prenda de
     // cuando se creo: el entregable dejaba de coincidir con lo que se diseno.
-    return guardado ? refrescarImagenesAuto(guardado, snapshot)
-                    : buildDefaultTechPack(project, measures, snapshot)
+    const base = guardado ? refrescarImagenesAuto(guardado, snapshot)
+                          : buildDefaultTechPack(project, measures, snapshot)
+    return conPaginaEstampados(base, !!ficha?.estampados.length, project.mockupId)
   })
   const [zoom, setZoom]       = useState(0.7)
   const [annTool, setAnnTool] = useState<AnnTool>('select')
@@ -255,6 +259,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
         </div>
         <div style={{ flex: 1, marginTop: 14 }}>
           {p.kind === 'design'    && renderDesign()}
+          {p.kind === 'prints'    && renderPrints()}
           {p.kind === 'specs'     && renderSpecs(p)}
           {p.kind === 'measures'  && renderMeasures()}
           {p.kind === 'materials' && renderMaterials()}
@@ -289,6 +294,119 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
       <div style={{ display: 'flex', gap: 16 }}>
         {imageBox('front', 'Frente', 560)}
         {imageBox('back', 'Espalda', 560)}
+      </div>
+    )
+  }
+
+  // Cada estampado con su medida y su lugar, como lo pide el taller, y los
+  // colores con números con que se puede hablar con la imprenta y el proveedor.
+  function renderPrints() {
+    if (!ficha) {
+      return <div style={{ fontSize: 11, color: '#888' }}>Abrí la ficha desde el editor para leer los estampados del diseño.</div>
+    }
+    const cm = (n: number) => n.toFixed(1).replace('.', ',')
+    const ubicacion = (e: FichaDiseno['estampados'][number]) => [
+      e.centro === 0 ? 'Centrado' : `${cm(Math.abs(e.centro))} cm a la ${e.centro < 0 ? 'izquierda' : 'derecha'} del centro`,
+      `${cm(e.arriba)} cm ${e.desde === 'cintura' ? 'de la cintura' : 'del hombro (HPS)'}`,
+    ]
+    const fondo = ficha.telas.find(t => t.color)?.color ?? '#e5e5e5'
+    // Las piezas del mismo color van en una sola fila: al proveedor se le pide
+    // la tela por color, no por pieza.
+    const porColor = new Map<string, { color: string | null; tela: string | null; piezas: string[] }>()
+    for (const t of ficha.telas) {
+      const k = t.color ?? 'tela:' + (t.tela ?? '')
+      const fila = porColor.get(k) ?? { color: t.color, tela: t.tela, piezas: [] }
+      if (!fila.piezas.includes(t.pieza)) fila.piezas.push(t.pieza)
+      porColor.set(k, fila)
+    }
+    const numeros = (hex: string) => {
+      const rgb = aRgb(hex)
+      if (!rgb) return { rgb: '', cmyk: '' }
+      return { rgb: rgb.join(' · '), cmyk: aCmyk(rgb).join(' · ') }
+    }
+    const muestra = (c: string) => <span style={{ width: 12, height: 12, borderRadius: 2, background: c, border: '1px solid #999', flexShrink: 0, display: 'inline-block' }} />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div>
+          <SectionTitle>Estampados</SectionTitle>
+          {ficha.estampados.length === 0 ? (
+            <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>El diseño no tiene estampados: solo la prenda.</div>
+          ) : (
+            <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed', marginTop: 6 }}>
+              <thead><tr>
+                <th style={{ ...th, width: 30 }}>#</th>
+                <th style={{ ...th, width: 120 }}>Arte</th>
+                <th style={th}>Qué es</th>
+                <th style={{ ...th, width: 110 }}>Ancho × alto</th>
+                <th style={{ ...th, width: 240 }}>Ubicación</th>
+                <th style={{ ...th, width: 64 }}>Vista</th>
+                <th style={{ ...th, width: 150 }}>Colores</th>
+              </tr></thead>
+              <tbody>
+                {ficha.estampados.map((e, i) => (
+                  <tr key={i}>
+                    <td style={{ ...td, padding: '6px 7px', textAlign: 'center', fontWeight: 700 }}>{i + 1}</td>
+                    <td style={{ ...td, padding: 4 }}>
+                      <div style={{ height: 64, background: fondo, borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <img src={e.imagen} alt="" style={{ maxWidth: '92%', maxHeight: 56, objectFit: 'contain' }} />
+                      </div>
+                    </td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{e.que}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{cm(e.ancho)} × {cm(e.alto)} cm</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{ubicacion(e).map(l => <div key={l}>{l}</div>)}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{e.vista}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>
+                      {e.colores.length ? e.colores.map(c => (
+                        <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          {muestra(c)}<span style={{ fontFamily: 'monospace' }}>{c}</span>
+                          {nombreDeColor(c) && <span style={{ color: '#666' }}>{nombreDeColor(c)}</span>}
+                        </div>
+                      )) : <span style={{ color: '#888' }}>Del archivo</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 5 }}>
+            Izquierda y derecha, mirando el dibujo. El HPS es el punto alto del hombro, al lado del cuello. La técnica (serigrafía, DTF, bordado) se aclara en Notas o en Materiales.
+          </div>
+        </div>
+
+        <div>
+          <SectionTitle>Colores de la prenda</SectionTitle>
+          <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed', marginTop: 6 }}>
+            <thead><tr>
+              <th style={{ ...th, width: 130 }}>Color</th>
+              <th style={{ ...th, width: 80 }}>Hex</th>
+              <th style={{ ...th, width: 110 }}>RGB</th>
+              <th style={{ ...th, width: 130 }}>CMYK aprox.</th>
+              <th style={th}>Piezas</th>
+            </tr></thead>
+            <tbody>
+              {[...porColor.values()].map((f, i) => {
+                const n = f.color ? numeros(f.color) : null
+                return (
+                  <tr key={i}>
+                    <td style={{ ...td, padding: '6px 7px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {f.color && muestra(f.color)}
+                        <span>{f.color ? (nombreDeColor(f.color) ?? 'Color a medida') : (f.tela ?? 'Tela')}</span>
+                      </div>
+                    </td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{f.color ?? '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{n?.rgb || '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{n?.cmyk || '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{f.piezas.join(', ')}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 5 }}>
+            El CMYK es una conversión simple, de referencia: el tono final se aprueba con una prueba sobre la tela. Si el taller trabaja con Pantone, el código se carga en Materiales.
+          </div>
+        </div>
       </div>
     )
   }

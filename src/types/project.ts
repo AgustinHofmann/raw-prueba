@@ -33,7 +33,7 @@ export type Tab =
   // Las medidas van como un diccionario y no con la forma fija de la remera:
   // cada prenda tiene las suyas (el short no tiene manga, la musculosa no
   // tiene punos) y la ficha tiene que poder recibir cualquiera.
-  | { kind: 'techpack'; project: Project; snapshot: string; measures: Record<string, number> | null }
+  | { kind: 'techpack'; project: Project; snapshot: string; measures: Record<string, number> | null; ficha?: FichaDiseno | null }
 
 // Identidad única de una pestaña: kind + id de proyecto (no solo el id,
 // porque un mismo proyecto puede estar abierto como editor y como techpack).
@@ -43,7 +43,27 @@ export const tabKey = (t: Tab) => `${t.kind}:${t.project.id}`
 
 // Un tech pack profesional es un documento APAISADO MULTIPÁGINA pensado para
 // fábrica: cada página tiene un propósito (diseño, especificaciones, medidas…).
-export type TechPackPageKind = 'design' | 'specs' | 'measures' | 'materials' | 'colorways' | 'notes'
+export type TechPackPageKind = 'design' | 'prints' | 'specs' | 'measures' | 'materials' | 'colorways' | 'notes'
+
+/**
+ * Lo que la ficha lee del diseño cada vez que se abre, como el dibujo de la
+ * prenda: no se guarda en la ficha porque tiene que seguir al diseño.
+ */
+export interface FichaDiseno {
+  /** Lo que se puso SOBRE la prenda, en el orden en que está apilado. */
+  estampados: {
+    imagen: string            // data URL del estampado solo, sin la prenda
+    que: string               // "TU MARCA" (Bebas Neue), Imagen, Figura…
+    ancho: number; alto: number   // cm
+    centro: number            // cm desde la línea del centro; negativo, a la izquierda mirando
+    arriba: number            // cm desde el hombro (HPS) o la cintura
+    desde: 'hombro' | 'cintura'
+    vista: 'Frente' | 'Espalda'
+    colores: string[]         // hex
+  }[]
+  /** Color de cada pieza de la prenda (null si lleva una tela con dibujo). */
+  telas: { pieza: string; color: string | null; tela: string | null }[]
+}
 
 // Una página del documento. body = notas/observaciones libres de esa página.
 export interface TechPackPage {

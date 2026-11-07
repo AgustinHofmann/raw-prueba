@@ -8,6 +8,7 @@ const uid = () => crypto.randomUUID()
 // Catálogo de páginas disponibles (título por defecto)
 export const PAGE_CATALOG: { kind: TechPackPageKind; title: string }[] = [
   { kind: 'design',    title: 'Diseño' },
+  { kind: 'prints',    title: 'Estampados y colores' },
   { kind: 'specs',     title: 'Especificaciones' },
   { kind: 'measures',  title: 'Tabla de medidas' },
   { kind: 'materials', title: 'Materiales' },
@@ -16,7 +17,7 @@ export const PAGE_CATALOG: { kind: TechPackPageKind; title: string }[] = [
 ]
 
 // Páginas por defecto de una ficha nueva (orden típico de fábrica)
-const DEFAULT_PAGES: TechPackPageKind[] = ['design', 'specs', 'measures', 'materials']
+const DEFAULT_PAGES: TechPackPageKind[] = ['design', 'prints', 'specs', 'measures', 'materials']
 
 const GARMENT_NAMES: Record<Project['mockupId'], string> = {
   tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón',
@@ -190,6 +191,20 @@ export function refrescarImagenesAuto(doc: TechPackDoc, snapshot: string | null)
     return { ...s, src: snapshot, auto: true }
   })
   return cambio ? { ...doc, images } : doc
+}
+
+/**
+ * Las fichas hechas antes de que existiera la página de estampados no la
+ * tienen. Si el diseño tiene estampados, se agrega después de "Diseño": es la
+ * información que más le falta al taller, y quien la necesita no va a ir a
+ * buscarla a "Agregar página".
+ */
+export function conPaginaEstampados(doc: TechPackDoc, hayEstampados: boolean, mockupId: Project['mockupId']): TechPackDoc {
+  if (!hayEstampados || doc.pages.some(p => p.kind === 'prints')) return doc
+  const i = doc.pages.findIndex(p => p.kind === 'design')
+  const pages = [...doc.pages]
+  pages.splice(i + 1, 0, makePage('prints', mockupId))
+  return { ...doc, pages }
 }
 
 export function buildDefaultTechPack(

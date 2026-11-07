@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project } from '../types/project'
+import { Project, type FichaDiseno } from '../types/project'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
@@ -13,6 +13,7 @@ import { prepararParaCalco, esColorDeFondo } from '../utils/calco'
 import ColorPicker from '../components/ColorPicker'
 import { Scissors, Eye, Hand } from 'lucide-react'
 import { plantillaPorId, type Plantilla } from '../lib/plantillas'
+import { COLORES_PRENDA, aRgb, aHex as rgbAHex } from '../lib/colores'
 import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils/dividir'
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
@@ -29,7 +30,7 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
-  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null) => void
+  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno) => void
   onToast?: (msg: string) => void
 }
 
@@ -630,22 +631,6 @@ function PickColorBtn({ onPick, onFallback, title }: {
 const GARMENT_NAMES: Record<string, string> = {
   tshirt: 'Remera', chomba: 'Chomba', pants: 'Pantalón', musculosa: 'Musculosa', short: 'Short',
 }
-
-/** Los colores con que se pide la tela al proveedor, con el nombre del taller. */
-const COLORES_PRENDA: { nombre: string; hex: string }[] = [
-  { nombre: 'Blanco',        hex: '#f4f4f1' },
-  { nombre: 'Crudo',         hex: '#e9e2d0' },
-  { nombre: 'Gris melange',  hex: '#a3a3a1' },
-  { nombre: 'Gris topo',     hex: '#5c5853' },
-  { nombre: 'Negro',         hex: '#1d1d1b' },
-  { nombre: 'Azul marino',   hex: '#1f2a44' },
-  { nombre: 'Azul francia',  hex: '#2f5bb7' },
-  { nombre: 'Celeste',       hex: '#75aadb' },
-  { nombre: 'Verde inglés',  hex: '#1f4d3a' },
-  { nombre: 'Verde militar', hex: '#5b6b3a' },
-  { nombre: 'Bordó',         hex: '#6b1f2a' },
-  { nombre: 'Rojo',          hex: '#b3262e' },
-]
 
 // Cuánto mide en la realidad, a lo ancho, TODO lo que muestra el mockup.
 // La chomba son ~105 porque el archivo trae dos prendas (frente y espalda) una
@@ -6601,6 +6586,63 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   // Genera un snapshot de la prenda (recortado al mockup) y abre el Tech Pack
+  // Lo que la ficha necesita saber de cada estampado: qué es, cuánto mide y
+  // dónde va, con las mismas referencias del panel (centro y hombro). Las
+  // líneas técnicas (costuras, divisiones de la prenda) no son estampados.
+  function fichaDelDiseno(canvas: fabric.Canvas): FichaDiseno {
+    const vs = vistas()
+    const desde: 'hombro' | 'cintura' = project.mockupId === 'pants' || project.mockupId === 'short' ? 'cintura' : 'hombro'
+    const colores = (o: fabric.FabricObject): string[] => {
+      const hijos = o instanceof fabric.Group ? o.getObjects() : [o]
+      const todos = hijos.flatMap(h => [h.fill, (h.strokeWidth ?? 0) > 0 ? h.stroke : null])
+        .map(c => (typeof c === 'string' ? aRgb(c) : null))
+        .filter((c): c is [number, number, number] => !!c)
+        .map(rgbAHex)
+      return [...new Set(todos)]
+    }
+    const queEs = (o: fabric.FabricObject) =>
+      o instanceof fabric.IText ? `"${o.text}" (${o.fontFamily})`
+      : o instanceof fabric.FabricImage ? 'Imagen'
+      : o instanceof fabric.Group ? 'Grupo'
+      : o instanceof fabric.Path ? 'Dibujo'
+      : 'Figura'
+    const estampados = canvas.getObjects()
+      .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp && !(o as any)._lineRole && !(o as any)._corte && o.visible !== false)
+      .flatMap(o => {
+        const p = enPrenda(o)
+        if (!p) return []
+        const b = o.getBoundingRect()
+        const v = vistaDe(b)
+        // El estampado solo, sin la prenda: es el arte que va a la imprenta. El
+        // recorte a la prenda se saca un momento porque está en coordenadas del
+        // lienzo y, dibujando el objeto suelto, lo dejaría en blanco.
+        const clip = o.clipPath
+        o.clipPath = undefined
+        const imagen = o.toDataURL({ format: 'png', multiplier: Math.min(3, Math.max(0.5, 220 / Math.max(b.width, b.height, 1))) })
+        o.clipPath = clip
+        return [{
+          imagen, que: queEs(o), ancho: p.ancho, alto: p.alto, centro: p.centro, arriba: p.arriba, desde,
+          vista: vs.length > 1 && v && v.left === vs[1].left ? 'Espalda' as const : 'Frente' as const,
+          colores: colores(o),
+        }]
+      })
+    // Las mismas piezas que pinta la paleta: el resto de lo que dibuja la prenda
+    // (sombras, ayudas) no es tela que se compre.
+    const telas = fillableGarmentPieces()
+      .filter(o => !(o as any)._rawInner)
+      .map(o => {
+        const uTex = (o as any)._userTex as { id: string } | undefined
+        const tex  = (o as any)._texture as { kind: string } | undefined
+        const liso = typeof o.fill === 'string' && !uTex && !tex ? aRgb(o.fill) : null
+        return {
+          pieza: pieceNameOf(o),
+          color: liso ? rgbAHex(liso) : null,
+          tela: uTex ? (rawTextureById(uTex.id)?.name ?? 'Tela propia') : tex ? 'Tela con dibujo' : null,
+        }
+      })
+    return { estampados, telas }
+  }
+
   function openTechPack() {
     const canvas = fc.current
     if (!canvas) return
@@ -6622,7 +6664,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
     // la app conozca los numeros.
-    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
+    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null), fichaDelDiseno(canvas))
   }
 
   /** Dónde está la prenda en el lienzo, sin contar el zoom. */
