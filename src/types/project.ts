@@ -63,6 +63,8 @@ export interface FichaDiseno {
   }[]
   /** Color de cada pieza de la prenda (null si lleva una tela con dibujo). */
   telas: { pieza: string; color: string | null; tela: string | null }[]
+  /** La vista de atrás, si la prenda la tiene (data URL). */
+  espalda?: string | null
 }
 
 // Una página del documento. body = notas/observaciones libres de esa página.

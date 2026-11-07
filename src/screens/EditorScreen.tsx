@@ -6671,21 +6671,44 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const wasMeasure = measureEditRef.current
     measureEditRef.current = false  // que no salgan los tiradores en la foto
     canvas.requestRenderAll()
-    let opts: any = { format: 'png', multiplier: 2 }
-    const mocks = mockupObjects.current
-    if (mocks.length) {
-      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity
-      mocks.forEach(o => { const bb = o.getBoundingRect(); l = Math.min(l, bb.left); t = Math.min(t, bb.top); r = Math.max(r, bb.left + bb.width); b = Math.max(b, bb.top + bb.height) })
-      const pad = 20
-      opts = { ...opts, left: Math.max(0, l - pad), top: Math.max(0, t - pad), width: (r - l) + pad * 2, height: (b - t) + pad * 2 }
+    // Frente y espalda por separado, cada uno a su lugar de la ficha. Antes iba
+    // una sola foto con todo: en la chomba, "Frente" mostraba las dos vistas y
+    // "Espalda" quedaba vacía. Se mide y se recorta con el zoom apagado, como
+    // la miniatura: así la foto sale igual con cualquier vista del lienzo.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    const atras = mockupObjects.current.filter(esEspalda)
+    const frente = atras.length ? piezasDelFrente() : mockupObjects.current
+    // Cada foto se dibuja SIN la otra vista. En la chomba las dos están tan
+    // pegadas que sus cajas se pisan: cualquier recorte del frente se llevaba
+    // un pedazo de la manga de la espalda, y al revés. Lo dibujado encima va
+    // con la vista donde tiene su centro.
+    const cf = cajaPrenda(frente), cb = atras.length ? cajaPrenda(atras) : null
+    const medio = cf && cb ? (cf.x2 + cb.x1) / 2 : Infinity
+    const esDeAtras = (o: fabric.FabricObject) => {
+      if (mockupObjects.current.includes(o)) return esEspalda(o)
+      const r = o.getBoundingRect()
+      return r.left + r.width / 2 > medio
     }
-    const img = canvas.toDataURL(opts)
+    const foto = (objs: fabric.FabricObject[], atrasVa: boolean) => {
+      const c = cajaPrenda(objs)
+      if (!c) return null
+      const pad = 20
+      return canvas.toDataURL({
+        format: 'png', multiplier: 2, left: c.x1 - pad, top: c.y1 - pad, width: c.x2 - c.x1 + pad * 2, height: c.y2 - c.y1 + pad * 2,
+        filter: (o: any) => esDeAtras(o) === atrasVa,
+      } as any)
+    }
+    const img = foto(frente, false) ?? canvas.toDataURL({ format: 'png', multiplier: 2 })
+    const espalda = atras.length ? foto(atras, true) : null
+    if (vpt) canvas.viewportTransform = vpt
+    canvas.requestRenderAll()
     measureEditRef.current = wasMeasure
     // La remera tiene sus medidas propias; el resto de las prendas
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
     // la app conozca los numeros.
-    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null), fichaDelDiseno(canvas))
+    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null), { ...fichaDelDiseno(canvas), espalda })
   }
 
   /** Dónde está la prenda en el lienzo, sin contar el zoom. */

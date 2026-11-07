@@ -61,8 +61,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
     // Una ficha que ya existe se abre con el dibujo de la prenda PUESTO AL DIA.
     // Sin esto, el diseno seguia y la ficha se quedaba mostrando la prenda de
     // cuando se creo: el entregable dejaba de coincidir con lo que se diseno.
-    const base = guardado ? refrescarImagenesAuto(guardado, snapshot)
-                          : buildDefaultTechPack(project, measures, snapshot)
+    const base = refrescarImagenesAuto(guardado ?? buildDefaultTechPack(project, measures, snapshot), snapshot, ficha?.espalda ?? null)
     return conPaginaEstampados(base, !!ficha?.estampados.length, project.mockupId)
   })
   const [zoom, setZoom]       = useState(0.7)

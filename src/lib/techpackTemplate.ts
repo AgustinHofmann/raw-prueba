@@ -216,13 +216,20 @@ function defaultImages(snapshot: string | null): TechPackImageSlot[] {
  * Solo se tocan los dibujos que puso la app. Una foto que subió el diseñador
  * se queda como está.
  */
-export function refrescarImagenesAuto(doc: TechPackDoc, snapshot: string | null): TechPackDoc {
+export function refrescarImagenesAuto(doc: TechPackDoc, snapshot: string | null, espalda: string | null = null): TechPackDoc {
   if (!snapshot) return doc
-  // Las tres ranuras que la app llena sola. "Espalda" no esta: nace vacia, asi
-  // que lo que haya ahi lo puso una persona.
+  // Las tres ranuras que la app llena sola. "Espalda" va aparte: hasta que la
+  // remera tuvo espalda nacía vacía, así que una foto que ya esté ahí (sin
+  // `auto: true`) la puso una persona y no se toca.
   const DEL_LIENZO: ImageRole[] = ['front', 'specs', 'measures']
   let cambio = false
   const images = doc.images.map(s => {
+    if (s.role === 'back') {
+      const libre = s.src == null || s.auto === true
+      if (!espalda || !libre || s.src === espalda) return s
+      cambio = true
+      return { ...s, src: espalda, auto: true }
+    }
     // `auto` no existia en las fichas viejas: ahi manda el rol. Solo un
     // `auto: false` explicito —puesto al elegir una foto a mano— bloquea.
     const laPusoLaApp = s.auto !== false && DEL_LIENZO.includes(s.role)
