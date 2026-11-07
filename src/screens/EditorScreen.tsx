@@ -1821,14 +1821,24 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // cuerpo, y ese color cubria tambien las mangas. Se reparte a las tres.
     const formatoViejo = porNombre.size === 0
     const pintuaViejaDelCuerpo = formatoViejo ? pieces[0] : undefined
+    const padreDe = new Map(objs.map(o => [(o as any)._pieceKey as string, (o as any)._piecePadre as string | undefined]))
 
     objs.forEach((o, i) => {
       if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
       const clave = (o as any)._pieceKey as string | undefined
       const esCuerpoOManga = clave === 'cuerpo' || clave === 'manga-izq' || clave === 'manga-der'
+      // Una pieza que no estaba cuando se guardó (la espalda de la remera, en
+      // proyectos de antes) toma la pintura de su pieza de origen, para no
+      // aparecer gris al lado de una remera pintada. Se sube por la cadena: el
+      // ruedo de la espalda sale del ruedo, y el ruedo, si tampoco estaba, del
+      // cuerpo.
+      const guardadaDe = (k: string | undefined) => {
+        for (let n = 0; k && n < 4; n++, k = padreDe.get(k)) { const q = porNombre.get(k); if (q) return q }
+        return undefined
+      }
       const p = formatoViejo
-        ? (esCuerpoOManga ? pintuaViejaDelCuerpo : pieces[i])
-        : (clave ? porNombre.get(clave) : pieces[i])
+        ? (esCuerpoOManga || (o as any)._espalda ? pintuaViejaDelCuerpo : pieces[i])
+        : (clave ? guardadaDe(clave) : pieces[i])
       if (!p) return
       if (p.tex)  (o as any)._texture   = p.tex
       if (p.eff)  (o as any)._effect    = p.eff
@@ -5833,11 +5843,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // vistas una al lado de la otra: el centro de la caja de TODO cae en el hueco
   // entre ambas, y desde ahí no se puede medir dónde va un estampado.
   function vistas(): { left: number; top: number; width: number; height: number }[] {
-    const esB = prendaParam?.segundaMitad
-    const deUna = (b: boolean) => mockupObjects.current.filter(o => !!esB?.(String((o as any)._srcId ?? '')) === b)
-    return [mockupBounds(esB ? deUna(false) : undefined), esB ? mockupBounds(deUna(true)) : null]
+    const atras = mockupObjects.current.filter(esEspalda)
+    return [mockupBounds(piezasDelFrente()), atras.length ? mockupBounds(atras) : null]
       .filter((v): v is NonNullable<typeof v> => !!v)
   }
+  /** Si una pieza es de la vista de atrás: la remera la marca al dibujarla; las
+   *  prendas que vienen de un SVG lo dicen por el nombre de la pieza. */
+  function esEspalda(o: fabric.FabricObject): boolean {
+    return !!(o as any)._espalda || !!prendaParam?.segundaMitad?.(String((o as any)._srcId ?? ''))
+  }
+  const piezasDelFrente = () => mockupObjects.current.filter(o => !esEspalda(o))
+  /** La prenda como era antes de que la remera tuviera espalda. La miniatura y la
+   *  recuperación de proyectos viejos comparan contra miniaturas de entonces:
+   *  la chomba ya traía las dos vistas, la remera solo el frente. */
+  const piezasDeSiempre = () => mockupObjects.current.filter(o => !(o as any)._espalda)
   /** La vista donde está una caja: la que tiene su centro, o la más cercana. */
   function vistaDe(b: { left: number; width: number }) {
     const cx = b.left + b.width / 2
@@ -6357,7 +6376,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // está y se fotografía solo eso. El resultado no depende de cómo el diseñador
   // dejó la vista.
   function garmentThumbnail(canvas: fabric.Canvas): string {
-    const objs = mockupObjects.current
+    // Sin la espalda de la remera: la tarjeta del archivo es chica, y la
+    // miniatura es contra lo que se compara al recuperar proyectos viejos.
+    const objs = piezasDeSiempre()
     const vpt = canvas.viewportTransform
     try {
       if (objs.length) {
@@ -6668,9 +6689,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   /** Dónde está la prenda en el lienzo, sin contar el zoom. */
-  function cajaPrenda(): { x1: number; y1: number; x2: number; y2: number } | null {
+  function cajaPrenda(objs = mockupObjects.current): { x1: number; y1: number; x2: number; y2: number } | null {
     const canvas = fc.current
-    const objs = mockupObjects.current
     if (!canvas || !objs.length) return null
     // Se mide con el zoom apagado: la caja es del DIBUJO, no de lo que se ve.
     const vpt = canvas.viewportTransform
@@ -6738,7 +6758,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     const molde = cajaMoldeRef.current
     const f1 = encuadreActual()
-    const c1 = cajaPrenda()
+    // La prenda como en la miniatura vieja: sin la espalda de la remera.
+    const frente = piezasDeSiempre()
+    const c1 = cajaPrenda(frente)
     if (!canvas || !molde || !f1 || !c1) return
     const usuario = canvas.getObjects().filter(o =>
       !(o as any)._rawMockup && !(o as any)._rawTemp && o.visible !== false)
@@ -6780,7 +6802,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
     const esUsuario = new Set(usuario)
     const soloUsuario = (o: unknown) => esUsuario.has(o as fabric.FabricObject)
-    const esPrenda = new Set(mockupObjects.current)
+    const esPrenda = new Set(frente)
     const soloPrenda = (o: unknown) => esPrenda.has(o as fabric.FabricObject)
     const pixeles = (el: HTMLCanvasElement) =>
       ({ w: el.width, h: el.height, d: el.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, el.width, el.height).data })
@@ -7006,6 +7028,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       ;(p as any)._pieceKey = s.key
       if (s.nombre) (p as any)._pieceName = s.nombre
       if (s.padre) (p as any)._piecePadre = s.padre
+      if (s.espalda) (p as any)._espalda = true
       if (s.role === 'inner') (p as any)._rawInner = true
       // _rawBody marca de donde saca el color el interior del cuello: es el
       // CUERPO, no las mangas, asi el escote acompana a lo que se ve detras.
@@ -7055,7 +7078,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Escala FIJA calculada con las medidas por defecto (una sola vez): así al cambiar
     // una medida el tamaño en pantalla refleja los cm reales (alargar = más largo, no más fino).
     if (!teeFitRef.current) {
-      const dObjs = buildTeeShapes(DEFAULT_MEASURES).map(s => new fabric.Path(s.d))
+      // Con el FRENTE solo: así la remera cae en el mismo lugar que antes de que
+      // tuviera espalda, y lo dibujado en proyectos viejos no se corre. La
+      // espalda queda a la derecha y la vista se aleja para mostrar las dos.
+      const dObjs = buildTeeShapes(DEFAULT_MEASURES).filter(s => !s.espalda).map(s => new fabric.Path(s.d))
       const dL = dObjs.map(o => o.left ?? 0), dT = dObjs.map(o => o.top ?? 0)
       const dR = dObjs.map(o => (o.left ?? 0) + (o.width ?? 0)), dB = dObjs.map(o => (o.top ?? 0) + (o.height ?? 0))
       const bx = Math.min(...dL), by = Math.min(...dT)
@@ -10157,6 +10183,8 @@ interface FormaPrenda {
   nombre?: string
   /** De que pieza saca la pintura si es nueva (proyectos guardados antes). */
   padre?: string
+  /** Es de la vista de atrás (la remera la dibuja al lado del frente). */
+  espalda?: boolean
   fill: string | null
   stroke: string
   strokeWidth: number
@@ -10299,6 +10327,62 @@ function buildTeeShapes(m: Measures): FormaPrenda[] {
     if (yaDibujadas.has(i)) return
     shapes.push({ d, role: 'detail', key: 'detalle-' + i, fill: null, stroke: '#1d1d1b', strokeWidth: 2 })
   })
+  return [...shapes, ...buildTeeEspalda(m, W)]
+}
+
+/**
+ * La espalda de la remera, dibujada a la derecha del frente.
+ *
+ * Es la misma silueta (mangas, cuerpo, ruedo y puños, con las mismas medidas),
+ * sin el hueco del escote: de atrás el cuello apenas baja, y lo que se ve es la
+ * banda del cuello tejido siguiendo el borde de arriba. Por eso la profundidad
+ * de cuello, que es la del escote de ADELANTE, no la mueve.
+ *
+ * Cada pieza hereda la pintura de la misma pieza del frente (`padre`): los
+ * proyectos de antes de que hubiera espalda abren con la espalda del color que
+ * ya tenía la remera. Las mangas van cruzadas a propósito: la manga que en el
+ * frente se ve a la izquierda, de atrás se ve a la derecha. Es la misma manga,
+ * y si es de otro color tiene que seguir siéndolo.
+ *
+ * shortcut: el hueco entre frente y espalda se mantiene fijo, así que si cambia
+ * el ancho de la remera la espalda se corre y lo dibujado sobre ella no la
+ * acompaña (lo mismo pasa con chomba y musculosa); si molesta, anclarla.
+ */
+function buildTeeEspalda(m: Measures, W: (x: number, y: number) => [number, number]): FormaPrenda[] {
+  const WB = teeWarp({ ...m, profundidadCuello: DEFAULT_MEASURES.profundidadCuello })
+  const detB = TEE_DETAILS.map(d => transformPath(d, WB))
+  // Del punto más a la derecha del frente al más a la izquierda de la espalda,
+  // más 12 cm de aire.
+  const derFrente = Math.max(...[[493.43, 58.94], [470.28, 177.99], [408.98, 357.27]].map(([x, y]) => W(x, y)[0]))
+  const izqEspalda = Math.min(...[[1.14, 50.05], [22.58, 178.06], [80.85, 356.20]].map(([x, y]) => WB(x, y)[0]))
+  const dx = derFrente - izqEspalda + 12 * TEE_UNITS_PER_CM
+  const correr = (d: string) => transformPath(d, (x, y) => [x + dx, y])
+  const pieza = (key: string, nombre: string, padre: string) =>
+    ({ ...TEE_PIEZA, key: key + '-espalda', nombre: nombre + ' (espalda)', padre, espalda: true })
+
+  const shapes: FormaPrenda[] = [
+    ...partirPorCostura(transformPath(TEE_CUERPO, WB), detB[6],
+      { ...TEE_PIEZA, key: 'cuerpo-espalda', nombre: 'Espalda', padre: 'cuerpo', espalda: true },
+      pieza('ruedo', 'Ruedo', 'ruedo'), centroY),
+    ...partirPorCostura(transformPath(TEE_MANGA_IZQ, WB), detB[5],
+      pieza('manga-der', 'Manga derecha', 'manga-der'), pieza('puno-der', 'Puño derecho', 'puno-der'),
+      p => -centroX(p)),
+    ...partirPorCostura(transformPath(TEE_MANGA_DER, WB), detB[2],
+      pieza('manga-izq', 'Manga izquierda', 'manga-izq'), pieza('puno-izq', 'Puño izquierdo', 'puno-izq'),
+      centroX),
+  ].map(s => ({ ...s, d: correr(s.d) }))
+
+  // El cuello de atrás: una banda de 2 cm que sigue el borde de arriba del
+  // cuerpo, entre los dos puntos del hombro.
+  const borde = aplanarTrazado(transformPath('M205.89,1.08 C205.89,1.08 228.15,17.99 292.24,4.64', WB), 1)
+  if (borde.length > 2) {
+    const banda = 2 * TEE_UNITS_PER_CM
+    const abajo = borde.map(([x, y]) => [x, y + banda] as Punto)
+    shapes.push({
+      ...pieza('cuello-rib', 'Cuello', 'cuello-rib'),
+      d: correr(poligonoAPath([...borde, ...abajo.reverse()])),
+    })
+  }
   return shapes
 }
 // Quita el fondo de una imagen: flood-fill desde los bordes eliminando los píxeles
