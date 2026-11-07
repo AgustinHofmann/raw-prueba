@@ -2492,7 +2492,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const faltantes = await cargarFuentesDelDiseno(revived)
         if (cancelled) return
         // Ya con la fuente de verdad, el texto se vuelve a medir y a dibujar.
-        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.dirty = true }
+        //
+        // Antes se borra lo que Fabric recuerda de esas letras: al revivir el
+        // texto lo midió con la letra de reemplazo y guardó esos anchos con el
+        // nombre de la fuente buena. Sin esto, volver a medir usaba los anchos
+        // viejos: el texto se veía bien pero su caja medía otra cosa (un título
+        // de 26 cm decía 37,6 y aparecía corrido del centro en el panel y en la
+        // ficha, con los tiradores de selección lejos de las letras).
+        for (const o of revived) if (o instanceof fabric.IText && o.fontFamily) fabric.cache.clearFontCache(o.fontFamily)
+        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.setCoords(); o.dirty = true }
         canvas.requestRenderAll()
         if (faltantes.length) {
           onToast?.(
