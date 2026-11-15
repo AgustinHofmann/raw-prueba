@@ -202,6 +202,11 @@ type HistoryEntry =
   // dos cosas quedan dentro de un grupo. Se guarda el grupo para poder soltarlo,
   // y la forma y el contenido para poder rearmarlo.
   | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }
+  // Soltar la máscara es la operación inversa, y necesita su propio paso: sin
+  // esto, Ctrl+Z después de soltar deshacía lo ANTERIOR y la máscara no volvía
+  // a juntarse nunca. Es una lista porque soltar sin nada seleccionado suelta
+  // todas las máscaras del lienzo, y eso fue UNA sola acción del usuario.
+  | { type: 'soltarMascara'; items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -6075,6 +6080,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.grupo = armarGrupoMascara(entry.contenido, entry.forma)   // rehacer
           undoHistory.current.push(entry)
           refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          for (const it of entry.items) soltarGrupoMascara(it.grupo)      // rehacer: soltarlas de nuevo
+          undoHistory.current.push(entry)
+          refreshLayersNow()
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -6145,6 +6154,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           redoHistory.current.push(entry)
         } else if (entry.type === 'mascara') {
           soltarGrupoMascara(entry.grupo)   // deshacer: se deshace el grupo
+          redoHistory.current.push(entry)
+          refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          // deshacer: se vuelven a juntar. El grupo nuevo se guarda en la misma
+          // entrada, que es el que va a tener que soltar el rehacer.
+          for (const it of entry.items) it.grupo = armarGrupoMascara(it.contenido, it.forma)
           redoHistory.current.push(entry)
           refreshLayersNow()
         } else if (entry.type === 'props') {
@@ -7379,8 +7394,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.('Máscara de recorte aplicada · Ctrl+Alt+7 para soltarla')
   }
 
-  /** Deshace un grupo de recorte: vuelven el contenido Y la forma. */
-  function soltarGrupoMascara(grupo: fabric.Group): fabric.FabricObject[] {
+  /**
+   * Deshace un grupo de recorte: vuelven el contenido Y la forma.
+   *
+   * Devuelve las tres cosas por separado porque quien la llama necesita cada
+   * una: `sueltos` para dejarlas seleccionadas, y `contenido` + `forma` para
+   * poder rearmar la máscara con Ctrl+Z.
+   */
+  function soltarGrupoMascara(grupo: fabric.Group): {
+    contenido: fabric.FabricObject[]
+    forma: fabric.FabricObject | undefined
+    sueltos: fabric.FabricObject[]
+  } {
     const canvas = fc.current!
     const forma = grupo.clipPath as fabric.FabricObject | undefined
     const previo = (grupo as any)._mascaraPrevio
@@ -7428,7 +7453,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         forma.setCoords()
       }
     }
-    return (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+    const sueltos = (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+    return { contenido: hijos, forma, sueltos }
   }
 
   function soltarMascara() {
@@ -7445,7 +7471,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       return
     }
     const sueltos: fabric.FabricObject[] = []
-    for (const g of objetivos) sueltos.push(...soltarGrupoMascara(g))
+    const items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] = []
+    for (const g of objetivos) {
+      const { contenido, forma, sueltos: s } = soltarGrupoMascara(g)
+      sueltos.push(...s)
+      // Sin forma no hay con qué rearmarla: ese grupo queda fuera del deshacer
+      // en vez de romperlo entero.
+      if (forma) items.push({ forma, contenido, grupo: g })
+    }
+    if (items.length) undoHistory.current.push({ type: 'soltarMascara', items })
     redoHistory.current = []
     if (sueltos.length) canvas.setActiveObject(new fabric.ActiveSelection(sueltos, { canvas }))
     canvas.requestRenderAll()
