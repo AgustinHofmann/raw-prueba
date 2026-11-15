@@ -17,6 +17,8 @@ interface Props {
   onHome: () => void
   onTabClick: (t: Tab) => void
   onTabClose: (t: Tab) => void
+  /** Mover una pestaña de lugar arrastrándola. Índices dentro de `openTabs`. */
+  onTabReorder: (desde: number, hasta: number) => void
   onNewProject: () => void
   onSave: () => void
   onExport: () => void
@@ -31,7 +33,7 @@ interface Props {
 
 export default function ChromeBar({
   route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
-  onHome, onTabClick, onTabClose, onNewProject,
+  onHome, onTabClick, onTabClose, onTabReorder, onNewProject,
   onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
   onIniciarSesion,
 }: Props) {
@@ -39,6 +41,9 @@ export default function ChromeBar({
   const [nameInput, setNameInput] = useState('')
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
+  // Reordenar pestañas arrastrando: cuál se está llevando y sobre cuál está.
+  const [arrastrada, setArrastrada] = useState<number | null>(null)
+  const [encima,     setEncima]     = useState<number | null>(null)
   const isEditor = route === 'editor' && activeProject !== null
 
   // En pantalla completa la barra crece para aprovechar el espacio y verse más cómoda
@@ -148,14 +153,40 @@ export default function ChromeBar({
 
       {/* Tabs */}
       <div className="scroll-hide" style={{ flex: 1, display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
-        {openTabs.map(t => {
+        {openTabs.map((t, i) => {
           const active = activeProject?.id === t.project.id && route === t.kind
           const isTP = t.kind === 'techpack'
+          // La línea que avisa dónde va a caer. Va como sombra interior y no
+          // como borde para que la pestaña no se corra un píxel al aparecer.
+          const marca = encima === i && arrastrada !== null && arrastrada !== i
           return (
             <button
               key={tabKey(t)}
               onClick={() => onTabClick(t)}
               title={isTP ? `Ficha técnica · ${t.project.name}` : t.project.name}
+              draggable
+              onDragStart={e => {
+                setArrastrada(i)
+                // El índice viaja en el evento: al soltar, el navegador no dice
+                // de dónde salió, solo dónde cayó.
+                e.dataTransfer.setData('text/plain', String(i))
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              onDragOver={e => {
+                if (arrastrada === null) return   // viene de afuera (una imagen): no es asunto nuestro
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                if (encima !== i) setEncima(i)
+              }}
+              onDragLeave={() => setEncima(d => (d === i ? null : d))}
+              onDrop={e => {
+                if (arrastrada === null) return
+                e.preventDefault()
+                const desde = Number(e.dataTransfer.getData('text/plain'))
+                setEncima(null); setArrastrada(null)
+                if (!Number.isNaN(desde) && desde !== i) onTabReorder(desde, i)
+              }}
+              onDragEnd={() => { setEncima(null); setArrastrada(null) }}
               style={{
                 height: '100%', padding: '0 10px 0 16px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
@@ -165,8 +196,12 @@ export default function ChromeBar({
                   ? `2px ${isTP ? 'dashed' : 'solid'} var(--accent)`
                   : '2px solid transparent',
                 borderRadius: 0,
+                boxShadow: marca ? 'inset 3px 0 0 var(--accent)' : 'none',
+                // Mientras se la lleva, la pestaña se ve "levantada".
+                opacity: arrastrada === i ? 0.45 : 1,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
-                fontSize: 13, fontFamily: 'var(--ui)', cursor: 'pointer',
+                fontSize: 13, fontFamily: 'var(--ui)',
+                cursor: arrastrada === null ? 'pointer' : 'grabbing',
                 display: 'flex', alignItems: 'center', gap: 6,
                 whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 190,
               }}

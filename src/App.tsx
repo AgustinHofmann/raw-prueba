@@ -254,6 +254,24 @@ export default function App() {
     })
   }
 
+  /**
+   * Cambia una pestaña de lugar (arrastrándola en la barra).
+   *
+   * Mueve, no intercambia: la pestaña sale de donde estaba y se mete en el
+   * lugar nuevo, que es lo que uno espera al arrastrar y lo que hacen los
+   * navegadores. El orden vale para la sesión; `openTabs` no se guarda.
+   */
+  function reorderTabs(desde: number, hasta: number) {
+    setOpenTabs(prev => {
+      if (desde === hasta) return prev
+      if (desde < 0 || hasta < 0 || desde >= prev.length || hasta >= prev.length) return prev
+      const next = [...prev]
+      const [movida] = next.splice(desde, 1)
+      next.splice(hasta, 0, movida)
+      return next
+    })
+  }
+
   // ── Atajos de pestañas ─────────────────────────────────────────────────────
   //
   // Chrome se queda con Ctrl+W y Ctrl+Tab antes de que la pagina los vea, asi
@@ -465,6 +483,7 @@ export default function App() {
           onHome={() => go('home')}
           onTabClick={activateTab}
           onTabClose={closeTab}
+          onTabReorder={reorderTabs}
           onNewProject={() => setShowSheet(true)}
           onSave={() => editorActionsRef.current?.save()}
           onExport={() => editorActionsRef.current?.export()}
