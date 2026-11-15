@@ -15,6 +15,47 @@ import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
+/* El texto no usa el caché de objeto de Fabric
+   ---------------------------------------------------------------------------
+   Fabric dibuja cada objeto una vez en un lienzo propio (su caché) y después
+   pega esa imagen. El tamaño de ese lienzo sale de la caja del objeto: para el
+   texto es fontSize × lineHeight × 1.13, más un margen extra de 1 em. Da por
+   sentado que ninguna letra sube más de ~1 em sobre la línea base.
+
+   Las fuentes caligráficas rompen ese supuesto. La del caso reportado
+   (DesirableCalligraphy) declara un ascender de 2,25 em: la tinta sube 1,65 em
+   por encima del centro del objeto y el caché solo reserva ~1,15 em. Lo que
+   sobra se recorta, y siempre ARRIBA, porque el objeto va centrado en su caché.
+
+   Al zoom 1 no se veía: `minCacheSideLimit` (256 px) agranda los cachés chicos
+   y ese regalo tapaba el desborde. Al hacer zoom el caché supera los 256 px,
+   queda el tamaño real y aparece el recorte. Medido con esa fuente: la tinta
+   mide 2,58 em de alto al zoom 1 y 2,03 em desde el zoom 3 — la pérdida es toda
+   de arriba, lo de abajo no se mueve. Dentro de un grupo es peor (1,33 em),
+   porque ahí manda el caché del GRUPO, que ni agrega el margen del texto.
+
+   Por eso el texto se dibuja siempre directo, y un grupo con texto adentro
+   tampoco se cachea (si no, vuelve a recortar). No cuesta nada: medido, 15
+   textos al zoom 8 renderizan en menos de 1 ms, igual que con caché, porque
+   dibujar texto en canvas ya es rápido. `ownCaching` hay que apagarlo a mano
+   porque los hijos preguntan por él (`isOnACache`) para saber si ya hay caché. */
+fabric.Text.prototype.shouldCache = function (this: fabric.Text): boolean {
+  this.ownCaching = false
+  return false
+}
+
+const grupoDeberiaCachear = fabric.Group.prototype.shouldCache
+fabric.Group.prototype.shouldCache = function (this: fabric.Group): boolean {
+  if (contieneTexto(this)) { this.ownCaching = false; return false }
+  return grupoDeberiaCachear.call(this)
+}
+
+/** ¿Hay un texto en el grupo, o adentro de alguno de sus grupos? */
+function contieneTexto(g: fabric.Group): boolean {
+  return g.getObjects().some(o =>
+    o instanceof fabric.Text || (o instanceof fabric.Group && contieneTexto(o)))
+}
+
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
 
 interface Props {
