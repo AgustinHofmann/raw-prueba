@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project } from '../types/project'
+import { Project, type FichaDiseno } from '../types/project'
+import { aRgb, aHex as rgbAHex } from '../lib/colores'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
@@ -15,6 +16,47 @@ import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
+/* El texto no usa el caché de objeto de Fabric
+   ---------------------------------------------------------------------------
+   Fabric dibuja cada objeto una vez en un lienzo propio (su caché) y después
+   pega esa imagen. El tamaño de ese lienzo sale de la caja del objeto: para el
+   texto es fontSize × lineHeight × 1.13, más un margen extra de 1 em. Da por
+   sentado que ninguna letra sube más de ~1 em sobre la línea base.
+
+   Las fuentes caligráficas rompen ese supuesto. La del caso reportado
+   (DesirableCalligraphy) declara un ascender de 2,25 em: la tinta sube 1,65 em
+   por encima del centro del objeto y el caché solo reserva ~1,15 em. Lo que
+   sobra se recorta, y siempre ARRIBA, porque el objeto va centrado en su caché.
+
+   Al zoom 1 no se veía: `minCacheSideLimit` (256 px) agranda los cachés chicos
+   y ese regalo tapaba el desborde. Al hacer zoom el caché supera los 256 px,
+   queda el tamaño real y aparece el recorte. Medido con esa fuente: la tinta
+   mide 2,58 em de alto al zoom 1 y 2,03 em desde el zoom 3 — la pérdida es toda
+   de arriba, lo de abajo no se mueve. Dentro de un grupo es peor (1,33 em),
+   porque ahí manda el caché del GRUPO, que ni agrega el margen del texto.
+
+   Por eso el texto se dibuja siempre directo, y un grupo con texto adentro
+   tampoco se cachea (si no, vuelve a recortar). No cuesta nada: medido, 15
+   textos al zoom 8 renderizan en menos de 1 ms, igual que con caché, porque
+   dibujar texto en canvas ya es rápido. `ownCaching` hay que apagarlo a mano
+   porque los hijos preguntan por él (`isOnACache`) para saber si ya hay caché. */
+fabric.Text.prototype.shouldCache = function (this: fabric.Text): boolean {
+  this.ownCaching = false
+  return false
+}
+
+const grupoDeberiaCachear = fabric.Group.prototype.shouldCache
+fabric.Group.prototype.shouldCache = function (this: fabric.Group): boolean {
+  if (contieneTexto(this)) { this.ownCaching = false; return false }
+  return grupoDeberiaCachear.call(this)
+}
+
+/** ¿Hay un texto en el grupo, o adentro de alguno de sus grupos? */
+function contieneTexto(g: fabric.Group): boolean {
+  return g.getObjects().some(o =>
+    o instanceof fabric.Text || (o instanceof fabric.Group && contieneTexto(o)))
+}
+
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
 
 interface Props {
@@ -27,7 +69,7 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
-  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null) => void
+  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno) => void
   onToast?: (msg: string) => void
 }
 
@@ -64,6 +106,12 @@ const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; da
   { id: 'fruncido',     label: 'Fruncido', width: 0.5, dash: [1.5, 2.5],
     hint: 'Tela recogida. Punteado corto y parejo.' },
 ]
+
+/* Las propiedades PROPIAS de RAW que el molde de una máscara se lleva al
+   guardarse. Fabric solo serializa lo que conoce, así que hay que nombrárselas.
+   Está acá arriba porque se usa en dos lados —al crear la máscara y al reabrir
+   el proyecto— y si las dos listas se separan, el molde pierde su pintura. */
+const PROPS_DEL_MOLDE = ['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']
 
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
 //
@@ -161,6 +209,11 @@ type HistoryEntry =
   // dos cosas quedan dentro de un grupo. Se guarda el grupo para poder soltarlo,
   // y la forma y el contenido para poder rearmarlo.
   | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }
+  // Soltar la máscara es la operación inversa, y necesita su propio paso: sin
+  // esto, Ctrl+Z después de soltar deshacía lo ANTERIOR y la máscara no volvía
+  // a juntarse nunca. Es una lista porque soltar sin nada seleccionado suelta
+  // todas las máscaras del lienzo, y eso fue UNA sola acción del usuario.
+  | { type: 'soltarMascara'; items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -1485,6 +1538,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }))
   })
   const [activeUserTex, setActiveUserTex] = useState<string | null>(null)
+  // La última tela que se pidió, para que una que baja tarde no pise lo que el
+  // diseñador eligió después (ver applyUserTexture).
+  const telaPedida = useRef<string | null>(null)
 
   // Recoloreo de las telas de fábrica.
   // Los colores elegidos viven en un ref y no en estado porque los lee código
@@ -1520,6 +1576,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // controles que se aplican a todos (color, grosor, bordado).
   const esMulti = selKind === 'multi'
   const haySel = hasSel || esMulti
+  // Ninguna de las dos clases de tela puesta: lo que marca el cuadradito "Ninguna".
+  const sinTela = !activeTexKind && !activeUserTex
   // Con varios tomados, el tipo de UNO no manda sobre el panel: si en el grupo
   // cae una imagen, no por eso hay que esconderle el color al resto.
   const tipoSel = (esMulti ? undefined : (selectedObj as any)?.type) as string | undefined
@@ -2390,7 +2448,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const guardada = (obj as any)._mascara
           if (guardada) {
             try {
-              const [molde] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
+              /* ⚠️ `_mascara` puede llegar acá YA VIVO.
+               *
+               * Fabric revive solo cualquier propiedad cuyo valor tenga un
+               * `type` conocido (`enlivenObjectEnlivables`), y el molde guardado
+               * es justamente eso. Revivirlo de nuevo rompía:
+               * `Group.fromObject` le busca la clase a `layoutManager.type`, que
+               * en un objeto vivo no existe, y tiraba "No class registered for
+               * undefined". El catch de abajo se comía el error y la máscara se
+               * perdía al reabrir el proyecto.
+               *
+               * Con un molde de una sola pieza (un Path) pasaba desapercibido,
+               * porque `Path.fromObject` no mira el layout. Apareció al pasar el
+               * molde de la prenda a ser la silueta entera, que es un grupo. */
+              const estaVivo = typeof guardada?.toObject === 'function'
+              const molde = estaVivo
+                ? guardada as fabric.FabricObject
+                : (await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[])[0]
               if (molde) {
                 ;(molde as any).absolutePositioned = false
                 molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
@@ -2407,6 +2481,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   }
                 }
                 obj.clipPath = molde
+                /* Y `_mascara` vuelve a ser JSON.
+                 *
+                 * Si se dejara el objeto vivo, el próximo guardado lo pasaría
+                 * por JSON.stringify y lo que saldría no es un molde: `type`
+                 * vive en el prototipo, así que no viaja, y al abrir de nuevo
+                 * el molde ya no se puede revivir. La máscara se perdía recién
+                 * a la SEGUNDA apertura, que es lo que hace que estas cosas
+                 * parezcan pasar "a veces". */
+                ;(obj as any)._mascara = molde.toObject(PROPS_DEL_MOLDE)
                 // El molde ya se guardó en (0,0) y el grupo ya venía medido por
                 // él, así que acá solo hay que dejar la medida fija para que el
                 // próximo reacomodo no lo devuelva al tamaño del contenido.
@@ -2425,6 +2508,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           } else if (!(obj instanceof fabric.IText) && clipPath.current
                      && !(obj as any)._fondo) {
             // lo que va debajo de la prenda no se recorta contra ella
+            //
+            // El `&& !_fondo` se agregó después, probando. ANTES este bloque le
+            // reponía el recorte a TODO lo que reviviera, así que al reabrir el
+            // proyecto el objeto volvía abajo (porque acomodarFondo funcionaba)
+            // pero recuperaba el recorte, y quedaba invisible.
             obj.set({ clipPath: clipPath.current })
           }
           canvas.add(obj)
@@ -2457,7 +2545,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const faltantes = await cargarFuentesDelDiseno(revived)
         if (cancelled) return
         // Ya con la fuente de verdad, el texto se vuelve a medir y a dibujar.
-        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.dirty = true }
+        //
+        // Antes se borra lo que Fabric recuerda de esas letras: al revivir el
+        // texto lo midió con la letra de reemplazo y guardó esos anchos con el
+        // nombre de la fuente buena. Sin esto, volver a medir usaba los anchos
+        // viejos: el texto se veía bien pero su caja medía otra cosa (un título
+        // de 26 cm decía 37,6 y aparecía corrido del centro en la ficha).
+        for (const o of revived) if (o instanceof fabric.IText && o.fontFamily) fabric.cache.clearFontCache(o.fontFamily)
+        for (const o of revived) if (o instanceof fabric.IText) { o.initDimensions?.(); o.setCoords(); o.dirty = true }
         canvas.requestRenderAll()
         if (faltantes.length) {
           onToast?.(
@@ -3516,7 +3611,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
-          acomodarFondo()                // ...pero sin taparle el fondo al usuario
+          acomodarFondo()                // ...y lo de abajo vuelve abajo, que el molde lo dejó arriba
         }
       }
 
@@ -4503,7 +4598,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
-        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); return }
+        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); setActiveUserTex(null); return }
         setHasSel(true)
         // Si el objeto no tiene trazo o relleno de color (una imagen, por
         // ejemplo), se deja lo que el panel ya mostraba en vez de inventar un
@@ -4521,6 +4616,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (tex && esTexturaValida(tex.kind)) {
           setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
         } else setActiveTexKind(null)
+        // La tela de foto también: sin esto la grilla no marcaba la que tiene
+        // puesta lo seleccionado, y "Ninguna" se veía elegida sin serlo.
+        const uTex = (obj as any)._userTex as { id: string } | undefined
+        setActiveUserTex(uTex?.id ?? null)
         // X/Y/W/H de lo que hay seleccionado.
         //
         // Con varios objetos se muestra la caja de TODA la selección, no la del
@@ -5366,12 +5465,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
   // recolorearla después sin perder la textura.
   function setObjTexture(obj: fabric.FabricObject, kind: TextureKind, colors: string[]) {
+    recordarColorLiso(obj)
     ;(obj as any)._texture = { kind, colors: [...colors] }
-    delete (obj as any)._baseColor          // la textura pasa a ser la base
     // Y reemplaza a la tela importada: recomposeFill atiende _userTex primero,
     // así que sin esto el estampado quedaba tapado y el clic no hacía nada.
     delete (obj as any)._userTex
     recomposeFill(obj)
+  }
+
+  /**
+   * Anota el color liso que tenía la pieza antes de ponerle una tela.
+   *
+   * ANTES el color se borraba al aplicar la tela ("la textura pasa a ser la
+   * base"), y por eso una vez puesta no se podía sacar: no quedaba ningún
+   * color al que volver, y `recomposeFill` sin textura ni base deja el relleno
+   * como está — o sea, la tela pegada para siempre.
+   *
+   * Guardarlo no cambia nada de lo que se ve: `recomposeFill` mira primero la
+   * tela y solo cae en el color liso cuando no hay ninguna.
+   */
+  function recordarColorLiso(obj: fabric.FabricObject) {
+    const o = obj as any
+    if (o._baseColor) return                       // ya hay uno anotado
+    if (o._texture || o._userTex) return           // lo que se ve es una tela, no un color
+    if (typeof obj.fill === 'string' && obj.fill) o._baseColor = obj.fill
   }
 
   // ── Composición base + efecto ───────────────────────────────────────────────
@@ -5440,23 +5557,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // Aplica una textura propia del usuario a la prenda (o a la pieza seleccionada).
   function applyUserTexture(t: UserTexture) {
+    // Lo último que se pidió. Una tela de foto son varios MB: tarda, y cuando
+    // termina de bajar ya puede no ser lo que el diseñador quiere. Sin esto,
+    // apretar "Ninguna" mientras bajaba terminaba igual con la tela puesta
+    // —la que llegaba tarde pisaba la decisión nueva—, y lo mismo al cambiar
+    // de una tela a otra rápido: ganaba la que tardaba más.
+    telaPedida.current = t.id
     const img = userTexImages.current.get(t.id)
     if (!img) {                                   // precargar y reintentar
       // Las de fábrica pasan por ensureRawImage, que además les aplica los
       // colores elegidos antes de que la tela toque la prenda.
       if (isRawTexture(t.id)) {
-        ensureRawImage(t.id).then(ok => { if (ok) applyUserTexture(t) })
+        ensureRawImage(t.id).then(ok => { if (ok && telaPedida.current === t.id) applyUserTexture(t) })
         return
       }
       const el = new Image()
-      el.onload = () => { userTexImages.current.set(t.id, el); applyUserTexture(t) }
+      el.onload = () => {
+        userTexImages.current.set(t.id, el)
+        if (telaPedida.current === t.id) applyUserTexture(t)
+      }
       el.src = t.dataUrl
       return
     }
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => {
+      recordarColorLiso(o)                     // para poder volver con "Ninguna"
       delete (o as any)._texture               // reemplaza al estampado interno
-      delete (o as any)._baseColor
       ;(o as any)._userTex = { id: t.id, widthCm: t.widthCm }
       recomposeFill(o)
     }, `Tela «${t.name}» aplicada`, label)
@@ -5502,7 +5628,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!inner) return
     const body = mockupObjects.current.find(o => (o as any)._rawBody)
     const base = body ? (body as any)._baseColor as string | undefined : undefined
-    const plain = base && /^#[0-9a-f]{6}$/i.test(base)
+    // Con tela puesta el color liso sigue anotado (es a lo que vuelve "Ninguna"),
+    // pero NO es lo que se ve: ahí el interior cae en el gris neutro, como antes.
+    const conTela = !!body && !!((body as any)._texture || (body as any)._userTex)
+    const plain = !conTela && base && /^#[0-9a-f]{6}$/i.test(base)
     inner.set({ fill: plain ? adjL(base!, -0.16) : TEE_INNER_FALLBACK, dirty: true })
   }
 
@@ -5546,9 +5675,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   function applyTexture(kind: TextureKind) {
+    telaPedida.current = null        // un estampado también cancela la tela que venía bajando
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => setObjTexture(o, kind, texColors[kind]), 'Tela aplicada', label)
     setActiveTexKind(kind)
+    setActiveUserTex(null)
+  }
+
+  /**
+   * "Ninguna": saca la tela y deja el color liso.
+   *
+   * Hacía falta porque poner una tela era un camino de ida: no había forma de
+   * volver al color, y la única salida era deshacer o pintar encima.
+   *
+   * El color al que vuelve es el que se anotó al ponerle la tela
+   * (`recordarColorLiso`). Los diseños hechos ANTES de que eso existiera no lo
+   * tienen, así que ahí se usa el gris de fábrica de la prenda: no es el color
+   * exacto que tenía, pero deja la pieza lisa y pintable, que es lo que se
+   * estaba pidiendo.
+   */
+  function quitarTela() {
+    telaPedida.current = null        // y si venía una bajando, que no aterrice
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => {
+      delete (o as any)._texture
+      delete (o as any)._userTex
+      if (!(o as any)._baseColor) (o as any)._baseColor = GRIS_DE_FABRICA
+      recomposeFill(o)
+    }, 'Tela quitada', label)
+    setActiveTexKind(null)
     setActiveUserTex(null)
   }
 
@@ -5720,9 +5875,50 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     fc.current?.requestRenderAll()
   }
 
+  // Frente y espalda por separado. Chomba, musculosa y short traen las dos
+  // vistas una al lado de la otra: el centro de la caja de TODO cae en el hueco
+  // entre ambas, y desde ahí no se puede medir dónde va un estampado.
+  function vistas(): { left: number; top: number; width: number; height: number }[] {
+    const atras = mockupObjects.current.filter(esEspalda)
+    return [mockupBounds(piezasDelFrente()), atras.length ? mockupBounds(atras) : null]
+      .filter((v): v is NonNullable<typeof v> => !!v)
+  }
+  /** Si una pieza es de la vista de atrás (las prendas de SVG lo dicen por su nombre). */
+  function esEspalda(o: fabric.FabricObject): boolean {
+    return !!prendaParam?.segundaMitad?.(String((o as any)._srcId ?? ''))
+  }
+  const piezasDelFrente = () => mockupObjects.current.filter(o => !esEspalda(o))
+  /** La vista donde está una caja: la que tiene su centro, o la más cercana. */
+  function vistaDe(b: { left: number; width: number }) {
+    const cx = b.left + b.width / 2
+    const vs = vistas()
+    return vs.find(v => cx >= v.left && cx <= v.left + v.width)
+      ?? vs.sort((p, q) => Math.abs(p.left + p.width / 2 - cx) - Math.abs(q.left + q.width / 2 - cx))[0]
+      ?? null
+  }
+  // Dónde está algo sobre la prenda, con las referencias que usa el taller para
+  // ubicar un estampado: cuánto se corre de la línea del centro y cuánto baja
+  // desde lo más alto de la prenda (el punto alto del hombro, HPS, o la cintura
+  // en pantalón y short).
+  // shortcut: lo más alto se toma de la caja de la prenda; si un modelo tuviera
+  // algo por encima del hombro (una capucha), habría que darle su propio HPS.
+  function enPrenda(o: fabric.FabricObject): { ancho: number; alto: number; centro: number; arriba: number } | null {
+    const ppc = pxPerCmRef.current
+    o.setCoords()
+    const b = o.getBoundingRect()
+    const mb = vistaDe(b)
+    if (!(ppc > 0) || !mb) return null
+    const r1 = (n: number) => Math.round(n * 10) / 10
+    return {
+      ancho:  r1((o.width  ?? 0) * Math.abs(o.scaleX ?? 1) / ppc),
+      alto:   r1((o.height ?? 0) * Math.abs(o.scaleY ?? 1) / ppc),
+      centro: r1((b.left + b.width / 2 - (mb.left + mb.width / 2)) / ppc),
+      arriba: r1((b.top - mb.top) / ppc),
+    }
+  }
+
   // Caja combinada del mockup (remera) — usada por el snapping / guías inteligentes.
-  function mockupBounds(): { left: number; top: number; width: number; height: number } | null {
-    const m = mockupObjects.current
+  function mockupBounds(m = mockupObjects.current): { left: number; top: number; width: number; height: number } | null {
     if (!m.length) return null
     const r = m.map(o => o.getBoundingRect())
     const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
@@ -6089,6 +6285,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.grupo = armarGrupoMascara(entry.contenido, entry.forma)   // rehacer
           undoHistory.current.push(entry)
           refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          for (const it of entry.items) soltarGrupoMascara(it.grupo)      // rehacer: soltarlas de nuevo
+          undoHistory.current.push(entry)
+          refreshLayersNow()
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -6159,6 +6359,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           redoHistory.current.push(entry)
         } else if (entry.type === 'mascara') {
           soltarGrupoMascara(entry.grupo)   // deshacer: se deshace el grupo
+          redoHistory.current.push(entry)
+          refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          // deshacer: se vuelven a juntar. El grupo nuevo se guarda en la misma
+          // entrada, que es el que va a tener que soltar el rehacer.
+          for (const it of entry.items) it.grupo = armarGrupoMascara(it.contenido, it.forma)
           redoHistory.current.push(entry)
           refreshLayersNow()
         } else if (entry.type === 'props') {
@@ -6404,6 +6610,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
       // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
       // al abrir, pero el de la máscara se perdería para siempre.
+      //
+      // Esta lista es la de las propiedades PROPIAS de RAW. Fabric no serializa
+      // lo que no conoce, así que hay que nombrárselas a mano. `_fondo` está
+      // acá por eso: sin agregarlo, todo funcionaba perfecto hasta que cerrabas
+      // el proyecto y al reabrirlo lo de abajo volvía arriba.
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio', '_fondo']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
@@ -6460,7 +6671,64 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     a.click()
   }
 
-  // Genera un snapshot de la prenda (recortado al mockup) y abre el Tech Pack
+  // Lo que la ficha necesita saber de cada estampado: qué es, cuánto mide y
+  // dónde va (desde la línea del centro y desde el hombro). Las líneas
+  // técnicas (costuras, divisiones de la prenda) no son estampados.
+  function fichaDelDiseno(canvas: fabric.Canvas): FichaDiseno {
+    const vs = vistas()
+    const desde: 'hombro' | 'cintura' = project.mockupId === 'pants' || project.mockupId === 'short' ? 'cintura' : 'hombro'
+    const colores = (o: fabric.FabricObject): string[] => {
+      const hijos = o instanceof fabric.Group ? o.getObjects() : [o]
+      const todos = hijos.flatMap(h => [h.fill, (h.strokeWidth ?? 0) > 0 ? h.stroke : null])
+        .map(c => (typeof c === 'string' ? aRgb(c) : null))
+        .filter((c): c is [number, number, number] => !!c)
+        .map(rgbAHex)
+      return [...new Set(todos)]
+    }
+    const queEs = (o: fabric.FabricObject) =>
+      o instanceof fabric.IText ? `"${o.text}" (${o.fontFamily})`
+      : o instanceof fabric.FabricImage ? 'Imagen'
+      : o instanceof fabric.Group ? 'Grupo'
+      : o instanceof fabric.Path ? 'Dibujo'
+      : 'Figura'
+    const estampados = canvas.getObjects()
+      .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp && !(o as any)._lineRole && !(o as any)._corte && o.visible !== false)
+      .flatMap(o => {
+        const p = enPrenda(o)
+        if (!p) return []
+        const b = o.getBoundingRect()
+        const v = vistaDe(b)
+        // El arte solo, sin la prenda. Se saca un momento el recorte A LA PRENDA
+        // (está en coordenadas del lienzo y, dibujando el objeto suelto, lo
+        // dejaría en blanco); una máscara propia (`_mascara`) es parte del arte.
+        const clip = o.clipPath
+        if (!(o as any)._mascara) o.clipPath = undefined
+        const imagen = o.toDataURL({ format: 'png', multiplier: Math.min(3, Math.max(0.5, 220 / Math.max(b.width, b.height, 1))) })
+        o.clipPath = clip
+        return [{
+          imagen, que: queEs(o), ancho: p.ancho, alto: p.alto, centro: p.centro, arriba: p.arriba, desde,
+          vista: vs.length > 1 && v && v.left === vs[1].left ? 'Espalda' as const : 'Frente' as const,
+          colores: colores(o),
+        }]
+      })
+    // Las piezas que se pintan: el resto de lo que dibuja la prenda (sombras,
+    // ayudas) no es tela que se compre.
+    const telas = fillableGarmentPieces()
+      .filter(o => !(o as any)._rawInner)
+      .map(o => {
+        const uTex = (o as any)._userTex as { id: string } | undefined
+        const tex  = (o as any)._texture as { kind: string } | undefined
+        const liso = typeof o.fill === 'string' && !uTex && !tex ? aRgb(o.fill) : null
+        return {
+          pieza: pieceNameOf(o),
+          color: liso ? rgbAHex(liso) : null,
+          tela: uTex ? (rawTextureById(uTex.id)?.name ?? 'Tela propia') : tex ? 'Tela con dibujo' : null,
+        }
+      })
+    return { estampados, telas }
+  }
+
+  // Genera las fotos de la prenda y abre el Tech Pack
   function openTechPack() {
     const canvas = fc.current
     if (!canvas) return
@@ -6468,21 +6736,52 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const wasMeasure = measureEditRef.current
     measureEditRef.current = false  // que no salgan los tiradores en la foto
     canvas.requestRenderAll()
-    let opts: any = { format: 'png', multiplier: 2 }
-    const mocks = mockupObjects.current
-    if (mocks.length) {
-      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity
-      mocks.forEach(o => { const bb = o.getBoundingRect(); l = Math.min(l, bb.left); t = Math.min(t, bb.top); r = Math.max(r, bb.left + bb.width); b = Math.max(b, bb.top + bb.height) })
-      const pad = 20
-      opts = { ...opts, left: Math.max(0, l - pad), top: Math.max(0, t - pad), width: (r - l) + pad * 2, height: (b - t) + pad * 2 }
+    // Frente y espalda por separado, cada uno a su lugar de la ficha. Antes iba
+    // una sola foto con todo: en la chomba, "Frente" mostraba las dos vistas y
+    // "Espalda" quedaba vacía. Se mide y se recorta con el zoom apagado: así la
+    // foto sale igual con cualquier vista del lienzo.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    const caja = (objs: fabric.FabricObject[]) => {
+      const r = objs.filter(o => o.visible !== false).map(o => o.getBoundingRect())
+      if (!r.length) return null
+      const x1 = Math.min(...r.map(b => b.left)), y1 = Math.min(...r.map(b => b.top))
+      return { x1, y1, x2: Math.max(...r.map(b => b.left + b.width)), y2: Math.max(...r.map(b => b.top + b.height)) }
     }
-    const img = canvas.toDataURL(opts)
+    const atras = mockupObjects.current.filter(esEspalda)
+    const frente = atras.length ? piezasDelFrente() : mockupObjects.current
+    // Cada foto se dibuja SIN la otra vista: en la chomba las dos están tan
+    // pegadas que sus cajas se pisan, y un recorte del frente se llevaba un
+    // pedazo de la espalda. Lo dibujado encima va con la vista de su centro.
+    const cf = caja(frente), cb = atras.length ? caja(atras) : null
+    const medio = cf && cb ? (cf.x2 + cb.x1) / 2 : Infinity
+    const esDeAtras = (o: fabric.FabricObject) => {
+      if (mockupObjects.current.includes(o)) return esEspalda(o)
+      const r = o.getBoundingRect()
+      return r.left + r.width / 2 > medio
+    }
+    const foto = (objs: fabric.FabricObject[], atrasVa: boolean) => {
+      const c = caja(objs)
+      if (!c) return null
+      const pad = 20
+      return canvas.toDataURL({
+        format: 'png', multiplier: 2, left: c.x1 - pad, top: c.y1 - pad, width: c.x2 - c.x1 + pad * 2, height: c.y2 - c.y1 + pad * 2,
+        filter: (o: any) => esDeAtras(o) === atrasVa,
+      } as any)
+    }
+    const img = foto(frente, false) ?? canvas.toDataURL({ format: 'png', multiplier: 2 })
+    const espalda = atras.length ? foto(atras, true) : null
+    if (vpt) canvas.viewportTransform = vpt
+    canvas.requestRenderAll()
     measureEditRef.current = wasMeasure
     // La remera tiene sus medidas propias; el resto de las prendas
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
     // la app conozca los numeros.
-    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
+    // measuresRef y no el estado: esta función se le pasa a la App una sola vez
+    // al abrir el editor, y el estado que veía era el de ese momento. Una ficha
+    // nueva salía con las medidas por defecto aunque la remera tuviera otras.
+    onOpenTechPack(img, isTee ? measuresRef.current : (prendaParam ? medidasRef.current : null), { ...fichaDelDiseno(canvas), espalda })
   }
 
   /** Dónde está la prenda en el lienzo, sin contar el zoom. */
@@ -6721,15 +7020,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * coincidía con nada y desaparecía. Por eso solo se veía con la prenda en su
    * posición original.
    */
-  async function rebuildGarmentClip() {
-    const canvas = fc.current
-    if (!canvas) return
-    const piezas = mockupObjects.current.filter(o => {
+  /**
+   * Las piezas que DEFINEN la silueta de la prenda.
+   *
+   * No son todas: una pieza escondida o sin relleno no aporta contorno, y el
+   * hueco del cuello (`_rawInner`) es un agujero, no silueta.
+   */
+  function piezasDeLaSilueta(): fabric.FabricObject[] {
+    return mockupObjects.current.filter(o => {
       if (o.visible === false) return false
       if ((o as any)._rawInner) return false    // el hueco del cuello no define la silueta
       const f = (o as any).fill
       return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
     })
+  }
+
+  /** Una copia nueva de la silueta entera, para usarla de molde. */
+  async function copiaDeLaSilueta(): Promise<fabric.Group | null> {
+    const piezas = piezasDeLaSilueta()
+    if (!piezas.length) return null
+    return new fabric.Group(await Promise.all(piezas.map(p => p.clone())))
+  }
+
+  async function rebuildGarmentClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const piezas = piezasDeLaSilueta()
     if (!piezas.length) return
 
     const copias = await Promise.all(piezas.map(p => p.clone()))
@@ -6911,7 +7227,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * TEE_UNITS_PER_CM
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
-    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
+    acomodarFondo()   // el molde se fue al fondo: lo de abajo quedó arriba, hay que rehundirlo
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
@@ -7112,7 +7428,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * prendaParam.unidadesPorCm
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
-    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
+    acomodarFondo()   // el molde se fue al fondo: lo de abajo quedó arriba, hay que rehundirlo
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
@@ -7503,7 +7819,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // al soltar, y el molde ya encajado para poder rehacerlo al abrir el archivo.
     // El grupo no lleva además el recorte a la prenda: Fabric admite uno solo.
     ;(grupo as any)._mascaraPrevio = previo
-    ;(grupo as any)._mascara = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
+    ;(grupo as any)._mascara = forma.toObject(PROPS_DEL_MOLDE)
     return grupo
   }
 
@@ -7527,7 +7843,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     let forma = elegidos[elegidos.length - 1]
     // La prenda puede ser el MOLDE, pero nunca el contenido: no tiene sentido
     // meter la remera adentro de un recorte.
-    const contenido = elegidos.slice(0, -1).filter(o => !mockupObjects.current.includes(o))
+    //
+    // El `_garmentGroup` hay que nombrarlo aparte: con la prenda agrupada, el
+    // grupo NO está en `mockupObjects` (ahí están las piezas, que ahora viven
+    // adentro suyo), así que se colaba como contenido y la máscara se tragaba
+    // la remera entera. Medido: después de un Ctrl+7 así, la prenda ya no
+    // estaba en el lienzo.
+    const contenido = elegidos.slice(0, -1)
+      .filter(o => !mockupObjects.current.includes(o) && !(o as any)._garmentGroup)
     if (!contenido.length) {
       onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
@@ -7554,10 +7877,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // esas coordenadas relativas y el molde aparece fuera del lienzo.
     canvas.discardActiveObject()
 
-    if (mockupObjects.current.includes(forma)) {
-      const copia = await forma.clone()
-      ;(copia as any)._moldeDePrenda = true
-      forma = copia
+    /* Si el molde es la prenda, el molde es la prenda ENTERA.
+     *
+     * Antes se clonaba el objeto de más arriba tal cual, y la prenda no es un
+     * objeto: son varias piezas sueltas. La de más arriba suele ser una tirita
+     * del cuello, así que recortar con la remera recortaba contra un molde de
+     * 110x10 px — medido— y del dibujo sobrevivía apenas una franja del cuello.
+     * Ahora se usa una copia de la silueta completa, la misma que arma
+     * "Recortado a la remera".
+     *
+     * Si la prenda está AGRUPADA el molde es una copia del grupo, no la
+     * silueta armada a mano: adentro de un grupo las piezas tienen
+     * coordenadas relativas a ese grupo, así que copiarlas sueltas las
+     * mandaría a cualquier lado. Y el grupo ya es la prenda entera, que es lo
+     * que se busca. (Copiarlo, además, evita consumir la prenda de verdad
+     * adentro de la máscara y que la remera desaparezca del lienzo.) */
+    const esPiezaSuelta = mockupObjects.current.includes(forma)
+    const esPrendaAgrupada = !!(forma as any)._garmentGroup
+    if (esPiezaSuelta || esPrendaAgrupada) {
+      const silueta = (esPiezaSuelta ? await copiaDeLaSilueta() : null) ?? await forma.clone()
+      ;(silueta as any)._moldeDePrenda = true
+      forma = silueta
     }
 
     const grupo = armarGrupoMascara(contenido, forma)
@@ -7570,8 +7910,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.('Máscara de recorte aplicada · Ctrl+Alt+7 para soltarla')
   }
 
-  /** Deshace un grupo de recorte: vuelven el contenido Y la forma. */
-  function soltarGrupoMascara(grupo: fabric.Group): fabric.FabricObject[] {
+  /**
+   * Deshace un grupo de recorte: vuelven el contenido Y la forma.
+   *
+   * Devuelve las tres cosas por separado porque quien la llama necesita cada
+   * una: `sueltos` para dejarlas seleccionadas, y `contenido` + `forma` para
+   * poder rearmar la máscara con Ctrl+Z.
+   */
+  function soltarGrupoMascara(grupo: fabric.Group): {
+    contenido: fabric.FabricObject[]
+    forma: fabric.FabricObject | undefined
+    sueltos: fabric.FabricObject[]
+  } {
     const canvas = fc.current!
     const forma = grupo.clipPath as fabric.FabricObject | undefined
     const previo = (grupo as any)._mascaraPrevio
@@ -7594,10 +7944,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     grupo.clipPath = undefined
     const hijos = dissolveGroup(grupo)
-    hijos.forEach(o => {
-      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-      o.dirty = true
-    })
 
     if (forma && destino) {
       // La forma vuelve a ser un objeto normal, con el aspecto que tenía antes
@@ -7610,7 +7956,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         selectable: true, evented: true,
       })
       ;(forma as any).absolutePositioned = false
-      forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
       forma.dirty = true
       // Si el molde era una copia de la prenda, no se devuelve: dejaría una
       // silueta de remera suelta encima del diseño.
@@ -7619,7 +7964,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         forma.setCoords()
       }
     }
-    return (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+
+    /* Lo que estaba DEBAJO de la prenda tiene que volver debajo.
+     *
+     * `dissolveGroup` devuelve los hijos con `canvas.add`, o sea al frente de
+     * todo, y antes acá se les reponía el recorte a la prenda a todos por
+     * igual. Para algo marcado `_fondo` eso es lo peor de los dos mundos:
+     * recortado contra la silueta Y (al volver a hundirse) tapado por la
+     * prenda. Medido: una imagen que estaba en el puesto 0 volvía al 12 de 13
+     * y con recorte puesto, aunque seguía marcada como fondo.
+     *
+     * `acomodarFondo` la hunde de nuevo y `sincronizarFondo` mira dónde quedó
+     * cada una para decidir el recorte. Es la misma pareja que usa el resto
+     * del editor, así que la máscara deja de ser un caso aparte. */
+    const sueltos = (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+    acomodarFondo()
+    sueltos.forEach(sincronizarFondo)
+    return { contenido: hijos, forma, sueltos }
   }
 
   function soltarMascara() {
@@ -7636,7 +7997,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       return
     }
     const sueltos: fabric.FabricObject[] = []
-    for (const g of objetivos) sueltos.push(...soltarGrupoMascara(g))
+    const items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] = []
+    for (const g of objetivos) {
+      const { contenido, forma, sueltos: s } = soltarGrupoMascara(g)
+      sueltos.push(...s)
+      // Sin forma no hay con qué rearmarla: ese grupo queda fuera del deshacer
+      // en vez de romperlo entero.
+      if (forma) items.push({ forma, contenido, grupo: g })
+    }
+    if (items.length) undoHistory.current.push({ type: 'soltarMascara', items })
     redoHistory.current = []
     if (sueltos.length) canvas.setActiveObject(new fabric.ActiveSelection(sueltos, { canvas }))
     canvas.requestRenderAll()
@@ -7756,42 +8125,75 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   /* ── Lo que va DEBAJO de la prenda ────────────────────────────────────────
    *
-   * Hasta acá el molde estaba clavado al fondo: todas las funciones de orden
-   * tenían un piso en `mockupObjects.length` y nada podía pasar por debajo. Eso
-   * impedía poner una foto de referencia atrás y, sobre todo, impedía usar la
-   * prenda como molde de una máscara de recorte, porque una máscara necesita
-   * que el dibujo esté POR DEBAJO de la forma que lo recorta.
+   * ANTES   las cuatro funciones de orden Z de acá arriba tenían un piso:
    *
-   * Ahora la prenda es una capa más y se puede mandar algo abajo. Lo que queda
-   * abajo se marca `_fondo` y, mientras esté ahí, **no lleva el recorte a la
-   * prenda**: si lo llevara estaría recortado Y tapado a la vez, o sea
-   * invisible por partida doble, y parecería que la app se lo comió.
+   *             const minIdx = mockupObjects.current.length
+   *             if (dir === 'down' && idx > minIdx) canvas.sendObjectBackwards(obj)
+   *
+   * PROBLEMA  nada podía pasar por debajo del molde, y una máscara de recorte
+   *           recorta con la forma de MÁS ARRIBA: para recortar con la prenda,
+   *           el dibujo tiene que estar abajo. Era imposible.
+   *
+   * AHORA     el piso se borró. Lo que queda abajo se marca `_fondo`, pierde el
+   *           recorte a la prenda mientras esté ahí, y `acomodarFondo()` lo
+   *           vuelve a hundir cada vez que la prenda se rehace (pasa al cambiar
+   *           cualquier medida: se destruye y se vuelve a crear).
    */
 
-  /** La posición del molde más bajo. Todo lo que esté por debajo es fondo. */
+  /**
+   * La posición del molde más bajo. Todo lo que esté por debajo es fondo.
+   *
+   * Reemplaza al viejo `minIdx`. La diferencia es que aquel era un número fijo
+   * (la cantidad de piezas) y este es la posición REAL del molde en el lienzo,
+   * que cambia según cuánto le hayas puesto abajo.
+   */
   function indiceDelMolde(canvas: fabric.Canvas) {
     const objs = canvas.getObjects()
+    // La prenda son varias piezas, así que se busca el puesto más bajo de todas.
     let min = Infinity
     for (const pieza of mockupObjects.current) {
       const i = objs.indexOf(pieza)
+      // El `i >= 0` no es paranoia: al cambiar una medida hay un instante en que
+      // las piezas viejas ya se sacaron y las nuevas no se agregaron. Sin esto
+      // entraría el -1 de indexOf, el mínimo quedaría en -1 y nada sería fondo.
       if (i >= 0 && i < min) min = i
     }
     return min
   }
 
-  /** Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte. */
+  /**
+   * Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte.
+   *
+   * Se la llama DESPUÉS de mover algo. No mueve nada: mira dónde terminó y
+   * pone el estado al día.
+   */
   function sincronizarFondo(obj: fabric.FabricObject) {
     const canvas = fc.current
     if (!canvas || mockupObjects.current.includes(obj)) return
+
+    // Toda la decisión es comparar dos puestos de la lista del lienzo: si el del
+    // objeto es menor que el del molde, se dibuja antes, o sea que está abajo.
     const debajo = canvas.getObjects().indexOf(obj) < indiceDelMolde(canvas)
+
+    // `_fondo` es una propiedad inventada por RAW (Fabric no la conoce): el
+    // programa anotándose "esto el usuario lo quiso abajo". Hace falta porque la
+    // prenda se rehace sola y después hay que saber qué volver a hundir.
+    // `undefined` y no `false` para que la propiedad no exista cuando no hace
+    // falta y no ensucie el guardado.
     ;(obj as any)._fondo = debajo ? true : undefined
-    // El recorte a la prenda se saca al bajar y se repone al volver a subir,
-    // siempre que el interruptor esté puesto. Las máscaras y los textos no se tocan.
+
+    // Las máscaras y los textos no se tocan: la primera ya tiene su propio
+    // recorte y pisárselo la rompe, y el texto nunca se recorta con la prenda.
     if (!(obj as any)._mascara && !(obj instanceof fabric.IText)) {
+      // Lo que está abajo PIERDE el recorte, a propósito: si lo conservara
+      // quedaría recortado contra la silueta Y tapado por la prenda, que es
+      // opaca. Invisible por partida doble. Al subirlo, esta línea lo repone.
       obj.clipPath = (!debajo && clipEnabledRef.current)
         ? (clipPath.current ?? undefined)
         : undefined
     }
+    // Fabric reusa el dibujo cacheado: sin esto, le cambiás el recorte y en
+    // pantalla no pasa nada.
     obj.dirty = true
   }
 
@@ -7799,13 +8201,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * Vuelve a hundir debajo del molde todo lo marcado como fondo.
    *
    * Hay que llamarla cada vez que la prenda se manda al fondo —al cambiar una
-   * medida se rehace entera— porque si no, el molde nuevo se mete por debajo
-   * del fondo y lo tapa.
+   * medida se rehace entera— porque al irse el molde hasta abajo, lo que el
+   * usuario había mandado debajo queda por encima y le salta al frente.
    */
   function acomodarFondo() {
     const canvas = fc.current
     if (!canvas) return
+
     const fondo = canvas.getObjects().filter(o => (o as any)._fondo)
+    /* El bucle va al revés a propósito: `sendObjectToBack` manda al puesto 0 y
+     * empuja al resto, así que en orden normal los de abajo se dan vuelta entre
+     * ellos. Importa si el usuario puso dos cosas abajo.
+     *     normal:   A→0 [A, B, …]   B→0 [B, A, …]   ✗
+     *     al revés: B→0 [B, A, …]   A→0 [A, B, …]   ✓
+     */
     for (let i = fondo.length - 1; i >= 0; i--) canvas.sendObjectToBack(fondo[i])
   }
 
@@ -7815,8 +8224,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const objs = canvas.getObjects()
     const idx  = objs.indexOf(obj)
     if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
+    // ANTES: `idx > minIdx` (= cantidad de piezas del molde), que frenaba justo
+    // arriba de la prenda. Ahora el único límite es el fondo real del lienzo.
     if (dir === 'down' && idx > 0)             canvas.sendObjectBackwards(obj)
-    sincronizarFondo(obj)
+    sincronizarFondo(obj)   // agregado: ver dónde quedó y marcarlo
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -7827,7 +8238,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas || from === to) return
     // La prenda no se arrastra (se rehace desde las medidas), pero sí se puede
     // soltar algo sobre ella o debajo de ella.
+    //
+    // ANTES acá había dos condiciones: `includes(from) || includes(to)`. La
+    // segunda impedía soltar algo SOBRE una fila de la prenda, que es justo lo
+    // que hay que poder hacer para meter algo abajo. La primera se queda.
     if (mockupObjects.current.includes(from)) return
+    // ANTES el destino se recortaba con `Math.max(minIdx, …)`, o sea que si
+    // arrastrabas por debajo del molde te devolvía arriba. Ahora va tal cual.
     canvas.moveObjectTo(from, canvas.getObjects().indexOf(to))
     sincronizarFondo(from)
     canvas.requestRenderAll()
@@ -7852,28 +8269,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const activo = canvas.getActiveObject()
     if (!activo) return
 
+    // ANTES acá se movía directamente `canvas.getActiveObject()`. Con un objeto
+    // andaba; con varios, eso devuelve un contenedor temporal que NO está en la
+    // lista del lienzo, así que Fabric no lo encontraba y no movía a nadie (sin
+    // error). Arreglo: sacarle los hijos y mover a cada uno por separado. El
+    // `[activo]` es para que el caso de uno solo siga el mismo camino.
     const seleccionados = (activo.type === 'activeselection'
       ? (activo as fabric.ActiveSelection).getObjects()
       : [activo]
     ).filter(o => !mockupObjects.current.includes(o))
     if (!seleccionados.length) return
 
+    // Por puesto real en el lienzo, no por el orden en que los fuiste clickeando.
     const apilado = canvas.getObjects()
     seleccionados.sort((a, b) => apilado.indexOf(a) - apilado.indexOf(b))
-    // 'front' y 'backward' empiezan por el de abajo; 'forward' y 'back', por el de arriba
+    /* El orden en que se mueven importa o se dan vuelta entre ellos. Con 'front'
+     * hay que empezar por el de abajo (A→final, B→final deja [… A, B]); con
+     * 'forward' por el de arriba, si no el primero le gana el lugar al siguiente.
+     */
     const enOrden = (dir === 'front' || dir === 'backward')
-      ? seleccionados
-      : [...seleccionados].reverse()
+      ? seleccionados                  // de abajo hacia arriba
+      : [...seleccionados].reverse()   // de arriba hacia abajo
 
     for (const obj of enOrden) {
+      // El puesto se vuelve a pedir en cada vuelta: cada movimiento corre al resto.
       const idx = canvas.getObjects().indexOf(obj)
       if (dir === 'front') canvas.bringObjectToFront(obj)
       else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
       else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
+      // ANTES, después de este sendObjectToBack venía un bucle que volvía a
+      // hundir las piezas del molde una por una, así que la prenda terminaba
+      // otra vez abajo de todo y el objeto del usuario quedaba arriba de ella:
+      // "enviar al fondo" parecía andar a medias. Ese bucle se borró.
       else canvas.sendObjectToBack(obj)
     }
 
-    seleccionados.forEach(sincronizarFondo)
+    seleccionados.forEach(sincronizarFondo)   // agregado: ver dónde quedó cada uno
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -8749,6 +9180,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 pueden recolorear.
               </p>
               <div key={paletteVersion} className="swatches">
+                {/* "Ninguna" va PRIMERA y siempre: poner una tela era un camino
+                    de ida —no había forma de volver al color liso— y eso se
+                    nota recién cuando ya te arrepentiste. */}
+                <button
+                  onClick={quitarTela}
+                  title="Sin tela · vuelve al color liso"
+                  style={{
+                    display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                    background: 'none', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  <div style={{
+                    width: '100%', aspectRatio: '1', borderRadius: 'var(--radius)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--surface)',
+                    border: '1px solid ' + (sinTela ? 'var(--accent)' : 'var(--line)'),
+                    outline: sinTela ? '1px solid var(--accent)' : 'none',
+                    // La barra cruzada es la convención de "ninguno" en cualquier
+                    // programa de diseño; con el cuadrado vacío solo no se entiende.
+                    backgroundImage: 'linear-gradient(to bottom right, transparent calc(50% - 1px),'
+                      + ' var(--muted) calc(50% - 1px), var(--muted) calc(50% + 1px),'
+                      + ' transparent calc(50% + 1px))',
+                  }} />
+                  <span style={{
+                    fontSize: 10, color: sinTela ? 'var(--accent)' : 'var(--fg-2)',
+                    fontFamily: 'var(--ui)', textAlign: 'center',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>Ninguna</span>
+                </button>
+
                 {/* Estampados que dibuja el programa: se recolorean */}
                 {TEXTURES.map(t => {
                   const on = activeTexKind === t.id
@@ -9242,28 +9703,26 @@ function CtxDivider() {
 // ── Layers panel ─────────────────────────────────────────────────────────────
 
 // ── Texturas de tela ─────────────────────────────────────────────────────────
-// Quedaron las dos que valen como tela: rayas y denim. Cuadrillé, lunares,
-// camuflado y animal print eran dibujitos planos que no leían como género y
-// ensuciaban el panel. Las telas de verdad van por "Telas RAW" (fotos).
-type TextureKind = 'rayas' | 'denim'
+// Quedó el denim, que es el único que lee como género de verdad. Cuadrillé,
+// lunares, camuflado, animal print y las rayas eran dibujitos planos que no
+// leían como tela y ensuciaban el panel (las rayas se sacaron el 2026-11-16).
+// Las telas de verdad van por las fotos y los vectores de "Telas RAW".
+type TextureKind = 'denim'
 
 const TEXTURES: { id: TextureKind; label: string }[] = [
-  { id: 'rayas', label: 'Rayas' },
   { id: 'denim', label: 'Denim' },
 ]
 
 // Slots de color editables por textura (color principal = primero, secundario = segundo, etc.)
 const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
-  rayas: [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
   denim: [{ label: 'Base', def: '#3b5b8c' }],
 }
 const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
 
 // Un diseño guardado puede traer una textura que ya no existe (cuadrillé,
-// lunares, camuflado, animal). Se ignora y la pieza queda con su color liso,
-// en vez de abrir el proyecto roto o pintado de cualquier cosa.
-const esTexturaValida = (k: unknown): k is TextureKind =>
-  k === 'rayas' || k === 'denim'
+// lunares, camuflado, animal, rayas). Se ignora y la pieza queda con su color
+// liso, en vez de abrir el proyecto roto o pintado de cualquier cosa.
+const esTexturaValida = (k: unknown): k is TextureKind => k === 'denim'
 
 // ── Efectos de tela (grunge / vintage / desgaste) ────────────────────────────
 // A diferencia de los estampados, un efecto NO reemplaza el relleno: se dibuja
@@ -9657,20 +10116,21 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${to(r)}${to(g)}${to(b)}`
 }
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
-const withL = (hex: string, l: number, sMul = 1) => { const [h, s] = hexToHsl(hex); return hslToHex(h, clamp01(s * sMul), clamp01(l)) }
+// `withL` (fijar la luminosidad) se fue con las rayas: era quien derivaba el
+// fondo claro a partir del color de la raya. El denim usa un solo color.
 const adjL   = (hex: string, d: number)          => { const [h, s, l] = hexToHsl(hex); return hslToHex(h, s, clamp01(l + d)) }
 
 // Índice del slot que actúa como "color principal" en cada textura
-const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, denim: 0 }
+const TEX_PRIMARY: Record<TextureKind, number> = { denim: 0 }
 // Dada la elección de color principal, deriva toda la paleta de la textura
 function deriveTexPalette(kind: TextureKind, p: string): string[] {
   switch (kind) {
-    case 'rayas': return [withL(p, 0.92, 0.5), p]
     case 'denim': return [p]
   }
 }
 
-// Dibuja un tile repetible de la textura sobre un canvas y lo devuelve
+/* Dibuja un tile repetible de la textura sobre un canvas y lo devuelve.
+   Quedó un solo estampado (denim); si se agrega otro, vuelve el switch. */
 function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElement {
   const col = colors ?? defaultTexPalette(kind)
   const s = 56
@@ -9678,20 +10138,16 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
   const x = c.getContext('2d')!
   const rnd = (seed: number) => { const v = Math.sin(seed * 99.13) * 43758.5453; return v - Math.floor(v) }
 
-  if (kind === 'rayas') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = col[1]
-    for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
-  } else {   // denim
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    for (let i = 0; i < 1400; i++) {
-      const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
-      x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
-      x.fillRect(px, py, 1, 1)
-    }
-    x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
-    for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
+  // El denim son tres capas: el azul de base, el moteado del hilo y la diagonal
+  // del tejido, que es lo que lo hace leer como jean y no como papel azul.
+  x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
+  for (let i = 0; i < 1400; i++) {
+    const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
+    x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
+    x.fillRect(px, py, 1, 1)
   }
+  x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
+  for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
   return c
 }
 
@@ -10027,7 +10483,12 @@ function partirPorCostura(
   ]
 }
 
-const TEE_PIEZA = { role: 'piece' as const, fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 }
+/* El gris con el que nace una pieza de prenda. Está aparte porque también es
+   el color al que vuelve "Ninguna" cuando el diseño no trae anotado ninguno
+   (telas aplicadas antes de que ese color se guardara). */
+export const GRIS_DE_FABRICA = '#b2b2b2'
+
+const TEE_PIEZA = { role: 'piece' as const, fill: GRIS_DE_FABRICA, stroke: '#010101', strokeWidth: 2 }
 const centroY = (p: Punto[]) => p.reduce((a, q) => a + q[1], 0) / p.length
 const centroX = (p: Punto[]) => p.reduce((a, q) => a + q[0], 0) / p.length
 

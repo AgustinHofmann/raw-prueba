@@ -31,8 +31,11 @@ export interface RawTexture {
 // El ancho en cm es una estimación de fábrica, no un dato del archivo. Es el
 // punto de partida; el diseñador lo ajusta con el slider y ese valor sí queda
 // guardado (ver loadRawWidths).
+// El animal print se sacó (2026-11-16): era un estampado, no un género, y
+// ensuciaba la grilla al lado de las telas de verdad. Un proyecto que lo esté
+// usando no se rompe: `rawTextureById` devuelve undefined y la pieza se queda
+// con el relleno que ya tenía guardado.
 export const RAW_TEXTURES: RawTexture[] = [
-  { id: 'raw:animal',   name: 'Animal print', url: '/texturas/animal-print.jpg', thumb: '/texturas/thumbs/animal-print.jpg', widthCm: 40, kind: 'photo' },
   { id: 'raw:joggin',   name: 'Joggin',       url: '/texturas/joggin.jpg',       thumb: '/texturas/thumbs/joggin.jpg', widthCm: 15, kind: 'photo' },
   { id: 'raw:camu',     name: 'Camuflaje',    url: '/texturas/camuflaje.svg',    thumb: '/texturas/thumbs/camuflaje.jpg', widthCm: 50, kind: 'svg' },
   { id: 'raw:tartan-1', name: 'Tartán 1',     url: '/texturas/tartan-1.svg',     thumb: '/texturas/thumbs/tartan-1.jpg', widthCm: 15, kind: 'svg' },

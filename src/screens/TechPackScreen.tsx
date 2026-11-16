@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import {
   ChevronLeft, ZoomIn, ZoomOut, Printer, X, Plus, GripVertical, Trash2,
   MousePointer2, ArrowUpRight, Minus, Hash, Circle, Image as ImageIcon,
-  Shirt, Ruler, Package, Palette, FileText, PencilRuler, type LucideIcon,
+  Shirt, Ruler, Package, Palette, FileText, PencilRuler, Stamp, type LucideIcon,
 } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent,
@@ -11,9 +11,10 @@ import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } 
 import { CSS } from '@dnd-kit/utilities'
 import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
-  BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole,
+  BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole, FichaDiseno,
 } from '../types/project'
-import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto } from '../lib/techpackTemplate'
+import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados, tallesDelRango, gradoDe, leerPlata } from '../lib/techpackTemplate'
+import { aRgb, aCmyk, nombreDeColor } from '../lib/colores'
 import AnnotationLayer, { type AnnTool } from './AnnotationLayer'
 
 interface Props {
@@ -21,6 +22,8 @@ interface Props {
   designer: string
   snapshot: string
   measures: Record<string, number> | null
+  /** Estampados y telas leídos del diseño al abrir la ficha. */
+  ficha?: FichaDiseno | null
   onSave: (doc: TechPackDoc) => void
   onBackToEditor: () => void
   onClose: () => void
@@ -31,7 +34,7 @@ const uid = () => crypto.randomUUID()
 const PAGE_W = 1123, PAGE_H = 794   // A4 apaisado a 96dpi
 
 const PAGE_ICON: Record<TechPackPageKind, LucideIcon> = {
-  design: Shirt, specs: PencilRuler, measures: Ruler, materials: Package, colorways: Palette, notes: FileText,
+  design: Shirt, prints: Stamp, specs: PencilRuler, measures: Ruler, materials: Package, colorways: Palette, notes: FileText,
 }
 
 const ANN_TOOLS: { tool: AnnTool; icon: LucideIcon; label: string }[] = [
@@ -52,14 +55,14 @@ const th: React.CSSProperties = { border: '1px solid #999', padding: '5px 7px', 
 const td: React.CSSProperties = { border: '1px solid #ccc', padding: 0, fontSize: 10.5, verticalAlign: 'top' }
 const ci: React.CSSProperties = { width: '100%', border: 'none', outline: 'none', padding: '5px 7px', fontSize: 10.5, fontFamily: 'Arial', color: '#111', background: 'transparent', boxSizing: 'border-box' }
 
-export default function TechPackScreen({ project, designer, snapshot, measures, onSave, onBackToEditor, onClose }: Props) {
+export default function TechPackScreen({ project, designer, snapshot, measures, ficha = null, onSave, onBackToEditor, onClose }: Props) {
   const [doc, setDoc] = useState<TechPackDoc>(() => {
     const guardado = parseTechPack(project.techpackJson)
     // Una ficha que ya existe se abre con el dibujo de la prenda PUESTO AL DIA.
     // Sin esto, el diseno seguia y la ficha se quedaba mostrando la prenda de
     // cuando se creo: el entregable dejaba de coincidir con lo que se diseno.
-    return guardado ? refrescarImagenesAuto(guardado, snapshot)
-                    : buildDefaultTechPack(project, measures, snapshot)
+    const base = refrescarImagenesAuto(guardado ?? buildDefaultTechPack(project, measures, snapshot), snapshot, ficha?.espalda ?? null)
+    return conPaginaEstampados(base, !!ficha?.estampados.length, project.mockupId)
   })
   const [zoom, setZoom]       = useState(0.7)
   const [annTool, setAnnTool] = useState<AnnTool>('select')
@@ -255,6 +258,7 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
         </div>
         <div style={{ flex: 1, marginTop: 14 }}>
           {p.kind === 'design'    && renderDesign()}
+          {p.kind === 'prints'    && renderPrints()}
           {p.kind === 'specs'     && renderSpecs(p)}
           {p.kind === 'measures'  && renderMeasures()}
           {p.kind === 'materials' && renderMaterials()}
@@ -293,6 +297,119 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
     )
   }
 
+  // Cada estampado con su medida y su lugar, como lo pide el taller, y los
+  // colores con números con que se puede hablar con la imprenta y el proveedor.
+  function renderPrints() {
+    if (!ficha) {
+      return <div style={{ fontSize: 11, color: '#888' }}>Abrí la ficha desde el editor para leer los estampados del diseño.</div>
+    }
+    const cm = (n: number) => n.toFixed(1).replace('.', ',')
+    const ubicacion = (e: FichaDiseno['estampados'][number]) => [
+      e.centro === 0 ? 'Centrado' : `${cm(Math.abs(e.centro))} cm a la ${e.centro < 0 ? 'izquierda' : 'derecha'} del centro`,
+      `${cm(e.arriba)} cm ${e.desde === 'cintura' ? 'de la cintura' : 'del hombro (HPS)'}`,
+    ]
+    const fondo = ficha.telas.find(t => t.color)?.color ?? '#e5e5e5'
+    // Las piezas del mismo color van en una sola fila: al proveedor se le pide
+    // la tela por color, no por pieza.
+    const porColor = new Map<string, { color: string | null; tela: string | null; piezas: string[] }>()
+    for (const t of ficha.telas) {
+      const k = t.color ?? 'tela:' + (t.tela ?? '')
+      const fila = porColor.get(k) ?? { color: t.color, tela: t.tela, piezas: [] }
+      if (!fila.piezas.includes(t.pieza)) fila.piezas.push(t.pieza)
+      porColor.set(k, fila)
+    }
+    const numeros = (hex: string) => {
+      const rgb = aRgb(hex)
+      if (!rgb) return { rgb: '', cmyk: '' }
+      return { rgb: rgb.join(' · '), cmyk: aCmyk(rgb).join(' · ') }
+    }
+    const muestra = (c: string) => <span style={{ width: 12, height: 12, borderRadius: 2, background: c, border: '1px solid #999', flexShrink: 0, display: 'inline-block' }} />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div>
+          <SectionTitle>Estampados</SectionTitle>
+          {ficha.estampados.length === 0 ? (
+            <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>El diseño no tiene estampados: solo la prenda.</div>
+          ) : (
+            <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed', marginTop: 6 }}>
+              <thead><tr>
+                <th style={{ ...th, width: 30 }}>#</th>
+                <th style={{ ...th, width: 120 }}>Arte</th>
+                <th style={th}>Qué es</th>
+                <th style={{ ...th, width: 110 }}>Ancho × alto</th>
+                <th style={{ ...th, width: 240 }}>Ubicación</th>
+                <th style={{ ...th, width: 64 }}>Vista</th>
+                <th style={{ ...th, width: 150 }}>Colores</th>
+              </tr></thead>
+              <tbody>
+                {ficha.estampados.map((e, i) => (
+                  <tr key={i}>
+                    <td style={{ ...td, padding: '6px 7px', textAlign: 'center', fontWeight: 700 }}>{i + 1}</td>
+                    <td style={{ ...td, padding: 4 }}>
+                      <div style={{ height: 64, background: fondo, borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <img src={e.imagen} alt="" style={{ maxWidth: '92%', maxHeight: 56, objectFit: 'contain' }} />
+                      </div>
+                    </td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{e.que}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{cm(e.ancho)} × {cm(e.alto)} cm</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{ubicacion(e).map(l => <div key={l}>{l}</div>)}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{e.vista}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>
+                      {e.colores.length ? e.colores.map(c => (
+                        <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          {muestra(c)}<span style={{ fontFamily: 'monospace' }}>{c}</span>
+                          {nombreDeColor(c) && <span style={{ color: '#666' }}>{nombreDeColor(c)}</span>}
+                        </div>
+                      )) : <span style={{ color: '#888' }}>Del archivo</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 5 }}>
+            Izquierda y derecha, mirando el dibujo. El HPS es el punto alto del hombro, al lado del cuello. La técnica (serigrafía, DTF, bordado) se aclara en Notas o en Materiales.
+          </div>
+        </div>
+
+        <div>
+          <SectionTitle>Colores de la prenda</SectionTitle>
+          <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed', marginTop: 6 }}>
+            <thead><tr>
+              <th style={{ ...th, width: 130 }}>Color</th>
+              <th style={{ ...th, width: 80 }}>Hex</th>
+              <th style={{ ...th, width: 110 }}>RGB</th>
+              <th style={{ ...th, width: 130 }}>CMYK aprox.</th>
+              <th style={th}>Piezas</th>
+            </tr></thead>
+            <tbody>
+              {[...porColor.values()].map((f, i) => {
+                const n = f.color ? numeros(f.color) : null
+                return (
+                  <tr key={i}>
+                    <td style={{ ...td, padding: '6px 7px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {f.color && muestra(f.color)}
+                        <span>{f.color ? (nombreDeColor(f.color) ?? 'Color a medida') : (f.tela ?? 'Tela')}</span>
+                      </div>
+                    </td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{f.color ?? '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{n?.rgb || '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px', fontFamily: 'monospace' }}>{n?.cmyk || '—'}</td>
+                    <td style={{ ...td, padding: '6px 7px' }}>{f.piezas.join(', ')}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 5 }}>
+            El CMYK es una conversión simple, de referencia: el tono final se aprueba con una prueba sobre la tela. Si el taller trabaja con Pantone, el código se carga en Materiales.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   function renderSpecs(p: TechPackPage) {
     return (
       <div style={{ display: 'flex', gap: 16 }}>
@@ -316,41 +433,95 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
     )
   }
 
+  // La tabla graduada: el talle base se carga (o lo trae el diseño) y los
+  // demás salen del salto de cada medida. Es la tabla que el taller necesita
+  // para cortar todos los talles, no solo el de muestra.
   function renderMeasures() {
+    const base = doc.meta.talleBase.trim() || 'M'
+    const talles = tallesDelRango(doc.meta.rangoTalles, base) ?? [base]
+    const iBase = talles.findIndex(t => t.toUpperCase() === base.toUpperCase())
+    const fmt = (n: number) => (Math.round(n * 10) / 10).toString().replace('.', ',')
     return (
       <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 1, display: 'flex' }}>{imageBox('measures', 'Puntos de medida', 520)}</div>
-        <div style={{ flex: 1.5, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 0.8, display: 'flex' }}>{imageBox('measures', 'Puntos de medida', 520)}</div>
+        <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}>
             <thead><tr>
-              <th style={{ ...th, width: 30 }}>#</th>
+              <th style={{ ...th, width: 26 }}>#</th>
               <th style={th}>Punto de medida</th>
               <th style={th}>Cómo medir</th>
-              <th style={{ ...th, width: 56 }}>Base</th>
-              <th style={{ ...th, width: 44 }}>Tol.±</th>
+              <th style={{ ...th, width: 38 }}>Tol.±</th>
+              <th style={{ ...th, width: 42 }} title="Cuántos cm cambia de un talle al siguiente">Salto</th>
+              {talles.map((t, i) => (
+                <th key={t} style={{ ...th, width: 44, textAlign: 'center', background: i === iBase ? '#4d5900' : th.background }}>{t}</th>
+              ))}
               <th style={{ ...th, width: 22 }} className="no-print"></th>
             </tr></thead>
             <tbody>
-              {doc.poms.map(r => (
-                <tr key={r.id}>
-                  <td style={td}><input style={{ ...ci, textAlign: 'center', fontWeight: 700 }} value={r.code} onChange={e => patchPom(r.id, { code: e.target.value })} /></td>
-                  <td style={td}><input style={ci} value={r.punto} onChange={e => patchPom(r.id, { punto: e.target.value })} /></td>
-                  <td style={td}><input style={ci} value={r.comoMedir} onChange={e => patchPom(r.id, { comoMedir: e.target.value })} /></td>
-                  <td style={td}><input style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={r.base ?? ''} onChange={e => patchPom(r.id, { base: e.target.value === '' ? null : Number(e.target.value) })} /></td>
-                  <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.tolerancia} onChange={e => patchPom(r.id, { tolerancia: e.target.value })} /></td>
-                  <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removePom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
-                </tr>
-              ))}
+              {doc.poms.map(r => {
+                const g = gradoDe(r)
+                return (
+                  <tr key={r.id}>
+                    <td style={td}><input style={{ ...ci, textAlign: 'center', fontWeight: 700 }} value={r.code} onChange={e => patchPom(r.id, { code: e.target.value })} /></td>
+                    <td style={td}><input style={ci} value={r.punto} onChange={e => patchPom(r.id, { punto: e.target.value })} /></td>
+                    <td style={td}><input style={ci} value={r.comoMedir} onChange={e => patchPom(r.id, { comoMedir: e.target.value })} /></td>
+                    <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.tolerancia} onChange={e => patchPom(r.id, { tolerancia: e.target.value })} /></td>
+                    <td style={td}><CeldaNum style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={g}
+                      onChange={n => patchPom(r.id, { grado: n })} /></td>
+                    {talles.map((t, i) => (
+                      <td key={t} style={{ ...td, background: i === iBase ? '#f4f7e6' : undefined }}>
+                        {i === iBase ? (
+                          <CeldaNum style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }} value={r.base}
+                            onChange={n => patchPom(r.id, { base: n })} />
+                        ) : (
+                          <div style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', color: '#333' }}>
+                            {r.base != null && g != null ? fmt(r.base + (i - iBase) * g) : '—'}
+                          </div>
+                        )}
+                      </td>
+                    ))}
+                    <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removePom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
           <button className="no-print" onClick={addPom} style={addRowBtn}><Plus size={11} /> Agregar medida</button>
-          {!measures && <div style={{ fontSize: 10, color: '#888', marginTop: 6 }}>El talle base se autocompleta para la remera paramétrica; acá cargalo a mano.</div>}
+          <div style={{ fontSize: 9.5, color: '#777', marginTop: 6 }}>
+            Medidas en cm, en plano. Talle {base} de muestra; los demás salen del salto de cada medida, que se puede corregir.
+            {talles.length === 1 && ' Para graduar, escribí el rango de talles como S–XL o 38–46.'}
+          </div>
+          {!measures && <div style={{ fontSize: 10, color: '#888', marginTop: 4 }}>El talle base se autocompleta para las prendas con medidas; acá cargalo a mano.</div>}
         </div>
       </div>
     )
   }
 
   function renderMaterials() {
+    // El costo sale de lo que ya está en la tabla (consumo × precio) más lo que
+    // no es material (confección, estampado). Una fila sin precio no se cuenta
+    // como cero en silencio: se avisa, porque un costo de menos es peor que uno
+    // incompleto que dice que lo está.
+    const num = leerPlata
+    const cant = (s: string | undefined) => { const n = Number((s ?? '').trim().replace(',', '.')); return (s ?? '').trim() === '' || !isFinite(n) ? null : n }
+    // Con centavos, siempre dos: "$ 1.250,5" se lee como un error.
+    const plata = (n: number) => '$ ' + n.toLocaleString('es-AR', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })
+    const subtotal = (r: BomRow) => { const c = cant(r.consumo), p = num(r.precio); return c != null && p != null ? c * p : null }
+    const materiales = doc.bom.reduce((t, r) => t + (subtotal(r) ?? 0), 0)
+    const sinPrecio = doc.bom.filter(r => subtotal(r) == null).length
+    const costos = doc.costos ?? { confeccion: '', estampado: '', cantidad: '' }
+    const porPrenda = materiales + (num(costos.confeccion) ?? 0) + (num(costos.estampado) ?? 0)
+    const cantidad = cant(costos.cantidad)
+    const patchCostos = (patch: Partial<typeof costos>) => update(d => ({ ...d, costos: { ...costos, ...patch } }))
+    const fila = (label: string, valor: React.ReactNode, fuerte = false) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderTop: fuerte ? '1px solid #111' : '1px solid #eee', fontWeight: fuerte ? 700 : 400, fontSize: 11 }}>
+        <span>{label}</span><span style={{ fontFamily: 'monospace' }}>{valor}</span>
+      </div>
+    )
+    const campo = (v: string, on: (s: string) => void, ph: string) => (
+      <input value={v} onChange={e => on(e.target.value)} placeholder={ph}
+        style={{ width: 90, textAlign: 'right', border: 'none', borderBottom: '1px solid #ccc', outline: 'none', fontSize: 11, fontFamily: 'monospace', padding: '2px 0', color: '#111', background: 'transparent' }} />
+    )
     return (
       <div>
         <table style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}>
@@ -363,6 +534,8 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
             <th style={{ ...th, width: 54 }}>Consumo</th>
             <th style={{ ...th, width: 34 }}>UOM</th>
             <th style={{ ...th, width: 100 }}>Proveedor</th>
+            <th style={{ ...th, width: 64 }} title="Precio por unidad de medida (UOM)">Precio u.</th>
+            <th style={{ ...th, width: 74 }}>Subtotal</th>
             <th style={{ ...th, width: 22 }} className="no-print"></th>
           </tr></thead>
           <tbody>
@@ -376,12 +549,31 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
                 <td style={td}><input style={ci} value={r.consumo} onChange={e => patchBom(r.id, { consumo: e.target.value })} /></td>
                 <td style={td}><input style={{ ...ci, textAlign: 'center' }} value={r.uom} onChange={e => patchBom(r.id, { uom: e.target.value })} /></td>
                 <td style={td}><input style={ci} value={r.proveedor} onChange={e => patchBom(r.id, { proveedor: e.target.value })} /></td>
+                <td style={td}><input style={{ ...ci, textAlign: 'right', fontFamily: 'monospace' }} value={r.precio ?? ''} onChange={e => patchBom(r.id, { precio: e.target.value })} /></td>
+                <td style={td}><div style={{ ...ci, textAlign: 'right', fontFamily: 'monospace', color: '#333' }}>{subtotal(r) != null ? plata(subtotal(r)!) : '—'}</div></td>
                 <td style={{ ...td, textAlign: 'center' }} className="no-print"><button onClick={() => removeBom(r.id)} style={delBtn}><Trash2 size={11} /></button></td>
               </tr>
             ))}
           </tbody>
         </table>
         <button className="no-print" onClick={addBom} style={addRowBtn}><Plus size={11} /> Agregar fila</button>
+
+        <div style={{ marginTop: 16, marginLeft: 'auto', width: 340 }}>
+          <SectionTitle>Costo estimado</SectionTitle>
+          <div style={{ marginTop: 6 }}>
+            {fila('Materiales (consumo × precio)', plata(materiales))}
+            {fila('Confección, por prenda', campo(costos.confeccion, v => patchCostos({ confeccion: v }), '$'))}
+            {fila('Estampado, por prenda', campo(costos.estampado, v => patchCostos({ estampado: v }), '$'))}
+            {fila('Costo por prenda', plata(porPrenda), true)}
+            {fila('Cantidad', campo(costos.cantidad, v => patchCostos({ cantidad: v }), 'u'))}
+            {cantidad != null && fila(`Costo de ${cantidad.toLocaleString('es-AR')} prendas`, plata(porPrenda * cantidad), true)}
+          </div>
+          {sinPrecio > 0 && (
+            <div style={{ fontSize: 9.5, color: '#a15c00', marginTop: 6 }}>
+              {sinPrecio === 1 ? 'Una fila no tiene' : `${sinPrecio} filas no tienen`} consumo o precio y no {sinPrecio === 1 ? 'entra' : 'entran'} en el costo.
+            </div>
+          )}
+        </div>
       </div>
     )
   }
@@ -420,6 +612,28 @@ function IconButton({ children, title, onClick, active }: { children: React.Reac
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface)' }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
     >{children}</button>
+  )
+}
+
+/**
+ * Celda numérica que deja escribir decimales. Convertir a número en cada tecla
+ * borraba la coma: "0," pasaba a ser 0 y no había forma de escribir 0,5. Lo
+ * escrito se guarda como texto hasta que es un número completo.
+ */
+function CeldaNum({ value, onChange, style }: { value: number | null; onChange: (n: number | null) => void; style: React.CSSProperties }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const num = (s: string) => { const n = Number(s.trim().replace(',', '.')); return s.trim() === '' || !isFinite(n) ? null : n }
+  return (
+    <input style={style} placeholder="—" inputMode="decimal"
+      value={draft ?? (value == null ? '' : String(value).replace('.', ','))}
+      onChange={e => {
+        const v = e.target.value
+        setDraft(v)
+        if (!/[.,]$/.test(v.trim()) && (v.trim() === '' || num(v) != null)) onChange(num(v))
+      }}
+      onBlur={() => { if (draft != null) { onChange(num(draft)); setDraft(null) } }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+    />
   )
 }
 
