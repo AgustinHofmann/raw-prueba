@@ -106,6 +106,12 @@ const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; da
     hint: 'Tela recogida. Punteado corto y parejo.' },
 ]
 
+/* Las propiedades PROPIAS de RAW que el molde de una máscara se lleva al
+   guardarse. Fabric solo serializa lo que conoce, así que hay que nombrárselas.
+   Está acá arriba porque se usa en dos lados —al crear la máscara y al reabrir
+   el proyecto— y si las dos listas se separan, el molde pierde su pintura. */
+const PROPS_DEL_MOLDE = ['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']
+
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
 //
 // No alcanza con el color/patrón que se ve: una pieza pintada guarda además la
@@ -2419,7 +2425,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const guardada = (obj as any)._mascara
           if (guardada) {
             try {
-              const [molde] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
+              /* ⚠️ `_mascara` puede llegar acá YA VIVO.
+               *
+               * Fabric revive solo cualquier propiedad cuyo valor tenga un
+               * `type` conocido (`enlivenObjectEnlivables`), y el molde guardado
+               * es justamente eso. Revivirlo de nuevo rompía:
+               * `Group.fromObject` le busca la clase a `layoutManager.type`, que
+               * en un objeto vivo no existe, y tiraba "No class registered for
+               * undefined". El catch de abajo se comía el error y la máscara se
+               * perdía al reabrir el proyecto.
+               *
+               * Con un molde de una sola pieza (un Path) pasaba desapercibido,
+               * porque `Path.fromObject` no mira el layout. Apareció al pasar el
+               * molde de la prenda a ser la silueta entera, que es un grupo. */
+              const estaVivo = typeof guardada?.toObject === 'function'
+              const molde = estaVivo
+                ? guardada as fabric.FabricObject
+                : (await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[])[0]
               if (molde) {
                 ;(molde as any).absolutePositioned = false
                 molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
@@ -2436,6 +2458,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   }
                 }
                 obj.clipPath = molde
+                /* Y `_mascara` vuelve a ser JSON.
+                 *
+                 * Si se dejara el objeto vivo, el próximo guardado lo pasaría
+                 * por JSON.stringify y lo que saldría no es un molde: `type`
+                 * vive en el prototipo, así que no viaja, y al abrir de nuevo
+                 * el molde ya no se puede revivir. La máscara se perdía recién
+                 * a la SEGUNDA apertura, que es lo que hace que estas cosas
+                 * parezcan pasar "a veces". */
+                ;(obj as any)._mascara = molde.toObject(PROPS_DEL_MOLDE)
                 // El molde ya se guardó en (0,0) y el grupo ya venía medido por
                 // él, así que acá solo hay que dejar la medida fija para que el
                 // próximo reacomodo no lo devuelva al tamaño del contenido.
@@ -6511,15 +6542,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * coincidía con nada y desaparecía. Por eso solo se veía con la prenda en su
    * posición original.
    */
-  async function rebuildGarmentClip() {
-    const canvas = fc.current
-    if (!canvas) return
-    const piezas = mockupObjects.current.filter(o => {
+  /**
+   * Las piezas que DEFINEN la silueta de la prenda.
+   *
+   * No son todas: una pieza escondida o sin relleno no aporta contorno, y el
+   * hueco del cuello (`_rawInner`) es un agujero, no silueta.
+   */
+  function piezasDeLaSilueta(): fabric.FabricObject[] {
+    return mockupObjects.current.filter(o => {
       if (o.visible === false) return false
       if ((o as any)._rawInner) return false    // el hueco del cuello no define la silueta
       const f = (o as any).fill
       return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
     })
+  }
+
+  /** Una copia nueva de la silueta entera, para usarla de molde. */
+  async function copiaDeLaSilueta(): Promise<fabric.Group | null> {
+    const piezas = piezasDeLaSilueta()
+    if (!piezas.length) return null
+    return new fabric.Group(await Promise.all(piezas.map(p => p.clone())))
+  }
+
+  async function rebuildGarmentClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const piezas = piezasDeLaSilueta()
     if (!piezas.length) return
 
     const copias = await Promise.all(piezas.map(p => p.clone()))
@@ -7327,7 +7375,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // al soltar, y el molde ya encajado para poder rehacerlo al abrir el archivo.
     // El grupo no lleva además el recorte a la prenda: Fabric admite uno solo.
     ;(grupo as any)._mascaraPrevio = previo
-    ;(grupo as any)._mascara = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
+    ;(grupo as any)._mascara = forma.toObject(PROPS_DEL_MOLDE)
     return grupo
   }
 
@@ -7351,7 +7399,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     let forma = elegidos[elegidos.length - 1]
     // La prenda puede ser el MOLDE, pero nunca el contenido: no tiene sentido
     // meter la remera adentro de un recorte.
-    const contenido = elegidos.slice(0, -1).filter(o => !mockupObjects.current.includes(o))
+    //
+    // El `_garmentGroup` hay que nombrarlo aparte: con la prenda agrupada, el
+    // grupo NO está en `mockupObjects` (ahí están las piezas, que ahora viven
+    // adentro suyo), así que se colaba como contenido y la máscara se tragaba
+    // la remera entera. Medido: después de un Ctrl+7 así, la prenda ya no
+    // estaba en el lienzo.
+    const contenido = elegidos.slice(0, -1)
+      .filter(o => !mockupObjects.current.includes(o) && !(o as any)._garmentGroup)
     if (!contenido.length) {
       onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
@@ -7378,10 +7433,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // esas coordenadas relativas y el molde aparece fuera del lienzo.
     canvas.discardActiveObject()
 
-    if (mockupObjects.current.includes(forma)) {
-      const copia = await forma.clone()
-      ;(copia as any)._moldeDePrenda = true
-      forma = copia
+    /* Si el molde es la prenda, el molde es la prenda ENTERA.
+     *
+     * Antes se clonaba el objeto de más arriba tal cual, y la prenda no es un
+     * objeto: son varias piezas sueltas. La de más arriba suele ser una tirita
+     * del cuello, así que recortar con la remera recortaba contra un molde de
+     * 110x10 px — medido— y del dibujo sobrevivía apenas una franja del cuello.
+     * Ahora se usa una copia de la silueta completa, la misma que arma
+     * "Recortado a la remera".
+     *
+     * Si la prenda está AGRUPADA el molde es una copia del grupo, no la
+     * silueta armada a mano: adentro de un grupo las piezas tienen
+     * coordenadas relativas a ese grupo, así que copiarlas sueltas las
+     * mandaría a cualquier lado. Y el grupo ya es la prenda entera, que es lo
+     * que se busca. (Copiarlo, además, evita consumir la prenda de verdad
+     * adentro de la máscara y que la remera desaparezca del lienzo.) */
+    const esPiezaSuelta = mockupObjects.current.includes(forma)
+    const esPrendaAgrupada = !!(forma as any)._garmentGroup
+    if (esPiezaSuelta || esPrendaAgrupada) {
+      const silueta = (esPiezaSuelta ? await copiaDeLaSilueta() : null) ?? await forma.clone()
+      ;(silueta as any)._moldeDePrenda = true
+      forma = silueta
     }
 
     const grupo = armarGrupoMascara(contenido, forma)
@@ -7428,10 +7500,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     grupo.clipPath = undefined
     const hijos = dissolveGroup(grupo)
-    hijos.forEach(o => {
-      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-      o.dirty = true
-    })
 
     if (forma && destino) {
       // La forma vuelve a ser un objeto normal, con el aspecto que tenía antes
@@ -7444,7 +7512,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         selectable: true, evented: true,
       })
       ;(forma as any).absolutePositioned = false
-      forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
       forma.dirty = true
       // Si el molde era una copia de la prenda, no se devuelve: dejaría una
       // silueta de remera suelta encima del diseño.
@@ -7453,7 +7520,22 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         forma.setCoords()
       }
     }
+
+    /* Lo que estaba DEBAJO de la prenda tiene que volver debajo.
+     *
+     * `dissolveGroup` devuelve los hijos con `canvas.add`, o sea al frente de
+     * todo, y antes acá se les reponía el recorte a la prenda a todos por
+     * igual. Para algo marcado `_fondo` eso es lo peor de los dos mundos:
+     * recortado contra la silueta Y (al volver a hundirse) tapado por la
+     * prenda. Medido: una imagen que estaba en el puesto 0 volvía al 12 de 13
+     * y con recorte puesto, aunque seguía marcada como fondo.
+     *
+     * `acomodarFondo` la hunde de nuevo y `sincronizarFondo` mira dónde quedó
+     * cada una para decidir el recorte. Es la misma pareja que usa el resto
+     * del editor, así que la máscara deja de ser un caso aparte. */
     const sueltos = (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+    acomodarFondo()
+    sueltos.forEach(sincronizarFondo)
     return { contenido: hijos, forma, sueltos }
   }
 
