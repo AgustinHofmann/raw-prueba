@@ -2507,6 +2507,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
         acomodarFondo()   // lo que el usuario había dejado debajo de la prenda vuelve abajo
         restoreGarmentPaint(design.garment)
+        // El panel también se abre: la prenda ya tiene su tela y su efecto
+        // puestos, y antes el panel decía "Ninguna" y "Sin efecto" igual.
+        reflejarTelaYEfecto(null)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
 
         // El encuadre va DESPUÉS de reponer la prenda y los objetos: si se
@@ -4576,7 +4579,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
-        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); setActiveUserTex(null); return }
+        if (!obj) {
+          setHasSel(false); setIsText(false)
+          // Sin selección el panel vuelve a hablar de TODA la prenda, así que
+          // muestra lo que la prenda tiene puesto, no "ninguno".
+          reflejarTelaYEfecto(null)
+          setLineRole(null)
+          return
+        }
         setHasSel(true)
         // Si el objeto no tiene trazo o relleno de color (una imagen, por
         // ejemplo), se deja lo que el panel ya mostraba en vez de inventar un
@@ -4587,17 +4597,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // Grosor "Mixto" si hay varios objetos seleccionados con distinto strokeWidth
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
-        // Si el objeto ya tiene una textura, abrir su editor de colores con su paleta
-        // Si la textura guardada ya no existe (proyecto viejo), no se abre su
-        // editor: pedirle la paleta a una textura borrada rompía el panel.
-        const tex = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
-        if (tex && esTexturaValida(tex.kind)) {
-          setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
-        } else setActiveTexKind(null)
-        // La tela de foto también: sin esto la grilla no marcaba la que tiene
-        // puesta lo seleccionado, y "Ninguna" se veía elegida sin serlo.
-        const uTex = (obj as any)._userTex as { id: string } | undefined
-        setActiveUserTex(uTex?.id ?? null)
+        // Tela, estampado y efecto de lo seleccionado, todo por el mismo lado.
+        reflejarTelaYEfecto(obj)
+        // Y qué significa la línea en el flat (contorno, costura, pespunte…):
+        // estaba guardado en el objeto pero el panel no lo marcaba, así que una
+        // línea guardada como costura se abría como si no fuera nada.
+        const rol = (obj as any)._lineRole as LineRole | undefined
+        setLineRole(rol ?? null)
+        lineRoleRef.current = rol ?? null
         // X/Y/W/H de lo que hay seleccionado.
         //
         // Con varios objetos se muestra la caja de TODA la selección, no la del
@@ -5612,6 +5619,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.requestRenderAll()
     markDirty()
     onToast?.(`${verb} a ${label}`)
+  }
+
+  /**
+   * Pone el panel de telas al día con lo que hay DIBUJADO.
+   *
+   * El panel no guarda la verdad: la verdad está en la pieza. Antes el panel
+   * solo se enteraba cuando vos aplicabas algo, así que al cerrar el proyecto
+   * y volver a entrar la prenda se veía con su tela y su efecto pero el panel
+   * decía "Ninguna" y "Sin efecto". Lo mismo al seleccionar una pieza: la tela
+   * se marcaba, el efecto no.
+   *
+   * Sin nada seleccionado el panel pinta TODA la prenda, así que ahí muestra
+   * lo que tiene la prenda — y de la prenda, el cuerpo, que es la pieza grande
+   * y la que uno mira. Si cada pieza tiene algo distinto no hay una sola
+   * respuesta posible, y el cuerpo es la menos sorpresiva.
+   */
+  function reflejarTelaYEfecto(obj: fabric.FabricObject | null) {
+    const o: any = obj
+      ?? mockupObjects.current.find(p => (p as any)._rawBody)
+      ?? fillableGarmentPieces()[0]
+      ?? null
+
+    const tex = o?._texture as { kind: TextureKind; colors: string[] } | undefined
+    // Una textura que ya no existe (proyecto viejo) no abre su editor de
+    // colores: pedirle la paleta a una textura borrada rompía el panel.
+    if (tex && esTexturaValida(tex.kind)) {
+      setActiveTexKind(tex.kind)
+      setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
+    } else setActiveTexKind(null)
+
+    const uTex = o?._userTex as { id: string } | undefined
+    setActiveUserTex(uTex?.id ?? null)
+
+    const eff = o?._effect as { kind: EffectKind; intensity: number } | undefined
+    setActiveEffect(eff?.kind ?? null)
+    if (eff) setEffectIntensity(eff.intensity)
   }
 
   function applyTexture(kind: TextureKind) {
