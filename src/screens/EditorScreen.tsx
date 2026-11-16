@@ -6835,7 +6835,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
     // la app conozca los numeros.
-    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null), { ...fichaDelDiseno(canvas), espalda })
+    // measuresRef y no el estado: esta función se le pasa a la App una sola vez
+    // al abrir el editor, y el estado que veía era el de ese momento. Una ficha
+    // nueva salía con las medidas por defecto aunque la remera tuviera otras.
+    onOpenTechPack(img, isTee ? measuresRef.current : (prendaParam ? medidasRef.current : null), { ...fichaDelDiseno(canvas), espalda })
   }
 
   /** Dónde está la prenda en el lienzo, sin contar el zoom. */
