@@ -18,7 +18,7 @@ import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
-interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
+interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void; imagenParaCompartir: () => string | null }
 
 interface Props {
   project: Project
@@ -1913,7 +1913,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack })
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack, imagenParaCompartir })
     return () => onActionsReady(null)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -6662,6 +6662,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
       })
     return { estampados, telas }
+  }
+
+  // La imagen del link para compartir: la prenda entera (frente, espalda y lo
+  // dibujado encima), sin tiradores ni selección. JPEG sobre blanco porque pesa
+  // la mitad que un PNG y el link se abre casi siempre en un celular; si igual
+  // se pasa del tope de la base (1,5 MB), se achica hasta entrar.
+  function imagenParaCompartir(): string | null {
+    const canvas = fc.current
+    const c = cajaPrenda()
+    if (!canvas || !c) return null
+    canvas.discardActiveObject()
+    const wasMeasure = measureEditRef.current
+    measureEditRef.current = false
+    const vpt = canvas.viewportTransform, fondo = canvas.backgroundColor
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    canvas.backgroundColor = '#ffffff'
+    const pad = 24, w = c.x2 - c.x1 + pad * 2, h = c.y2 - c.y1 + pad * 2
+    let url: string | null = null
+    try {
+      for (const [ancho, calidad] of [[1600, 0.85], [1200, 0.75], [900, 0.7]]) {
+        url = canvas.toDataURL({ format: 'jpeg', quality: calidad, multiplier: Math.min(3, ancho / w), left: c.x1 - pad, top: c.y1 - pad, width: w, height: h })
+        if (url.length <= 1_400_000) break
+      }
+    } finally {
+      canvas.backgroundColor = fondo
+      if (vpt) canvas.viewportTransform = vpt
+      measureEditRef.current = wasMeasure
+      canvas.requestRenderAll()
+    }
+    return url
   }
 
   function openTechPack() {

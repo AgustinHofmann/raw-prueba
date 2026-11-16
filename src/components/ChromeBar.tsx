@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { ImagePlus, ScanLine, Save, Download, FileText } from 'lucide-react'
+import { ImagePlus, ScanLine, Save, Download, FileText, Link2 } from 'lucide-react'
 import Logo from './Logo'
 import { Project, Tab, tabKey } from '../types/project'
 
@@ -24,6 +24,7 @@ interface Props {
   onImportImage: (f: File) => void
   onPlaceImage: (f: File) => void
   onTechPack: () => void
+  onShare: () => void
   onRename: (name: string) => void
   onProfileOpen: () => void
   /** Sin cuenta, el avatar y el cartel llevan acá en vez de al perfil. */
@@ -33,7 +34,7 @@ interface Props {
 export default function ChromeBar({
   route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
   onHome, onTabClick, onTabClose, onNewProject,
-  onSave, onExport, onImportImage, onPlaceImage, onTechPack, onRename, onProfileOpen,
+  onSave, onExport, onImportImage, onPlaceImage, onTechPack, onShare, onRename, onProfileOpen,
   onIniciarSesion,
 }: Props) {
   const [editing, setEditing]     = useState(false)
@@ -266,6 +267,7 @@ export default function ChromeBar({
                     <MenuItem icon={<Save size={15} />} label={saved ? 'Guardado ✓' : 'Guardar'} hint="Ctrl+S" onClick={() => { onSave(); setFileMenuOpen(false) }} />
                     <MenuItem icon={<Download size={15} />} label="Exportar PNG"       hint="alta resolución"  onClick={() => { onExport(); setFileMenuOpen(false) }} />
                     <MenuItem icon={<FileText size={15} />} label="Tech Pack"          hint="ficha técnica PDF" onClick={() => { onTechPack(); setFileMenuOpen(false) }} />
+                    <MenuItem icon={<Link2 size={15} />} label="Compartir link"     hint="solo para ver"    onClick={() => { onShare(); setFileMenuOpen(false) }} />
                   </div>
                 </>
               )}

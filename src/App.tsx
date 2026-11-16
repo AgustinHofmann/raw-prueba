@@ -17,6 +17,7 @@ import EditorScreen from './screens/EditorScreen'
 import TechPackScreen from './screens/TechPackScreen'
 import NewProjectSheet from './screens/NewProjectSheet'
 import ChromeBar from './components/ChromeBar'
+import CompartirPanel from './components/CompartirPanel'
 import Toast from './components/Toast'
 import EasterEgg from './components/EasterEgg'
 import PageTransition from './components/PageTransition'
@@ -37,6 +38,7 @@ export default function App() {
   const [loading, setLoading]         = useState(false)
   const [showSheet, setShowSheet]     = useState(false)
   const [showProfile, setShowProfile] = useState(false)
+  const [compartir, setCompartir] = useState<{ id: string; imagen: string } | null>(null)
   // Pantalla de cuenta abierta DESDE ADENTRO, ya trabajando sin cuenta.
   const [showAuth, setShowAuth]       = useState(false)
   const [toast, setToast]           = useState<string | null>(null)
@@ -59,7 +61,7 @@ export default function App() {
   const activeRef = useRef<Project | null>(null)
   activeRef.current = activeProject
 
-  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
+  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void; imagenParaCompartir: () => string | null } | null>(null)
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)
   useEffect(() => {
@@ -471,6 +473,12 @@ export default function App() {
           onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
           onPlaceImage={(f: File) => editorActionsRef.current?.placeImage(f)}
           onTechPack={() => editorActionsRef.current?.techpack()}
+          onShare={() => {
+            // El link vive en la cuenta: sin sesión no hay dónde guardarlo.
+            if (!user) { showToast('Para compartir un link, iniciá sesión: el link vive en tu cuenta'); return }
+            const p = activeRef.current, imagen = editorActionsRef.current?.imagenParaCompartir()
+            if (p && imagen) setCompartir({ id: p.id, imagen })
+          }}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
           onIniciarSesion={cloudEnabled ? () => setShowAuth(true) : undefined}
@@ -532,6 +540,12 @@ export default function App() {
 
       {showSheet && (
         <NewProjectSheet folders={folders} onConfirm={handleCreate} onCancel={() => setShowSheet(false)} />
+      )}
+
+      {compartir && (
+        <CompartirPanel proyectoId={compartir.id} imagen={compartir.imagen}
+          guardar={() => editorActionsRef.current?.save()}
+          onClose={() => setCompartir(null)} onToast={showToast} />
       )}
 
       {showProfile && user && (

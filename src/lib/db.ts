@@ -70,6 +70,27 @@ export async function deleteProject(id: string): Promise<void> {
   if (!data || data.length === 0) throw new Error(`La base no borró el proyecto ${id}`)
 }
 
+// ─── Links para compartir (migración 0009) ───────────────────────────────────
+
+/** Crea el link del proyecto, o le refresca la imagen si ya tenía. Devuelve el token. */
+export async function compartirProyecto(id: string, imagen: string): Promise<string> {
+  const { data, error } = await supabase.rpc('compartir_proyecto', { p_proyecto: id, p_imagen: imagen })
+  if (error) throw error
+  return data as string
+}
+
+export async function dejarDeCompartir(id: string): Promise<void> {
+  const { error } = await supabase.from('shares').delete().eq('project_id', id)
+  if (error) throw error
+}
+
+/** Lo que ve quien abre el link, sin cuenta. null si el link no existe. */
+export async function verCompartido(token: string): Promise<{ nombre: string; prenda: string; imagen: string; actualizado: string } | null> {
+  const { data, error } = await supabase.rpc('ver_compartido', { p_token: token })
+  if (error) throw error
+  return (data as { nombre: string; prenda: string; imagen: string; actualizado: string }[] | null)?.[0] ?? null
+}
+
 // ─── Folders ─────────────────────────────────────────────────────────────────
 
 export async function fetchFolders(): Promise<Folder[]> {

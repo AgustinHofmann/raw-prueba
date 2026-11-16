@@ -3,11 +3,16 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary'
+import VistaCompartida from './screens/VistaCompartida'
+
+// Un link compartido (…/#c=<token>) abre solo el diseño, sin la app. Va en el
+// hash para que el servidor no tenga que saber de esta ruta.
+const tokenCompartido = /^#c=([0-9a-f]{64})$/.exec(location.hash)?.[1]
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <App />
+      {tokenCompartido ? <VistaCompartida token={tokenCompartido} /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 )
