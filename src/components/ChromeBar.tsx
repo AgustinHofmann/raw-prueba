@@ -87,13 +87,12 @@ export default function ChromeBar({
 
   function alBajarPuntero(e: React.PointerEvent, i: number) {
     if (e.button !== 0) return
+    // La cruz no arrastra: es un botón adentro de otro. Si el gesto empieza
+    // ahí, la pestaña ni se entera.
+    if ((e.target as HTMLElement).closest('[data-cerrar]')) return
     const caja = e.currentTarget.getBoundingClientRect()
     inicio.current = { x: e.clientX, desde: i, centro: caja.left + caja.width / 2 }
     huboArrastre.current = false
-    // Capturar el puntero es lo que hace que el arrastre siga funcionando
-    // aunque el mouse se salga de la pestaña. Si el navegador no lo deja, el
-    // arrastre anda igual mientras no te salgas.
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* no se pudo capturar */ }
   }
 
   function alMoverPuntero(e: React.PointerEvent) {
@@ -102,6 +101,16 @@ export default function ChromeBar({
     const dx = e.clientX - ini.x
     // Menos de 4 px todavía es un click, no un arrastre.
     if (!huboArrastre.current && Math.abs(dx) < 4) return
+    if (!huboArrastre.current) {
+      /* Recién acá se captura el puntero, no al apretar.
+       *
+       * Capturar manda TODOS los eventos siguientes —el click incluido— al
+       * elemento que captura. Capturando desde el principio, el click de la
+       * cruz le llegaba a la pestaña en vez de a la cruz: cerrar dejó de
+       * funcionar y en su lugar te cambiaba de proyecto. Capturando solo
+       * cuando el arrastre ya empezó, un click sigue siendo un click. */
+      try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* no se pudo capturar */ }
+    }
     huboArrastre.current = true
     setArrastre({ desde: ini.desde, dx, destino: destinoPara(dx, ini.desde) })
   }
@@ -284,8 +293,29 @@ export default function ChromeBar({
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 112 }}>{t.project.name}</span>
               {isTP && <span className="mono" style={{ fontSize: 8, color: 'var(--muted)', flexShrink: 0, letterSpacing: '0.04em' }}>TP</span>}
               <span
+                data-cerrar
+                role="button"
+                title={`Cerrar ${t.project.name}`}
+                // El pointerdown también se frena: si no, el gesto empieza como
+                // arrastre de la pestaña y la cruz queda a merced de eso.
+                onPointerDown={e => e.stopPropagation()}
                 onClick={e => { e.stopPropagation(); onTabClose(t) }}
-                style={{ fontSize: 10, color: 'var(--muted)', padding: '1px 3px', lineHeight: 1, flexShrink: 0 }}
+                style={{
+                  fontSize: 10, color: 'var(--muted)', lineHeight: 1, flexShrink: 0,
+                  // Antes era un ✕ de 10 px con 3 px de aire: una mosca. Ahora
+                  // tiene un área de clic de verdad, que es lo que uno apunta.
+                  width: 16, height: 16, borderRadius: 'var(--radius-sm)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', transition: 'background 0.12s, color 0.12s',
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = 'var(--line)'
+                  e.currentTarget.style.color = 'var(--fg)'
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--muted)'
+                }}
               >✕</span>
             </button>
           )
