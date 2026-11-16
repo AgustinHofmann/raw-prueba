@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { ImagePlus, ScanLine, Save, Download, FileText, Link2 } from 'lucide-react'
 import Logo from './Logo'
 import { Project, Tab, tabKey } from '../types/project'
@@ -18,6 +18,8 @@ interface Props {
   onHome: () => void
   onTabClick: (t: Tab) => void
   onTabClose: (t: Tab) => void
+  /** Mover una pestaña de lugar arrastrándola. Índices dentro de `openTabs`. */
+  onTabReorder: (desde: number, hasta: number) => void
   onNewProject: () => void
   onSave: () => void
   onExport: () => void
@@ -33,7 +35,7 @@ interface Props {
 
 export default function ChromeBar({
   route, openTabs, activeProject, saved, online, syncing, sinCuenta, email, avatarUrl,
-  onHome, onTabClick, onTabClose, onNewProject,
+  onHome, onTabClick, onTabClose, onTabReorder, onNewProject,
   onSave, onExport, onImportImage, onPlaceImage, onTechPack, onShare, onRename, onProfileOpen,
   onIniciarSesion,
 }: Props) {
@@ -42,6 +44,80 @@ export default function ChromeBar({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const isEditor = route === 'editor' && activeProject !== null
+
+  /* Reordenar pestañas arrastrándolas, SOLO en horizontal.
+   *
+   * Con el arrastre nativo del navegador (draggable + dragstart) la pestaña se
+   * despega y sigue al mouse en las dos direcciones; no hay forma de atarla a
+   * un eje. Por eso va a mano con eventos de puntero: la pestaña se corre con
+   * `translateX` y nada más, así que no se puede sacar de la barra.
+   *
+   * `desde` es la que se lleva y `destino` el puesto donde va a caer, contado
+   * sobre las OTRAS pestañas: es el índice que queda después de sacarla, que
+   * es justo lo que espera `onTabReorder`. */
+  const [arrastre, setArrastre] = useState<{ desde: number; dx: number; destino: number } | null>(null)
+  const inicio = useRef<{ x: number; desde: number; centro: number } | null>(null)
+  // Un arrastre termina en 'click' igual; sin esto, soltar la pestaña en otro
+  // lugar además te cambiaba de proyecto.
+  const huboArrastre = useRef(false)
+  const barraRef = useRef<HTMLDivElement>(null)
+
+  /** Cajas de las pestañas, en el orden en que se ven. */
+  function cajasDePestanas(): DOMRect[] {
+    const cont = barraRef.current
+    if (!cont) return []
+    return [...cont.querySelectorAll('[data-pestana]')].map(el => el.getBoundingClientRect())
+  }
+
+  /**
+   * En qué puesto caería, según cuánto se la corrió.
+   *
+   * Manda el centro de la pestaña que se está llevando, no dónde está el
+   * puntero: si no, agarrarla del borde izquierdo o del derecho daba
+   * resultados distintos con el mismo gesto. Cuenta cuántas de las otras le
+   * quedaron a la izquierda, que es exactamente el índice que queda después
+   * de sacarla de la lista.
+   */
+  function destinoPara(dx: number, desde: number): number {
+    const ini = inicio.current
+    if (!ini) return desde
+    const centro = ini.centro + dx
+    return cajasDePestanas()
+      .filter((_, i) => i !== desde)          // la que se lleva no se cuenta a sí misma
+      .filter(r => r.left + r.width / 2 <= centro).length
+  }
+
+  function alBajarPuntero(e: React.PointerEvent, i: number) {
+    if (e.button !== 0) return
+    const caja = e.currentTarget.getBoundingClientRect()
+    inicio.current = { x: e.clientX, desde: i, centro: caja.left + caja.width / 2 }
+    huboArrastre.current = false
+    // Capturar el puntero es lo que hace que el arrastre siga funcionando
+    // aunque el mouse se salga de la pestaña. Si el navegador no lo deja, el
+    // arrastre anda igual mientras no te salgas.
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* no se pudo capturar */ }
+  }
+
+  function alMoverPuntero(e: React.PointerEvent) {
+    const ini = inicio.current
+    if (!ini) return
+    const dx = e.clientX - ini.x
+    // Menos de 4 px todavía es un click, no un arrastre.
+    if (!huboArrastre.current && Math.abs(dx) < 4) return
+    huboArrastre.current = true
+    setArrastre({ desde: ini.desde, dx, destino: destinoPara(dx, ini.desde) })
+  }
+
+  function alSoltarPuntero(e: React.PointerEvent) {
+    const ini = inicio.current
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ya se solto */ }
+    if (!ini || !huboArrastre.current) { inicio.current = null; setArrastre(null); return }
+    // El destino se calcula ANTES de soltar el inicio: `destinoPara` lo necesita.
+    const destino = destinoPara(e.clientX - ini.x, ini.desde)
+    inicio.current = null
+    setArrastre(null)
+    if (destino !== ini.desde) onTabReorder(ini.desde, destino)
+  }
 
   // En pantalla completa la barra crece para aprovechar el espacio y verse más cómoda
   const barH    = isFullscreen ? 62 : 50
@@ -149,15 +225,36 @@ export default function ChromeBar({
       <div style={{ width: 1, background: 'var(--line-soft)', flexShrink: 0 }} />
 
       {/* Tabs */}
-      <div className="scroll-hide" style={{ flex: 1, display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
-        {openTabs.map(t => {
+      <div ref={barraRef} className="scroll-hide" style={{ flex: 1, display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
+        {openTabs.map((t, i) => {
           const active = activeProject?.id === t.project.id && route === t.kind
           const isTP = t.kind === 'techpack'
+          const seLleva = arrastre?.desde === i
+          /* La línea que avisa dónde va a caer. El destino se cuenta sobre las
+           * otras pestañas, así que hay que volver a traducirlo a esta lista:
+           * la que se corre a la derecha es la que está en ese puesto. */
+          let marcaIzq = false, marcaDer = false
+          if (arrastre && !seLleva) {
+            const otrasLargo = openTabs.length - 1
+            const idxReal = arrastre.destino < arrastre.desde ? arrastre.destino : arrastre.destino + 1
+            marcaIzq = arrastre.destino < otrasLargo && idxReal === i
+            marcaDer = arrastre.destino === otrasLargo && i === openTabs.length - 1
+          }
           return (
             <button
               key={tabKey(t)}
-              onClick={() => onTabClick(t)}
+              data-pestana
+              onClick={() => {
+                // Si venía de arrastrar, el click no cuenta: moverla de lugar
+                // no es pedir que se abra.
+                if (huboArrastre.current) { huboArrastre.current = false; return }
+                onTabClick(t)
+              }}
               title={isTP ? `Ficha técnica · ${t.project.name}` : t.project.name}
+              onPointerDown={e => alBajarPuntero(e, i)}
+              onPointerMove={alMoverPuntero}
+              onPointerUp={alSoltarPuntero}
+              onPointerCancel={() => { inicio.current = null; setArrastre(null) }}
               style={{
                 height: '100%', padding: '0 10px 0 16px', flexShrink: 0,
                 background: active ? 'var(--surface)' : 'transparent',
@@ -167,10 +264,20 @@ export default function ChromeBar({
                   ? `2px ${isTP ? 'dashed' : 'solid'} var(--accent)`
                   : '2px solid transparent',
                 borderRadius: 0,
+                boxShadow: marcaIzq ? 'inset 3px 0 0 var(--accent)'
+                         : marcaDer ? 'inset -3px 0 0 var(--accent)' : 'none',
+                // Solo se corre en X: la pestaña no se despega de la barra.
+                transform: seLleva ? `translateX(${arrastre!.dx}px)` : 'none',
+                zIndex: seLleva ? 2 : 1,
+                opacity: seLleva ? 0.85 : 1,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
-                fontSize: 13, fontFamily: 'var(--ui)', cursor: 'pointer',
+                fontSize: 13, fontFamily: 'var(--ui)',
+                cursor: seLleva ? 'grabbing' : 'pointer',
+                touchAction: 'none',   // sin esto, en pantalla táctil el gesto se lo lleva el scroll
                 display: 'flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap', transition: 'all 0.15s var(--ease)', maxWidth: 190,
+                whiteSpace: 'nowrap', maxWidth: 190,
+                // Mientras se arrastra no hay transición: tiene que seguir al dedo.
+                transition: seLleva ? 'none' : 'all 0.15s var(--ease)',
               }}
               onMouseEnter={e => { if (!active) { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--fg)' }}}
               onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-2)' }}}

@@ -18,6 +18,47 @@ import { aplanarPath, poligonoAPath, partirPoligono, type Punto } from '../utils
 import { PRENDAS_PARAM, leerPiezasSvg, type Medidas, type PiezaSvg, type PrendaParam } from '../utils/prendasParam'
 import './EditorScreen.css'
 
+/* El texto no usa el caché de objeto de Fabric
+   ---------------------------------------------------------------------------
+   Fabric dibuja cada objeto una vez en un lienzo propio (su caché) y después
+   pega esa imagen. El tamaño de ese lienzo sale de la caja del objeto: para el
+   texto es fontSize × lineHeight × 1.13, más un margen extra de 1 em. Da por
+   sentado que ninguna letra sube más de ~1 em sobre la línea base.
+
+   Las fuentes caligráficas rompen ese supuesto. La del caso reportado
+   (DesirableCalligraphy) declara un ascender de 2,25 em: la tinta sube 1,65 em
+   por encima del centro del objeto y el caché solo reserva ~1,15 em. Lo que
+   sobra se recorta, y siempre ARRIBA, porque el objeto va centrado en su caché.
+
+   Al zoom 1 no se veía: `minCacheSideLimit` (256 px) agranda los cachés chicos
+   y ese regalo tapaba el desborde. Al hacer zoom el caché supera los 256 px,
+   queda el tamaño real y aparece el recorte. Medido con esa fuente: la tinta
+   mide 2,58 em de alto al zoom 1 y 2,03 em desde el zoom 3 — la pérdida es toda
+   de arriba, lo de abajo no se mueve. Dentro de un grupo es peor (1,33 em),
+   porque ahí manda el caché del GRUPO, que ni agrega el margen del texto.
+
+   Por eso el texto se dibuja siempre directo, y un grupo con texto adentro
+   tampoco se cachea (si no, vuelve a recortar). No cuesta nada: medido, 15
+   textos al zoom 8 renderizan en menos de 1 ms, igual que con caché, porque
+   dibujar texto en canvas ya es rápido. `ownCaching` hay que apagarlo a mano
+   porque los hijos preguntan por él (`isOnACache`) para saber si ya hay caché. */
+fabric.Text.prototype.shouldCache = function (this: fabric.Text): boolean {
+  this.ownCaching = false
+  return false
+}
+
+const grupoDeberiaCachear = fabric.Group.prototype.shouldCache
+fabric.Group.prototype.shouldCache = function (this: fabric.Group): boolean {
+  if (contieneTexto(this)) { this.ownCaching = false; return false }
+  return grupoDeberiaCachear.call(this)
+}
+
+/** ¿Hay un texto en el grupo, o adentro de alguno de sus grupos? */
+function contieneTexto(g: fabric.Group): boolean {
+  return g.getObjects().some(o =>
+    o instanceof fabric.Text || (o instanceof fabric.Group && contieneTexto(o)))
+}
+
 interface EditorActions { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void; imagenParaCompartir: () => string | null }
 
 interface Props {
@@ -67,6 +108,12 @@ const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; da
   { id: 'fruncido',     label: 'Fruncido', width: 0.5, dash: [1.5, 2.5],
     hint: 'Tela recogida. Punteado corto y parejo.' },
 ]
+
+/* Las propiedades PROPIAS de RAW que el molde de una máscara se lleva al
+   guardarse. Fabric solo serializa lo que conoce, así que hay que nombrárselas.
+   Está acá arriba porque se usa en dos lados —al crear la máscara y al reabrir
+   el proyecto— y si las dos listas se separan, el molde pierde su pintura. */
+const PROPS_DEL_MOLDE = ['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']
 
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
 //
@@ -164,6 +211,11 @@ type HistoryEntry =
   // dos cosas quedan dentro de un grupo. Se guarda el grupo para poder soltarlo,
   // y la forma y el contenido para poder rearmarlo.
   | { type: 'mascara'; forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }
+  // Soltar la máscara es la operación inversa, y necesita su propio paso: sin
+  // esto, Ctrl+Z después de soltar deshacía lo ANTERIOR y la máscara no volvía
+  // a juntarse nunca. Es una lista porque soltar sin nada seleccionado suelta
+  // todas las máscaras del lienzo, y eso fue UNA sola acción del usuario.
+  | { type: 'soltarMascara'; items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] }
 
 function catmullRomToBezier(pts: fabric.Point[]): string {
   if (pts.length < 2) return ''
@@ -2420,7 +2472,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const guardada = (obj as any)._mascara
           if (guardada) {
             try {
-              const [molde] = await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[]
+              /* ⚠️ `_mascara` puede llegar acá YA VIVO.
+               *
+               * Fabric revive solo cualquier propiedad cuyo valor tenga un
+               * `type` conocido (`enlivenObjectEnlivables`), y el molde guardado
+               * es justamente eso. Revivirlo de nuevo rompía:
+               * `Group.fromObject` le busca la clase a `layoutManager.type`, que
+               * en un objeto vivo no existe, y tiraba "No class registered for
+               * undefined". El catch de abajo se comía el error y la máscara se
+               * perdía al reabrir el proyecto.
+               *
+               * Con un molde de una sola pieza (un Path) pasaba desapercibido,
+               * porque `Path.fromObject` no mira el layout. Apareció al pasar el
+               * molde de la prenda a ser la silueta entera, que es un grupo. */
+              const estaVivo = typeof guardada?.toObject === 'function'
+              const molde = estaVivo
+                ? guardada as fabric.FabricObject
+                : (await (fabric.util as any).enlivenObjects([guardada]) as fabric.FabricObject[])[0]
               if (molde) {
                 ;(molde as any).absolutePositioned = false
                 molde.set({ fill: '#000', opacity: 1, clipPath: undefined })
@@ -2437,6 +2505,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   }
                 }
                 obj.clipPath = molde
+                /* Y `_mascara` vuelve a ser JSON.
+                 *
+                 * Si se dejara el objeto vivo, el próximo guardado lo pasaría
+                 * por JSON.stringify y lo que saldría no es un molde: `type`
+                 * vive en el prototipo, así que no viaja, y al abrir de nuevo
+                 * el molde ya no se puede revivir. La máscara se perdía recién
+                 * a la SEGUNDA apertura, que es lo que hace que estas cosas
+                 * parezcan pasar "a veces". */
+                ;(obj as any)._mascara = molde.toObject(PROPS_DEL_MOLDE)
                 // El molde ya se guardó en (0,0) y el grupo ya venía medido por
                 // él, así que acá solo hay que dejar la medida fija para que el
                 // próximo reacomodo no lo devuelva al tamaño del contenido.
@@ -2455,6 +2532,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           } else if (!(obj instanceof fabric.IText) && clipPath.current
                      && !(obj as any)._fondo) {
             // lo que va debajo de la prenda no se recorta contra ella
+            //
+            // El `&& !_fondo` se agregó después, probando. ANTES este bloque le
+            // reponía el recorte a TODO lo que reviviera, así que al reabrir el
+            // proyecto el objeto volvía abajo (porque acomodarFondo funcionaba)
+            // pero recuperaba el recorte, y quedaba invisible.
             obj.set({ clipPath: clipPath.current })
           }
           canvas.add(obj)
@@ -3558,7 +3640,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           const idx = mockupObjects.current.indexOf(oldO)
           if (idx >= 0) mockupObjects.current[idx] = newO
           canvas.sendObjectToBack(newO)  // el mockup va al fondo, no encima de lo dibujado
-          acomodarFondo()                // ...pero sin taparle el fondo al usuario
+          acomodarFondo()                // ...y lo de abajo vuelve abajo, que el molde lo dejó arriba
         }
       }
 
@@ -6233,6 +6315,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           entry.grupo = armarGrupoMascara(entry.contenido, entry.forma)   // rehacer
           undoHistory.current.push(entry)
           refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          for (const it of entry.items) soltarGrupoMascara(it.grupo)      // rehacer: soltarlas de nuevo
+          undoHistory.current.push(entry)
+          refreshLayersNow()
         } else if (entry.type === 'props') {
           const cur: Record<string, any> = {}
           for (const k of Object.keys(entry.prev)) cur[k] = (entry.obj as any).get(k)
@@ -6303,6 +6389,12 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
           redoHistory.current.push(entry)
         } else if (entry.type === 'mascara') {
           soltarGrupoMascara(entry.grupo)   // deshacer: se deshace el grupo
+          redoHistory.current.push(entry)
+          refreshLayersNow()
+        } else if (entry.type === 'soltarMascara') {
+          // deshacer: se vuelven a juntar. El grupo nuevo se guarda en la misma
+          // entrada, que es el que va a tener que soltar el rehacer.
+          for (const it of entry.items) it.grupo = armarGrupoMascara(it.contenido, it.forma)
           redoHistory.current.push(entry)
           refreshLayersNow()
         } else if (entry.type === 'props') {
@@ -6550,6 +6642,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // `_mascara` guarda la FORMA de la máscara de recorte. Hace falta porque
       // justo abajo se borra `clipPath`: el recorte a la prenda se repone solo
       // al abrir, pero el de la máscara se perdería para siempre.
+      //
+      // Esta lista es la de las propiedades PROPIAS de RAW. Fabric no serializa
+      // lo que no conoce, así que hay que nombrárselas a mano. `_fondo` está
+      // acá por eso: sin agregarlo, todo funcionaba perfecto hasta que cerrabas
+      // el proyecto y al reabrirlo lo de abajo volvía arriba.
       .map(o => { const j = o.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole', '_bordado', '_bordadoOrigen', '_mascara', '_mascaraPrevio', '_fondo']); delete j.clipPath; return j })
 
     // La prenda se guarda por separado porque no se restaura como objeto: se
@@ -6978,15 +7075,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * coincidía con nada y desaparecía. Por eso solo se veía con la prenda en su
    * posición original.
    */
-  async function rebuildGarmentClip() {
-    const canvas = fc.current
-    if (!canvas) return
-    const piezas = mockupObjects.current.filter(o => {
+  /**
+   * Las piezas que DEFINEN la silueta de la prenda.
+   *
+   * No son todas: una pieza escondida o sin relleno no aporta contorno, y el
+   * hueco del cuello (`_rawInner`) es un agujero, no silueta.
+   */
+  function piezasDeLaSilueta(): fabric.FabricObject[] {
+    return mockupObjects.current.filter(o => {
       if (o.visible === false) return false
       if ((o as any)._rawInner) return false    // el hueco del cuello no define la silueta
       const f = (o as any).fill
       return typeof f === 'string' ? (f !== '' && f !== 'transparent') : f != null
     })
+  }
+
+  /** Una copia nueva de la silueta entera, para usarla de molde. */
+  async function copiaDeLaSilueta(): Promise<fabric.Group | null> {
+    const piezas = piezasDeLaSilueta()
+    if (!piezas.length) return null
+    return new fabric.Group(await Promise.all(piezas.map(p => p.clone())))
+  }
+
+  async function rebuildGarmentClip() {
+    const canvas = fc.current
+    if (!canvas) return
+    const piezas = piezasDeLaSilueta()
     if (!piezas.length) return
 
     const copias = await Promise.all(piezas.map(p => p.clone()))
@@ -7172,7 +7286,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * TEE_UNITS_PER_CM
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
-    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
+    acomodarFondo()   // el molde se fue al fondo: lo de abajo quedó arriba, hay que rehundirlo
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
@@ -7373,7 +7487,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     pxPerCmRef.current = sc * prendaParam.unidadesPorCm
 
     for (let i = objs.length - 1; i >= 0; i--) canvas.sendObjectToBack(objs[i])
-    acomodarFondo()   // el molde nuevo no puede taparle el fondo al usuario
+    acomodarFondo()   // el molde se fue al fondo: lo de abajo quedó arriba, hay que rehundirlo
     if (reassignClip) {
       canvas.getObjects().forEach(o => {
         if (mockupObjects.current.includes(o) || o instanceof fabric.IText) return
@@ -7764,7 +7878,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // al soltar, y el molde ya encajado para poder rehacerlo al abrir el archivo.
     // El grupo no lleva además el recorte a la prenda: Fabric admite uno solo.
     ;(grupo as any)._mascaraPrevio = previo
-    ;(grupo as any)._mascara = forma.toObject(['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole'])
+    ;(grupo as any)._mascara = forma.toObject(PROPS_DEL_MOLDE)
     return grupo
   }
 
@@ -7788,7 +7902,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     let forma = elegidos[elegidos.length - 1]
     // La prenda puede ser el MOLDE, pero nunca el contenido: no tiene sentido
     // meter la remera adentro de un recorte.
-    const contenido = elegidos.slice(0, -1).filter(o => !mockupObjects.current.includes(o))
+    //
+    // El `_garmentGroup` hay que nombrarlo aparte: con la prenda agrupada, el
+    // grupo NO está en `mockupObjects` (ahí están las piezas, que ahora viven
+    // adentro suyo), así que se colaba como contenido y la máscara se tragaba
+    // la remera entera. Medido: después de un Ctrl+7 así, la prenda ya no
+    // estaba en el lienzo.
+    const contenido = elegidos.slice(0, -1)
+      .filter(o => !mockupObjects.current.includes(o) && !(o as any)._garmentGroup)
     if (!contenido.length) {
       onToast?.('Elegí la forma y lo que va adentro: la de arriba recorta a la de abajo.')
       return
@@ -7815,10 +7936,27 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // esas coordenadas relativas y el molde aparece fuera del lienzo.
     canvas.discardActiveObject()
 
-    if (mockupObjects.current.includes(forma)) {
-      const copia = await forma.clone()
-      ;(copia as any)._moldeDePrenda = true
-      forma = copia
+    /* Si el molde es la prenda, el molde es la prenda ENTERA.
+     *
+     * Antes se clonaba el objeto de más arriba tal cual, y la prenda no es un
+     * objeto: son varias piezas sueltas. La de más arriba suele ser una tirita
+     * del cuello, así que recortar con la remera recortaba contra un molde de
+     * 110x10 px — medido— y del dibujo sobrevivía apenas una franja del cuello.
+     * Ahora se usa una copia de la silueta completa, la misma que arma
+     * "Recortado a la remera".
+     *
+     * Si la prenda está AGRUPADA el molde es una copia del grupo, no la
+     * silueta armada a mano: adentro de un grupo las piezas tienen
+     * coordenadas relativas a ese grupo, así que copiarlas sueltas las
+     * mandaría a cualquier lado. Y el grupo ya es la prenda entera, que es lo
+     * que se busca. (Copiarlo, además, evita consumir la prenda de verdad
+     * adentro de la máscara y que la remera desaparezca del lienzo.) */
+    const esPiezaSuelta = mockupObjects.current.includes(forma)
+    const esPrendaAgrupada = !!(forma as any)._garmentGroup
+    if (esPiezaSuelta || esPrendaAgrupada) {
+      const silueta = (esPiezaSuelta ? await copiaDeLaSilueta() : null) ?? await forma.clone()
+      ;(silueta as any)._moldeDePrenda = true
+      forma = silueta
     }
 
     const grupo = armarGrupoMascara(contenido, forma)
@@ -7831,8 +7969,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.('Máscara de recorte aplicada · Ctrl+Alt+7 para soltarla')
   }
 
-  /** Deshace un grupo de recorte: vuelven el contenido Y la forma. */
-  function soltarGrupoMascara(grupo: fabric.Group): fabric.FabricObject[] {
+  /**
+   * Deshace un grupo de recorte: vuelven el contenido Y la forma.
+   *
+   * Devuelve las tres cosas por separado porque quien la llama necesita cada
+   * una: `sueltos` para dejarlas seleccionadas, y `contenido` + `forma` para
+   * poder rearmar la máscara con Ctrl+Z.
+   */
+  function soltarGrupoMascara(grupo: fabric.Group): {
+    contenido: fabric.FabricObject[]
+    forma: fabric.FabricObject | undefined
+    sueltos: fabric.FabricObject[]
+  } {
     const canvas = fc.current!
     const forma = grupo.clipPath as fabric.FabricObject | undefined
     const previo = (grupo as any)._mascaraPrevio
@@ -7855,10 +8003,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
     grupo.clipPath = undefined
     const hijos = dissolveGroup(grupo)
-    hijos.forEach(o => {
-      o.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
-      o.dirty = true
-    })
 
     if (forma && destino) {
       // La forma vuelve a ser un objeto normal, con el aspecto que tenía antes
@@ -7871,7 +8015,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         selectable: true, evented: true,
       })
       ;(forma as any).absolutePositioned = false
-      forma.clipPath = clipEnabledRef.current ? (clipPath.current ?? undefined) : undefined
       forma.dirty = true
       // Si el molde era una copia de la prenda, no se devuelve: dejaría una
       // silueta de remera suelta encima del diseño.
@@ -7880,7 +8023,23 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         forma.setCoords()
       }
     }
-    return (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+
+    /* Lo que estaba DEBAJO de la prenda tiene que volver debajo.
+     *
+     * `dissolveGroup` devuelve los hijos con `canvas.add`, o sea al frente de
+     * todo, y antes acá se les reponía el recorte a la prenda a todos por
+     * igual. Para algo marcado `_fondo` eso es lo peor de los dos mundos:
+     * recortado contra la silueta Y (al volver a hundirse) tapado por la
+     * prenda. Medido: una imagen que estaba en el puesto 0 volvía al 12 de 13
+     * y con recorte puesto, aunque seguía marcada como fondo.
+     *
+     * `acomodarFondo` la hunde de nuevo y `sincronizarFondo` mira dónde quedó
+     * cada una para decidir el recorte. Es la misma pareja que usa el resto
+     * del editor, así que la máscara deja de ser un caso aparte. */
+    const sueltos = (forma && !(forma as any)._moldeDePrenda) ? [...hijos, forma] : hijos
+    acomodarFondo()
+    sueltos.forEach(sincronizarFondo)
+    return { contenido: hijos, forma, sueltos }
   }
 
   function soltarMascara() {
@@ -7897,7 +8056,15 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       return
     }
     const sueltos: fabric.FabricObject[] = []
-    for (const g of objetivos) sueltos.push(...soltarGrupoMascara(g))
+    const items: { forma: fabric.FabricObject; contenido: fabric.FabricObject[]; grupo: fabric.Group }[] = []
+    for (const g of objetivos) {
+      const { contenido, forma, sueltos: s } = soltarGrupoMascara(g)
+      sueltos.push(...s)
+      // Sin forma no hay con qué rearmarla: ese grupo queda fuera del deshacer
+      // en vez de romperlo entero.
+      if (forma) items.push({ forma, contenido, grupo: g })
+    }
+    if (items.length) undoHistory.current.push({ type: 'soltarMascara', items })
     redoHistory.current = []
     if (sueltos.length) canvas.setActiveObject(new fabric.ActiveSelection(sueltos, { canvas }))
     canvas.requestRenderAll()
@@ -8017,42 +8184,75 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   /* ── Lo que va DEBAJO de la prenda ────────────────────────────────────────
    *
-   * Hasta acá el molde estaba clavado al fondo: todas las funciones de orden
-   * tenían un piso en `mockupObjects.length` y nada podía pasar por debajo. Eso
-   * impedía poner una foto de referencia atrás y, sobre todo, impedía usar la
-   * prenda como molde de una máscara de recorte, porque una máscara necesita
-   * que el dibujo esté POR DEBAJO de la forma que lo recorta.
+   * ANTES   las cuatro funciones de orden Z de acá arriba tenían un piso:
    *
-   * Ahora la prenda es una capa más y se puede mandar algo abajo. Lo que queda
-   * abajo se marca `_fondo` y, mientras esté ahí, **no lleva el recorte a la
-   * prenda**: si lo llevara estaría recortado Y tapado a la vez, o sea
-   * invisible por partida doble, y parecería que la app se lo comió.
+   *             const minIdx = mockupObjects.current.length
+   *             if (dir === 'down' && idx > minIdx) canvas.sendObjectBackwards(obj)
+   *
+   * PROBLEMA  nada podía pasar por debajo del molde, y una máscara de recorte
+   *           recorta con la forma de MÁS ARRIBA: para recortar con la prenda,
+   *           el dibujo tiene que estar abajo. Era imposible.
+   *
+   * AHORA     el piso se borró. Lo que queda abajo se marca `_fondo`, pierde el
+   *           recorte a la prenda mientras esté ahí, y `acomodarFondo()` lo
+   *           vuelve a hundir cada vez que la prenda se rehace (pasa al cambiar
+   *           cualquier medida: se destruye y se vuelve a crear).
    */
 
-  /** La posición del molde más bajo. Todo lo que esté por debajo es fondo. */
+  /**
+   * La posición del molde más bajo. Todo lo que esté por debajo es fondo.
+   *
+   * Reemplaza al viejo `minIdx`. La diferencia es que aquel era un número fijo
+   * (la cantidad de piezas) y este es la posición REAL del molde en el lienzo,
+   * que cambia según cuánto le hayas puesto abajo.
+   */
   function indiceDelMolde(canvas: fabric.Canvas) {
     const objs = canvas.getObjects()
+    // La prenda son varias piezas, así que se busca el puesto más bajo de todas.
     let min = Infinity
     for (const pieza of mockupObjects.current) {
       const i = objs.indexOf(pieza)
+      // El `i >= 0` no es paranoia: al cambiar una medida hay un instante en que
+      // las piezas viejas ya se sacaron y las nuevas no se agregaron. Sin esto
+      // entraría el -1 de indexOf, el mínimo quedaría en -1 y nada sería fondo.
       if (i >= 0 && i < min) min = i
     }
     return min
   }
 
-  /** Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte. */
+  /**
+   * Marca o desmarca `_fondo` según dónde quedó, y le ajusta el recorte.
+   *
+   * Se la llama DESPUÉS de mover algo. No mueve nada: mira dónde terminó y
+   * pone el estado al día.
+   */
   function sincronizarFondo(obj: fabric.FabricObject) {
     const canvas = fc.current
     if (!canvas || mockupObjects.current.includes(obj)) return
+
+    // Toda la decisión es comparar dos puestos de la lista del lienzo: si el del
+    // objeto es menor que el del molde, se dibuja antes, o sea que está abajo.
     const debajo = canvas.getObjects().indexOf(obj) < indiceDelMolde(canvas)
+
+    // `_fondo` es una propiedad inventada por RAW (Fabric no la conoce): el
+    // programa anotándose "esto el usuario lo quiso abajo". Hace falta porque la
+    // prenda se rehace sola y después hay que saber qué volver a hundir.
+    // `undefined` y no `false` para que la propiedad no exista cuando no hace
+    // falta y no ensucie el guardado.
     ;(obj as any)._fondo = debajo ? true : undefined
-    // El recorte a la prenda se saca al bajar y se repone al volver a subir,
-    // siempre que el interruptor esté puesto. Las máscaras y los textos no se tocan.
+
+    // Las máscaras y los textos no se tocan: la primera ya tiene su propio
+    // recorte y pisárselo la rompe, y el texto nunca se recorta con la prenda.
     if (!(obj as any)._mascara && !(obj instanceof fabric.IText)) {
+      // Lo que está abajo PIERDE el recorte, a propósito: si lo conservara
+      // quedaría recortado contra la silueta Y tapado por la prenda, que es
+      // opaca. Invisible por partida doble. Al subirlo, esta línea lo repone.
       obj.clipPath = (!debajo && clipEnabledRef.current)
         ? (clipPath.current ?? undefined)
         : undefined
     }
+    // Fabric reusa el dibujo cacheado: sin esto, le cambiás el recorte y en
+    // pantalla no pasa nada.
     obj.dirty = true
   }
 
@@ -8060,13 +8260,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
    * Vuelve a hundir debajo del molde todo lo marcado como fondo.
    *
    * Hay que llamarla cada vez que la prenda se manda al fondo —al cambiar una
-   * medida se rehace entera— porque si no, el molde nuevo se mete por debajo
-   * del fondo y lo tapa.
+   * medida se rehace entera— porque al irse el molde hasta abajo, lo que el
+   * usuario había mandado debajo queda por encima y le salta al frente.
    */
   function acomodarFondo() {
     const canvas = fc.current
     if (!canvas) return
+
     const fondo = canvas.getObjects().filter(o => (o as any)._fondo)
+    /* El bucle va al revés a propósito: `sendObjectToBack` manda al puesto 0 y
+     * empuja al resto, así que en orden normal los de abajo se dan vuelta entre
+     * ellos. Importa si el usuario puso dos cosas abajo.
+     *     normal:   A→0 [A, B, …]   B→0 [B, A, …]   ✗
+     *     al revés: B→0 [B, A, …]   A→0 [A, B, …]   ✓
+     */
     for (let i = fondo.length - 1; i >= 0; i--) canvas.sendObjectToBack(fondo[i])
   }
 
@@ -8076,8 +8283,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const objs = canvas.getObjects()
     const idx  = objs.indexOf(obj)
     if (dir === 'up' && idx < objs.length - 1) canvas.bringObjectForward(obj)
+    // ANTES: `idx > minIdx` (= cantidad de piezas del molde), que frenaba justo
+    // arriba de la prenda. Ahora el único límite es el fondo real del lienzo.
     if (dir === 'down' && idx > 0)             canvas.sendObjectBackwards(obj)
-    sincronizarFondo(obj)
+    sincronizarFondo(obj)   // agregado: ver dónde quedó y marcarlo
     canvas.requestRenderAll()
     refreshLayersNow()
   }
@@ -8088,7 +8297,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!canvas || from === to) return
     // La prenda no se arrastra (se rehace desde las medidas), pero sí se puede
     // soltar algo sobre ella o debajo de ella.
+    //
+    // ANTES acá había dos condiciones: `includes(from) || includes(to)`. La
+    // segunda impedía soltar algo SOBRE una fila de la prenda, que es justo lo
+    // que hay que poder hacer para meter algo abajo. La primera se queda.
     if (mockupObjects.current.includes(from)) return
+    // ANTES el destino se recortaba con `Math.max(minIdx, …)`, o sea que si
+    // arrastrabas por debajo del molde te devolvía arriba. Ahora va tal cual.
     canvas.moveObjectTo(from, canvas.getObjects().indexOf(to))
     sincronizarFondo(from)
     canvas.requestRenderAll()
@@ -8113,28 +8328,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const activo = canvas.getActiveObject()
     if (!activo) return
 
+    // ANTES acá se movía directamente `canvas.getActiveObject()`. Con un objeto
+    // andaba; con varios, eso devuelve un contenedor temporal que NO está en la
+    // lista del lienzo, así que Fabric no lo encontraba y no movía a nadie (sin
+    // error). Arreglo: sacarle los hijos y mover a cada uno por separado. El
+    // `[activo]` es para que el caso de uno solo siga el mismo camino.
     const seleccionados = (activo.type === 'activeselection'
       ? (activo as fabric.ActiveSelection).getObjects()
       : [activo]
     ).filter(o => !mockupObjects.current.includes(o))
     if (!seleccionados.length) return
 
+    // Por puesto real en el lienzo, no por el orden en que los fuiste clickeando.
     const apilado = canvas.getObjects()
     seleccionados.sort((a, b) => apilado.indexOf(a) - apilado.indexOf(b))
-    // 'front' y 'backward' empiezan por el de abajo; 'forward' y 'back', por el de arriba
+    /* El orden en que se mueven importa o se dan vuelta entre ellos. Con 'front'
+     * hay que empezar por el de abajo (A→final, B→final deja [… A, B]); con
+     * 'forward' por el de arriba, si no el primero le gana el lugar al siguiente.
+     */
     const enOrden = (dir === 'front' || dir === 'backward')
-      ? seleccionados
-      : [...seleccionados].reverse()
+      ? seleccionados                  // de abajo hacia arriba
+      : [...seleccionados].reverse()   // de arriba hacia abajo
 
     for (const obj of enOrden) {
+      // El puesto se vuelve a pedir en cada vuelta: cada movimiento corre al resto.
       const idx = canvas.getObjects().indexOf(obj)
       if (dir === 'front') canvas.bringObjectToFront(obj)
       else if (dir === 'forward') { if (idx < canvas.getObjects().length - 1) canvas.bringObjectForward(obj) }
       else if (dir === 'backward') { if (idx > 0) canvas.sendObjectBackwards(obj) }
+      // ANTES, después de este sendObjectToBack venía un bucle que volvía a
+      // hundir las piezas del molde una por una, así que la prenda terminaba
+      // otra vez abajo de todo y el objeto del usuario quedaba arriba de ella:
+      // "enviar al fondo" parecía andar a medias. Ese bucle se borró.
       else canvas.sendObjectToBack(obj)
     }
 
-    seleccionados.forEach(sincronizarFondo)
+    seleccionados.forEach(sincronizarFondo)   // agregado: ver dónde quedó cada uno
     canvas.requestRenderAll()
     refreshLayersNow()
   }
