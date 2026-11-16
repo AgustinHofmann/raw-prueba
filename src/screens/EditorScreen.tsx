@@ -6734,8 +6734,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // El estampado solo, sin la prenda: es el arte que va a la imprenta. El
         // recorte a la prenda se saca un momento porque está en coordenadas del
         // lienzo y, dibujando el objeto suelto, lo dejaría en blanco.
+        // Solo se saca el recorte A LA PRENDA. Una máscara propia del diseño
+        // (`_mascara`) es parte del arte: sin ella la ficha mostraba la imagen
+        // entera en vez de la recortada.
         const clip = o.clipPath
-        o.clipPath = undefined
+        if (!(o as any)._mascara) o.clipPath = undefined
         const imagen = o.toDataURL({ format: 'png', multiplier: Math.min(3, Math.max(0.5, 220 / Math.max(b.width, b.height, 1))) })
         o.clipPath = clip
         return [{
