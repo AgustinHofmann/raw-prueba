@@ -1875,8 +1875,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const pintuaViejaDelCuerpo = formatoViejo ? pieces[0] : undefined
 
     objs.forEach((o, i) => {
-      if ((o as any)._rawInner) return          // el hueco del cuello no se pinta
       const clave = (o as any)._pieceKey as string | undefined
+      // El fondo del escote solo recupera pintura si se la pusieron a mano.
+      if ((o as any)._rawInner && !(clave && pintadaAMano(porNombre.get(clave)))) return
       const esCuerpoOManga = clave === 'cuerpo' || clave === 'manga-izq' || clave === 'manga-der'
       const p = formatoViejo
         ? (esCuerpoOManga ? pintuaViejaDelCuerpo : pieces[i])
@@ -5622,10 +5623,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // El interior sigue al color de la prenda, apagado, para que se lea como el
   // revés de la tela. Si la prenda tiene estampado no hay color liso del que
-  // salir, y ahí cae en el gris neutro.
+  // salir, y ahí cae en el gris neutro. Si lo pintaron a mano, no se toca.
   function syncInnerShade() {
     const inner = mockupObjects.current.find(o => (o as any)._rawInner)
-    if (!inner) return
+    if (!inner || escotePintado(inner)) return
     const body = mockupObjects.current.find(o => (o as any)._rawBody)
     const base = body ? (body as any)._baseColor as string | undefined : undefined
     // Con tela puesta el color liso sigue anotado (es a lo que vuelve "Ninguna"),
@@ -5652,9 +5653,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyFillToTargets(targets: fabric.FabricObject[], mut: (o: fabric.FabricObject) => void, verb: string, label: string) {
     const canvas = fc.current
     if (!canvas) return
-    // El hueco del cuello se filtra acá y no en cada llamador: es el único paso
-    // por el que entra cualquier pintura, así que blindarlo una vez alcanza.
-    targets = targets.filter(o => !(o as any)._rawInner)
+    // El fondo del escote se pinta solo si es LO seleccionado: elegido desde
+    // "Seleccionar pieza". Mezclado con otras cosas (seleccionar todo) se saca,
+    // para que siga al cuerpo como el revés de la tela.
+    if (targets.length > 1) targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
     const items = targets.map(o => ({ obj: o, prev: snapshotPaint(o) }))
     targets.forEach(mut)
@@ -5700,6 +5702,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     applyFillToTargets(targets, o => {
       delete (o as any)._texture
       delete (o as any)._userTex
+      // El escote sin tela vuelve a seguir al cuerpo (lo hace syncInnerShade).
+      if ((o as any)._rawInner && !(o as any)._effect) { delete (o as any)._baseColor; return }
       if (!(o as any)._baseColor) (o as any)._baseColor = GRIS_DE_FABRICA
       recomposeFill(o)
     }, 'Tela quitada', label)
@@ -6713,8 +6717,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       })
     // Las piezas que se pintan: el resto de lo que dibuja la prenda (sombras,
     // ayudas) no es tela que se compre.
-    const telas = fillableGarmentPieces()
-      .filter(o => !(o as any)._rawInner)
+    // El fondo del escote entra solo si lo pintaron a mano: si no, es la sombra.
+    const telas = [...fillableGarmentPieces(), ...mockupObjects.current.filter(o => (o as any)._rawInner && escotePintado(o))]
       .map(o => {
         const uTex = (o as any)._userTex as { id: string } | undefined
         const tex  = (o as any)._texture as { kind: string } | undefined
@@ -7160,8 +7164,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     })
     if (prevPaint.length) {
       objs.forEach((o, i) => {
-        if ((o as any)._rawInner) return      // nunca lleva pintura del usuario
         const clave = (o as any)._pieceKey as string | undefined
+        // El fondo del escote no hereda de nadie: solo la pintura que le pusieron a él.
+        if ((o as any)._rawInner && !(clave && pintadaAMano(porNombre.get(clave)))) return
         // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
         // la que salio, asi dividir no cambia como se ve la prenda.
         const padre = (o as any)._piecePadre as string | undefined
@@ -7357,8 +7362,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     for (const pp of prevPaint) if (pp.key) porNombre.set(pp.key, pp)
     if (prevPaint.length) {
       objs.forEach((o, i) => {
-        if ((o as any)._rawInner) return
         const clave = (o as any)._pieceKey as string | undefined
+        if ((o as any)._rawInner && !(clave && pintadaAMano(porNombre.get(clave)))) return
         // Un pedazo recien nacido (`cuerpo#1`) hereda la pintura de la pieza de
         // la que salio, asi dividir no cambia como se ve la prenda.
         const pp = (clave ? porNombre.get(clave) : undefined)
@@ -10329,6 +10334,21 @@ interface SavedPiece {
   eff?:  { kind: EffectKind; intensity: number }
   base?: string
   uTex?: { id: string; widthCm: number }
+}
+
+/**
+ * Si esa pintura guardada la puso alguien, y no es la sombra automática.
+ *
+ * Hace falta para el fondo del escote: solo, sigue al color del cuerpo; si lo
+ * pintaron a mano tiene que quedarse así al guardar, abrir o cambiar medidas.
+ * La sombra automática nunca anota base, tela ni efecto: solo el relleno.
+ */
+const pintadaAMano = (p?: Pick<SavedPiece, 'tex' | 'eff' | 'base' | 'uTex'>) =>
+  !!(p && (p.tex || p.eff || p.base || p.uTex))
+/** Lo mismo, mirando la pieza del lienzo. */
+const escotePintado = (o: fabric.FabricObject) => {
+  const x = o as any
+  return pintadaAMano({ tex: x._texture, eff: x._effect, base: x._baseColor, uTex: x._userTex })
 }
 // `measures` son las de la remera y `medidas` las del pantalón o la chomba.
 // Van en campos distintos a propósito: cada prenda tiene medidas propias y
