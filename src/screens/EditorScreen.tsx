@@ -1681,53 +1681,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const huecoMitadesRef = useRef<number | null>(null)
   useEffect(() => { medidasRef.current = medidas }, [medidas])
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
-  const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
-  const measureEditRef = useRef(false)
   const isTee = project.mockupId === 'tshirt'
-  useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
-  // Salir del modo tiradores si cambiás de herramienta o de pestaña
-  useEffect(() => { if (tool !== 'select' || rightTab !== 'props') setMeasureEdit(false) }, [tool, rightTab])
-  // Arrastre de los tiradores de medida
-  useEffect(() => {
-    const canvas = fc.current
-    if (!canvas || !measureEdit || tool !== 'select') return
-    const prevSkip = canvas.skipTargetFind, prevSel = canvas.selection
-    canvas.skipTargetFind = true; canvas.selection = false; canvas.defaultCursor = 'pointer'
-    let drag: (typeof TEE_HANDLES)[number] | null = null
-    let raf: number | null = null
-    let pend: { x: number; y: number } | null = null
-    const hitR = () => 16 / (canvas.getZoom() || 1)
-    const onDown = (e: any) => {
-      const f = teeFitRef.current; if (!f) return
-      const p = e.scenePoint; const W = teeWarp(measuresRef.current)
-      // Agarra el handle MÁS CERCANO dentro del radio (no el primero), así dos handles
-      // próximos (p. ej. pecho y manga en la axila) no se "roban" el click.
-      let best = Infinity
-      for (const h of TEE_HANDLES) {
-        const [wx, wy] = W(h.base[0], h.base[1])
-        const d = Math.hypot(p.x - (wx * f.sc + f.ox), p.y - (wy * f.sc + f.oy))
-        if (d < hitR() && d < best) { best = d; drag = h }
-      }
-    }
-    const apply = () => {
-      raf = null
-      const f = teeFitRef.current; if (!drag || !pend || !f) return
-      const fld = MEASURE_FIELDS.find(ff => ff.key === drag!.key)!
-      let v = drag.toMeasure((pend.x - f.ox) / f.sc, (pend.y - f.oy) / f.sc, measuresRef.current)
-      v = Math.round(Math.min(fld.max, Math.max(fld.min, v)) * 10) / 10
-      applyMeasures({ ...measuresRef.current, [drag.key]: v })
-    }
-    const onMove = (e: any) => { if (!drag) return; pend = e.scenePoint; if (raf === null) raf = requestAnimationFrame(apply) }
-    const onUp = () => { drag = null }
-    canvas.on('mouse:down', onDown); canvas.on('mouse:move', onMove); canvas.on('mouse:up', onUp)
-    canvas.requestRenderAll()
-    return () => {
-      canvas.off('mouse:down', onDown); canvas.off('mouse:move', onMove); canvas.off('mouse:up', onUp)
-      canvas.skipTargetFind = prevSkip; canvas.selection = prevSel; canvas.defaultCursor = 'default'
-      if (raf) cancelAnimationFrame(raf)
-      canvas.requestRenderAll()
-    }
-  }, [measureEdit, tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  /* Acá vivían los TIRADORES DE MEDIDA: puntos arrastrables sobre la remera
+     para cambiar largo, ancho, cuello y manga sin tocar los campos. Se sacaron
+     el 2026-11-16 junto con su botón ("Ajustar arrastrando en la remera").
+     Las medidas se editan por los campos de acá abajo, que es donde el
+     diseñador escribe el número que le pide el taller. Si alguna vez vuelven,
+     están en el historial: `git log -S TEE_HANDLES`. */
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   /* Lo que usa la HERRAMIENTA y lo que muestra el PANEL son dos cosas distintas.
@@ -2116,24 +2076,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       if (!ctx) return
       const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
       const rs = (canvas.getRetinaScaling?.() ?? 1)
-
-      // Tiradores de medida (puntos arrastrables sobre la remera)
-      if (measureEditRef.current && teeFitRef.current) {
-        const { sc, ox, oy } = teeFitRef.current
-        const W = teeWarp(measuresRef.current)
-        ctx.save(); ctx.setTransform(rs, 0, 0, rs, 0, 0)
-        for (const h of TEE_HANDLES) {
-          const [wx, wy] = W(h.base[0], h.base[1])
-          const scX = wx * sc + ox, scY = wy * sc + oy
-          const cssX = vpt[0] * scX + vpt[2] * scY + vpt[4]
-          const cssY = vpt[1] * scX + vpt[3] * scY + vpt[5]
-          ctx.beginPath(); ctx.arc(cssX, cssY, 6, 0, Math.PI * 2)
-          ctx.fillStyle = '#fff'; ctx.fill()
-          ctx.lineWidth = 2; ctx.strokeStyle = SEL_BLUE; ctx.stroke()
-          ctx.beginPath(); ctx.arc(cssX, cssY, 2, 0, Math.PI * 2); ctx.fillStyle = SEL_BLUE; ctx.fill()
-        }
-        ctx.restore()
-      }
 
       // Guías inteligentes: líneas magenta de alineación mientras se arrastra (estilo Illustrator)
       const g = smartGuides.current
@@ -5926,7 +5868,31 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     if (!canvas) return
     const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
-    if (targets.length < 2) return
+    /* Los tres cortes de abajo eran mudos: no pasaba nada y no se decía nada,
+       que desde afuera es igual a "el botón está roto". La prenda no cuenta
+       como forma, así que elegir un dibujo y la remera llegaba acá con uno
+       solo y parecía que el Pathfinder no andaba. */
+    if (targets.length < 2) {
+      onToast?.('Elegí al menos dos formas para combinar (la prenda no cuenta)')
+      return
+    }
+    /* ⚠️ Soltar la selección ANTES de medir y clonar.
+     *
+     * Acá se llega siempre con varias cosas seleccionadas —es la única forma de
+     * apretar el botón—, y mientras hay una selección múltiple Fabric guarda el
+     * left/top de cada hijo EN RELACIÓN al centro de la selección. Los clones se
+     * llevaban esas coordenadas y se dibujaban fuera del cuadro que se captura:
+     * las siluetas salían en blanco y la operación "no dejaba nada".
+     *
+     * Medido con dos cuadrados de 120: dentro de la selección estaban en
+     * (-95,-95) y (-25,-25); soltándola, en (280,200) y (350,270). Las siluetas
+     * pasan de 0 px a 234.256 px cada una. O sea que el Pathfinder nunca llegó
+     * a funcionar desde el panel.
+     *
+     * `targets` ya está capturado, así que soltar la selección no pierde nada. */
+    canvas.discardActiveObject()
+    canvas.requestRenderAll()
+
     setVectorizing(true)
     try {
       // 1. Caja envolvente en coordenadas de escena + supersampling
@@ -5985,7 +5951,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const fm = tag.match(/\bfill="([^"]+)"/)
         if (fillLum(fm?.[1] ?? '#000') < 0.5) darkDs.push(dm[1])
       }
-      if (!darkDs.length) { setVectorizing(false); return }
+      if (!darkDs.length) {
+        // Pasa cuando la operación no deja nada: restar o intersecar formas que
+        // no se tocan. Decirlo es la diferencia entre "no se tocaban" y "se me
+        // borró el dibujo".
+        onToast?.(op === 'intersect'
+          ? 'No se superponen: la intersección queda vacía'
+          : 'La operación no deja nada dibujado')
+        setVectorizing(false)
+        return
+      }
       const sceneD = darkDs.map(d => transformPath(d, (x, y) => [bx + x / scale, by + y / scale])).join(' ')
 
       // 6. Crear el resultado con el relleno/trazo de la forma de más atrás y reemplazar
@@ -5998,8 +5973,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         selectable: true, evented: true,
       })
       if (clipEnabledRef.current && clipPath.current) result.clipPath = clipPath.current
-      canvas.discardActiveObject()
-      targets.forEach(o => canvas.remove(o))
+      targets.forEach(o => canvas.remove(o))   // la selección ya se soltó arriba
       canvas.add(result)
       canvas.setActiveObject(result)
       undoHistory.current.push({ type: 'erase', removed: targets, added: [result] })
@@ -6008,6 +5982,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       setTool('select')
     } catch (err) {
       console.error('Pathfinder falló:', err)
+      onToast?.('No se pudo combinar las formas')
     } finally {
       setVectorizing(false)
     }
@@ -6715,8 +6690,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     if (!canvas) return
     canvas.discardActiveObject()
-    const wasMeasure = measureEditRef.current
-    measureEditRef.current = false  // que no salgan los tiradores en la foto
     canvas.requestRenderAll()
     // Frente y espalda por separado, cada uno a su lugar de la ficha. Antes iba
     // una sola foto con todo: en la chomba, "Frente" mostraba las dos vistas y
@@ -6755,7 +6728,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const espalda = atras.length ? foto(atras, true) : null
     if (vpt) canvas.viewportTransform = vpt
     canvas.requestRenderAll()
-    measureEditRef.current = wasMeasure
     // La remera tiene sus medidas propias; el resto de las prendas
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
@@ -8357,19 +8329,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             return (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
-              <button
-                onClick={() => setMeasureEdit(v => !v)}
-                title="Arrastrar puntos sobre la remera para cambiar las medidas"
-                style={{
-                  width: '100%', justifyContent: 'center', marginBottom: 10, fontSize: 11,
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                  background: measureEdit ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
-                  border: '1px solid ' + (measureEdit ? 'var(--accent)' : 'var(--line)'),
-                  color: measureEdit ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
-                }}
-              >
-                {measureEdit ? '✋ Arrastrando medidas (tocá para salir)' : '✋ Ajustar arrastrando en la remera'}
-              </button>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {MEASURE_GROUPS.map(g => {
                   const single = g.keys.length === 1
@@ -9982,18 +9941,6 @@ const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] 
   { id: 'ancho',  label: 'Ancho (pecho/cintura)', keys: ['anchoPecho', 'anchoCintura'] },
   { id: 'cuello', label: 'Cuello',               keys: ['anchoCuello', 'profundidadCuello'] },
   { id: 'manga',  label: 'Manga',                keys: ['largoManga', 'anchoManga'] },
-]
-
-// Tiradores de medida: punto base en el SVG + cómo convertir su posición a cm.
-const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y'; toMeasure: (sx: number, sy: number, m: Measures) => number }[] = [
-  // El handle de pecho va sobre el TORSO (x<395), no en la axila, para no solaparse con
-  // los de la manga ni montarse sobre ella al alargarla. Mide el ancho con la escala fP del cuerpo.
-  { key: 'anchoPecho',   base: [380, 150],       axis: 'x', toMeasure: (sx) => (sx - 247.3) / 132.7 * 60 },
-  { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 63 },
-  { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => 33.8 + (sy - 173) / 5.086 },
-  { key: 'anchoCuello',  base: [292.24, 4.64],   axis: 'x', toMeasure: (sx) => (sx - 247.3) / 44.94 * 18 },
-  { key: 'largoManga',   base: [493.43, 58.94],  axis: 'x', toMeasure: (sx, _sy, m) => { const nUR = 247.3 + 153.65 * (m.anchoPecho / 60); return (sx - nUR) / 92.48 * 18 } },
-  { key: 'anchoManga',   base: [470.28, 177.99], axis: 'y', toMeasure: (_sx, sy) => (sy - 50) / 127.99 * 25 },
 ]
 
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
