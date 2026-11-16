@@ -1537,6 +1537,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     }))
   })
   const [activeUserTex, setActiveUserTex] = useState<string | null>(null)
+  // La última tela que se pidió, para que una que baja tarde no pise lo que el
+  // diseñador eligió después (ver applyUserTexture).
+  const telaPedida = useRef<string | null>(null)
 
   // Recoloreo de las telas de fábrica.
   // Los colores elegidos viven en un ref y no en estado porque los lee código
@@ -1572,6 +1575,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // controles que se aplican a todos (color, grosor, bordado).
   const esMulti = selKind === 'multi'
   const haySel = hasSel || esMulti
+  // Ninguna de las dos clases de tela puesta: lo que marca el cuadradito "Ninguna".
+  const sinTela = !activeTexKind && !activeUserTex
   // Con varios tomados, el tipo de UNO no manda sobre el panel: si en el grupo
   // cae una imagen, no por eso hay que esconderle el color al resto.
   const tipoSel = (esMulti ? undefined : (selectedObj as any)?.type) as string | undefined
@@ -4563,7 +4568,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
-        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); return }
+        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); setActiveUserTex(null); return }
         setHasSel(true)
         // Si el objeto no tiene trazo o relleno de color (una imagen, por
         // ejemplo), se deja lo que el panel ya mostraba en vez de inventar un
@@ -4581,6 +4586,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         if (tex && esTexturaValida(tex.kind)) {
           setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
         } else setActiveTexKind(null)
+        // La tela de foto también: sin esto la grilla no marcaba la que tiene
+        // puesta lo seleccionado, y "Ninguna" se veía elegida sin serlo.
+        const uTex = (obj as any)._userTex as { id: string } | undefined
+        setActiveUserTex(uTex?.id ?? null)
         // X/Y/W/H de lo que hay seleccionado.
         //
         // Con varios objetos se muestra la caja de TODA la selección, no la del
@@ -5388,12 +5397,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Aplica un patrón de textura a un objeto y guarda su receta (kind + colores) para poder
   // recolorearla después sin perder la textura.
   function setObjTexture(obj: fabric.FabricObject, kind: TextureKind, colors: string[]) {
+    recordarColorLiso(obj)
     ;(obj as any)._texture = { kind, colors: [...colors] }
-    delete (obj as any)._baseColor          // la textura pasa a ser la base
     // Y reemplaza a la tela importada: recomposeFill atiende _userTex primero,
     // así que sin esto el estampado quedaba tapado y el clic no hacía nada.
     delete (obj as any)._userTex
     recomposeFill(obj)
+  }
+
+  /**
+   * Anota el color liso que tenía la pieza antes de ponerle una tela.
+   *
+   * ANTES el color se borraba al aplicar la tela ("la textura pasa a ser la
+   * base"), y por eso una vez puesta no se podía sacar: no quedaba ningún
+   * color al que volver, y `recomposeFill` sin textura ni base deja el relleno
+   * como está — o sea, la tela pegada para siempre.
+   *
+   * Guardarlo no cambia nada de lo que se ve: `recomposeFill` mira primero la
+   * tela y solo cae en el color liso cuando no hay ninguna.
+   */
+  function recordarColorLiso(obj: fabric.FabricObject) {
+    const o = obj as any
+    if (o._baseColor) return                       // ya hay uno anotado
+    if (o._texture || o._userTex) return           // lo que se ve es una tela, no un color
+    if (typeof obj.fill === 'string' && obj.fill) o._baseColor = obj.fill
   }
 
   // ── Composición base + efecto ───────────────────────────────────────────────
@@ -5462,23 +5489,32 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
 
   // Aplica una textura propia del usuario a la prenda (o a la pieza seleccionada).
   function applyUserTexture(t: UserTexture) {
+    // Lo último que se pidió. Una tela de foto son varios MB: tarda, y cuando
+    // termina de bajar ya puede no ser lo que el diseñador quiere. Sin esto,
+    // apretar "Ninguna" mientras bajaba terminaba igual con la tela puesta
+    // —la que llegaba tarde pisaba la decisión nueva—, y lo mismo al cambiar
+    // de una tela a otra rápido: ganaba la que tardaba más.
+    telaPedida.current = t.id
     const img = userTexImages.current.get(t.id)
     if (!img) {                                   // precargar y reintentar
       // Las de fábrica pasan por ensureRawImage, que además les aplica los
       // colores elegidos antes de que la tela toque la prenda.
       if (isRawTexture(t.id)) {
-        ensureRawImage(t.id).then(ok => { if (ok) applyUserTexture(t) })
+        ensureRawImage(t.id).then(ok => { if (ok && telaPedida.current === t.id) applyUserTexture(t) })
         return
       }
       const el = new Image()
-      el.onload = () => { userTexImages.current.set(t.id, el); applyUserTexture(t) }
+      el.onload = () => {
+        userTexImages.current.set(t.id, el)
+        if (telaPedida.current === t.id) applyUserTexture(t)
+      }
       el.src = t.dataUrl
       return
     }
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => {
+      recordarColorLiso(o)                     // para poder volver con "Ninguna"
       delete (o as any)._texture               // reemplaza al estampado interno
-      delete (o as any)._baseColor
       ;(o as any)._userTex = { id: t.id, widthCm: t.widthCm }
       recomposeFill(o)
     }, `Tela «${t.name}» aplicada`, label)
@@ -5524,7 +5560,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     if (!inner) return
     const body = mockupObjects.current.find(o => (o as any)._rawBody)
     const base = body ? (body as any)._baseColor as string | undefined : undefined
-    const plain = base && /^#[0-9a-f]{6}$/i.test(base)
+    // Con tela puesta el color liso sigue anotado (es a lo que vuelve "Ninguna"),
+    // pero NO es lo que se ve: ahí el interior cae en el gris neutro, como antes.
+    const conTela = !!body && !!((body as any)._texture || (body as any)._userTex)
+    const plain = !conTela && base && /^#[0-9a-f]{6}$/i.test(base)
     inner.set({ fill: plain ? adjL(base!, -0.16) : TEE_INNER_FALLBACK, dirty: true })
   }
 
@@ -5568,9 +5607,35 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   }
 
   function applyTexture(kind: TextureKind) {
+    telaPedida.current = null        // un estampado también cancela la tela que venía bajando
     const { targets, label } = fillTargets()
     applyFillToTargets(targets, o => setObjTexture(o, kind, texColors[kind]), 'Tela aplicada', label)
     setActiveTexKind(kind)
+    setActiveUserTex(null)
+  }
+
+  /**
+   * "Ninguna": saca la tela y deja el color liso.
+   *
+   * Hacía falta porque poner una tela era un camino de ida: no había forma de
+   * volver al color, y la única salida era deshacer o pintar encima.
+   *
+   * El color al que vuelve es el que se anotó al ponerle la tela
+   * (`recordarColorLiso`). Los diseños hechos ANTES de que eso existiera no lo
+   * tienen, así que ahí se usa el gris de fábrica de la prenda: no es el color
+   * exacto que tenía, pero deja la pieza lisa y pintable, que es lo que se
+   * estaba pidiendo.
+   */
+  function quitarTela() {
+    telaPedida.current = null        // y si venía una bajando, que no aterrice
+    const { targets, label } = fillTargets()
+    applyFillToTargets(targets, o => {
+      delete (o as any)._texture
+      delete (o as any)._userTex
+      if (!(o as any)._baseColor) (o as any)._baseColor = GRIS_DE_FABRICA
+      recomposeFill(o)
+    }, 'Tela quitada', label)
+    setActiveTexKind(null)
     setActiveUserTex(null)
   }
 
@@ -8736,6 +8801,36 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 pueden recolorear.
               </p>
               <div key={paletteVersion} className="swatches">
+                {/* "Ninguna" va PRIMERA y siempre: poner una tela era un camino
+                    de ida —no había forma de volver al color liso— y eso se
+                    nota recién cuando ya te arrepentiste. */}
+                <button
+                  onClick={quitarTela}
+                  title="Sin tela · vuelve al color liso"
+                  style={{
+                    display: 'flex', flexDirection: 'column', gap: 5, padding: 0,
+                    background: 'none', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  <div style={{
+                    width: '100%', aspectRatio: '1', borderRadius: 'var(--radius)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--surface)',
+                    border: '1px solid ' + (sinTela ? 'var(--accent)' : 'var(--line)'),
+                    outline: sinTela ? '1px solid var(--accent)' : 'none',
+                    // La barra cruzada es la convención de "ninguno" en cualquier
+                    // programa de diseño; con el cuadrado vacío solo no se entiende.
+                    backgroundImage: 'linear-gradient(to bottom right, transparent calc(50% - 1px),'
+                      + ' var(--muted) calc(50% - 1px), var(--muted) calc(50% + 1px),'
+                      + ' transparent calc(50% + 1px))',
+                  }} />
+                  <span style={{
+                    fontSize: 10, color: sinTela ? 'var(--accent)' : 'var(--fg-2)',
+                    fontFamily: 'var(--ui)', textAlign: 'center',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>Ninguna</span>
+                </button>
+
                 {/* Estampados que dibuja el programa: se recolorean */}
                 {TEXTURES.map(t => {
                   const on = activeTexKind === t.id
@@ -9229,28 +9324,26 @@ function CtxDivider() {
 // ── Layers panel ─────────────────────────────────────────────────────────────
 
 // ── Texturas de tela ─────────────────────────────────────────────────────────
-// Quedaron las dos que valen como tela: rayas y denim. Cuadrillé, lunares,
-// camuflado y animal print eran dibujitos planos que no leían como género y
-// ensuciaban el panel. Las telas de verdad van por "Telas RAW" (fotos).
-type TextureKind = 'rayas' | 'denim'
+// Quedó el denim, que es el único que lee como género de verdad. Cuadrillé,
+// lunares, camuflado, animal print y las rayas eran dibujitos planos que no
+// leían como tela y ensuciaban el panel (las rayas se sacaron el 2026-11-16).
+// Las telas de verdad van por las fotos y los vectores de "Telas RAW".
+type TextureKind = 'denim'
 
 const TEXTURES: { id: TextureKind; label: string }[] = [
-  { id: 'rayas', label: 'Rayas' },
   { id: 'denim', label: 'Denim' },
 ]
 
 // Slots de color editables por textura (color principal = primero, secundario = segundo, etc.)
 const TEXTURE_COLORS: Record<TextureKind, { label: string; def: string }[]> = {
-  rayas: [{ label: 'Fondo', def: '#f4f1e8' }, { label: 'Rayas', def: '#2b3a67' }],
   denim: [{ label: 'Base', def: '#3b5b8c' }],
 }
 const defaultTexPalette = (k: TextureKind) => TEXTURE_COLORS[k].map(c => c.def)
 
 // Un diseño guardado puede traer una textura que ya no existe (cuadrillé,
-// lunares, camuflado, animal). Se ignora y la pieza queda con su color liso,
-// en vez de abrir el proyecto roto o pintado de cualquier cosa.
-const esTexturaValida = (k: unknown): k is TextureKind =>
-  k === 'rayas' || k === 'denim'
+// lunares, camuflado, animal, rayas). Se ignora y la pieza queda con su color
+// liso, en vez de abrir el proyecto roto o pintado de cualquier cosa.
+const esTexturaValida = (k: unknown): k is TextureKind => k === 'denim'
 
 // ── Efectos de tela (grunge / vintage / desgaste) ────────────────────────────
 // A diferencia de los estampados, un efecto NO reemplaza el relleno: se dibuja
@@ -9644,20 +9737,21 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${to(r)}${to(g)}${to(b)}`
 }
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
-const withL = (hex: string, l: number, sMul = 1) => { const [h, s] = hexToHsl(hex); return hslToHex(h, clamp01(s * sMul), clamp01(l)) }
+// `withL` (fijar la luminosidad) se fue con las rayas: era quien derivaba el
+// fondo claro a partir del color de la raya. El denim usa un solo color.
 const adjL   = (hex: string, d: number)          => { const [h, s, l] = hexToHsl(hex); return hslToHex(h, s, clamp01(l + d)) }
 
 // Índice del slot que actúa como "color principal" en cada textura
-const TEX_PRIMARY: Record<TextureKind, number> = { rayas: 1, denim: 0 }
+const TEX_PRIMARY: Record<TextureKind, number> = { denim: 0 }
 // Dada la elección de color principal, deriva toda la paleta de la textura
 function deriveTexPalette(kind: TextureKind, p: string): string[] {
   switch (kind) {
-    case 'rayas': return [withL(p, 0.92, 0.5), p]
     case 'denim': return [p]
   }
 }
 
-// Dibuja un tile repetible de la textura sobre un canvas y lo devuelve
+/* Dibuja un tile repetible de la textura sobre un canvas y lo devuelve.
+   Quedó un solo estampado (denim); si se agrega otro, vuelve el switch. */
 function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElement {
   const col = colors ?? defaultTexPalette(kind)
   const s = 56
@@ -9665,20 +9759,16 @@ function makeTextureCanvas(kind: TextureKind, colors?: string[]): HTMLCanvasElem
   const x = c.getContext('2d')!
   const rnd = (seed: number) => { const v = Math.sin(seed * 99.13) * 43758.5453; return v - Math.floor(v) }
 
-  if (kind === 'rayas') {
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    x.fillStyle = col[1]
-    for (let i = -s; i < s; i += 16) { x.fillRect(i, 0, 8, s) }
-  } else {   // denim
-    x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
-    for (let i = 0; i < 1400; i++) {
-      const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
-      x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
-      x.fillRect(px, py, 1, 1)
-    }
-    x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
-    for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
+  // El denim son tres capas: el azul de base, el moteado del hilo y la diagonal
+  // del tejido, que es lo que lo hace leer como jean y no como papel azul.
+  x.fillStyle = col[0]; x.fillRect(0, 0, s, s)
+  for (let i = 0; i < 1400; i++) {
+    const px = rnd(i) * s, py = rnd(i + 7) * s, b = rnd(i + 3)
+    x.fillStyle = b > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(20,30,60,0.18)'
+    x.fillRect(px, py, 1, 1)
   }
+  x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 1
+  for (let i = -s; i < s; i += 4) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + s, s); x.stroke() }
   return c
 }
 
@@ -10012,7 +10102,12 @@ function partirPorCostura(
   ]
 }
 
-const TEE_PIEZA = { role: 'piece' as const, fill: '#b2b2b2', stroke: '#010101', strokeWidth: 2 }
+/* El gris con el que nace una pieza de prenda. Está aparte porque también es
+   el color al que vuelve "Ninguna" cuando el diseño no trae anotado ninguno
+   (telas aplicadas antes de que ese color se guardara). */
+export const GRIS_DE_FABRICA = '#b2b2b2'
+
+const TEE_PIEZA = { role: 'piece' as const, fill: GRIS_DE_FABRICA, stroke: '#010101', strokeWidth: 2 }
 const centroY = (p: Punto[]) => p.reduce((a, q) => a + q[1], 0) / p.length
 const centroX = (p: Punto[]) => p.reduce((a, q) => a + q[0], 0) / p.length
 
