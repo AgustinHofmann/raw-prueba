@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
-import { Project } from '../types/project'
+import { Project, type FichaDiseno } from '../types/project'
+import { aRgb, aHex as rgbAHex } from '../lib/colores'
 import { SYSTEM_FONTS, GOOGLE_FONTS, loadGoogleFont, loadUserFont, restoreUserFonts, deleteUserFont } from '../utils/fonts'
 import { importUserTexture, listUserTextures, deleteUserTexture, updateUserTexture,
          TEXTURE_ACCEPT, type UserTexture } from '../utils/userTextures'
@@ -68,7 +69,7 @@ interface Props {
   saved: boolean
   onSaveComplete: () => void
   onActionsReady: (a: EditorActions | null) => void
-  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null) => void
+  onOpenTechPack: (snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno) => void
   onToast?: (msg: string) => void
 }
 
@@ -5814,9 +5815,50 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     fc.current?.requestRenderAll()
   }
 
+  // Frente y espalda por separado. Chomba, musculosa y short traen las dos
+  // vistas una al lado de la otra: el centro de la caja de TODO cae en el hueco
+  // entre ambas, y desde ahí no se puede medir dónde va un estampado.
+  function vistas(): { left: number; top: number; width: number; height: number }[] {
+    const atras = mockupObjects.current.filter(esEspalda)
+    return [mockupBounds(piezasDelFrente()), atras.length ? mockupBounds(atras) : null]
+      .filter((v): v is NonNullable<typeof v> => !!v)
+  }
+  /** Si una pieza es de la vista de atrás (las prendas de SVG lo dicen por su nombre). */
+  function esEspalda(o: fabric.FabricObject): boolean {
+    return !!prendaParam?.segundaMitad?.(String((o as any)._srcId ?? ''))
+  }
+  const piezasDelFrente = () => mockupObjects.current.filter(o => !esEspalda(o))
+  /** La vista donde está una caja: la que tiene su centro, o la más cercana. */
+  function vistaDe(b: { left: number; width: number }) {
+    const cx = b.left + b.width / 2
+    const vs = vistas()
+    return vs.find(v => cx >= v.left && cx <= v.left + v.width)
+      ?? vs.sort((p, q) => Math.abs(p.left + p.width / 2 - cx) - Math.abs(q.left + q.width / 2 - cx))[0]
+      ?? null
+  }
+  // Dónde está algo sobre la prenda, con las referencias que usa el taller para
+  // ubicar un estampado: cuánto se corre de la línea del centro y cuánto baja
+  // desde lo más alto de la prenda (el punto alto del hombro, HPS, o la cintura
+  // en pantalón y short).
+  // shortcut: lo más alto se toma de la caja de la prenda; si un modelo tuviera
+  // algo por encima del hombro (una capucha), habría que darle su propio HPS.
+  function enPrenda(o: fabric.FabricObject): { ancho: number; alto: number; centro: number; arriba: number } | null {
+    const ppc = pxPerCmRef.current
+    o.setCoords()
+    const b = o.getBoundingRect()
+    const mb = vistaDe(b)
+    if (!(ppc > 0) || !mb) return null
+    const r1 = (n: number) => Math.round(n * 10) / 10
+    return {
+      ancho:  r1((o.width  ?? 0) * Math.abs(o.scaleX ?? 1) / ppc),
+      alto:   r1((o.height ?? 0) * Math.abs(o.scaleY ?? 1) / ppc),
+      centro: r1((b.left + b.width / 2 - (mb.left + mb.width / 2)) / ppc),
+      arriba: r1((b.top - mb.top) / ppc),
+    }
+  }
+
   // Caja combinada del mockup (remera) — usada por el snapping / guías inteligentes.
-  function mockupBounds(): { left: number; top: number; width: number; height: number } | null {
-    const m = mockupObjects.current
+  function mockupBounds(m = mockupObjects.current): { left: number; top: number; width: number; height: number } | null {
     if (!m.length) return null
     const r = m.map(o => o.getBoundingRect())
     const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
@@ -6568,7 +6610,64 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     a.click()
   }
 
-  // Genera un snapshot de la prenda (recortado al mockup) y abre el Tech Pack
+  // Lo que la ficha necesita saber de cada estampado: qué es, cuánto mide y
+  // dónde va (desde la línea del centro y desde el hombro). Las líneas
+  // técnicas (costuras, divisiones de la prenda) no son estampados.
+  function fichaDelDiseno(canvas: fabric.Canvas): FichaDiseno {
+    const vs = vistas()
+    const desde: 'hombro' | 'cintura' = project.mockupId === 'pants' || project.mockupId === 'short' ? 'cintura' : 'hombro'
+    const colores = (o: fabric.FabricObject): string[] => {
+      const hijos = o instanceof fabric.Group ? o.getObjects() : [o]
+      const todos = hijos.flatMap(h => [h.fill, (h.strokeWidth ?? 0) > 0 ? h.stroke : null])
+        .map(c => (typeof c === 'string' ? aRgb(c) : null))
+        .filter((c): c is [number, number, number] => !!c)
+        .map(rgbAHex)
+      return [...new Set(todos)]
+    }
+    const queEs = (o: fabric.FabricObject) =>
+      o instanceof fabric.IText ? `"${o.text}" (${o.fontFamily})`
+      : o instanceof fabric.FabricImage ? 'Imagen'
+      : o instanceof fabric.Group ? 'Grupo'
+      : o instanceof fabric.Path ? 'Dibujo'
+      : 'Figura'
+    const estampados = canvas.getObjects()
+      .filter(o => !(o as any)._rawMockup && !(o as any)._rawTemp && !(o as any)._lineRole && !(o as any)._corte && o.visible !== false)
+      .flatMap(o => {
+        const p = enPrenda(o)
+        if (!p) return []
+        const b = o.getBoundingRect()
+        const v = vistaDe(b)
+        // El arte solo, sin la prenda. Se saca un momento el recorte A LA PRENDA
+        // (está en coordenadas del lienzo y, dibujando el objeto suelto, lo
+        // dejaría en blanco); una máscara propia (`_mascara`) es parte del arte.
+        const clip = o.clipPath
+        if (!(o as any)._mascara) o.clipPath = undefined
+        const imagen = o.toDataURL({ format: 'png', multiplier: Math.min(3, Math.max(0.5, 220 / Math.max(b.width, b.height, 1))) })
+        o.clipPath = clip
+        return [{
+          imagen, que: queEs(o), ancho: p.ancho, alto: p.alto, centro: p.centro, arriba: p.arriba, desde,
+          vista: vs.length > 1 && v && v.left === vs[1].left ? 'Espalda' as const : 'Frente' as const,
+          colores: colores(o),
+        }]
+      })
+    // Las piezas que se pintan: el resto de lo que dibuja la prenda (sombras,
+    // ayudas) no es tela que se compre.
+    const telas = fillableGarmentPieces()
+      .filter(o => !(o as any)._rawInner)
+      .map(o => {
+        const uTex = (o as any)._userTex as { id: string } | undefined
+        const tex  = (o as any)._texture as { kind: string } | undefined
+        const liso = typeof o.fill === 'string' && !uTex && !tex ? aRgb(o.fill) : null
+        return {
+          pieza: pieceNameOf(o),
+          color: liso ? rgbAHex(liso) : null,
+          tela: uTex ? (rawTextureById(uTex.id)?.name ?? 'Tela propia') : tex ? 'Tela con dibujo' : null,
+        }
+      })
+    return { estampados, telas }
+  }
+
+  // Genera las fotos de la prenda y abre el Tech Pack
   function openTechPack() {
     const canvas = fc.current
     if (!canvas) return
@@ -6576,21 +6675,52 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const wasMeasure = measureEditRef.current
     measureEditRef.current = false  // que no salgan los tiradores en la foto
     canvas.requestRenderAll()
-    let opts: any = { format: 'png', multiplier: 2 }
-    const mocks = mockupObjects.current
-    if (mocks.length) {
-      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity
-      mocks.forEach(o => { const bb = o.getBoundingRect(); l = Math.min(l, bb.left); t = Math.min(t, bb.top); r = Math.max(r, bb.left + bb.width); b = Math.max(b, bb.top + bb.height) })
-      const pad = 20
-      opts = { ...opts, left: Math.max(0, l - pad), top: Math.max(0, t - pad), width: (r - l) + pad * 2, height: (b - t) + pad * 2 }
+    // Frente y espalda por separado, cada uno a su lugar de la ficha. Antes iba
+    // una sola foto con todo: en la chomba, "Frente" mostraba las dos vistas y
+    // "Espalda" quedaba vacía. Se mide y se recorta con el zoom apagado: así la
+    // foto sale igual con cualquier vista del lienzo.
+    const vpt = canvas.viewportTransform
+    canvas.viewportTransform = [1, 0, 0, 1, 0, 0]
+    const caja = (objs: fabric.FabricObject[]) => {
+      const r = objs.filter(o => o.visible !== false).map(o => o.getBoundingRect())
+      if (!r.length) return null
+      const x1 = Math.min(...r.map(b => b.left)), y1 = Math.min(...r.map(b => b.top))
+      return { x1, y1, x2: Math.max(...r.map(b => b.left + b.width)), y2: Math.max(...r.map(b => b.top + b.height)) }
     }
-    const img = canvas.toDataURL(opts)
+    const atras = mockupObjects.current.filter(esEspalda)
+    const frente = atras.length ? piezasDelFrente() : mockupObjects.current
+    // Cada foto se dibuja SIN la otra vista: en la chomba las dos están tan
+    // pegadas que sus cajas se pisan, y un recorte del frente se llevaba un
+    // pedazo de la espalda. Lo dibujado encima va con la vista de su centro.
+    const cf = caja(frente), cb = atras.length ? caja(atras) : null
+    const medio = cf && cb ? (cf.x2 + cb.x1) / 2 : Infinity
+    const esDeAtras = (o: fabric.FabricObject) => {
+      if (mockupObjects.current.includes(o)) return esEspalda(o)
+      const r = o.getBoundingRect()
+      return r.left + r.width / 2 > medio
+    }
+    const foto = (objs: fabric.FabricObject[], atrasVa: boolean) => {
+      const c = caja(objs)
+      if (!c) return null
+      const pad = 20
+      return canvas.toDataURL({
+        format: 'png', multiplier: 2, left: c.x1 - pad, top: c.y1 - pad, width: c.x2 - c.x1 + pad * 2, height: c.y2 - c.y1 + pad * 2,
+        filter: (o: any) => esDeAtras(o) === atrasVa,
+      } as any)
+    }
+    const img = foto(frente, false) ?? canvas.toDataURL({ format: 'png', multiplier: 2 })
+    const espalda = atras.length ? foto(atras, true) : null
+    if (vpt) canvas.viewportTransform = vpt
+    canvas.requestRenderAll()
     measureEditRef.current = wasMeasure
     // La remera tiene sus medidas propias; el resto de las prendas
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
     // la app conozca los numeros.
-    onOpenTechPack(img, isTee ? measures : (prendaParam ? medidasRef.current : null))
+    // measuresRef y no el estado: esta función se le pasa a la App una sola vez
+    // al abrir el editor, y el estado que veía era el de ese momento. Una ficha
+    // nueva salía con las medidas por defecto aunque la remera tuviera otras.
+    onOpenTechPack(img, isTee ? measuresRef.current : (prendaParam ? medidasRef.current : null), { ...fichaDelDiseno(canvas), espalda })
   }
 
   function resetView() {
