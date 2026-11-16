@@ -152,6 +152,19 @@ export const gradoTipico = (punto: string): number | null => GRADO_TIPICO[punto.
 /** El salto de una fila: el que se cargó, o el típico si la ficha es de antes. */
 export const gradoDe = (r: PomRow): number | null => r.grado === undefined ? gradoTipico(r.punto) : r.grado
 
+/**
+ * Un precio como lo escribe la gente: "9.000" y "1.250,50" (como se escribe
+ * acá) y también "12.5". El punto es de miles solo si separa grupos de tres
+ * cifras; antes se borraban todos los puntos y "12.5" pasaba a valer 125.
+ */
+export function leerPlata(s: string | undefined): number | null {
+  const t = (s ?? '').trim()
+  if (!t) return null
+  const n = Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.')
+    : /^\d{1,3}(\.\d{3})+$/.test(t) ? t.replace(/\./g, '') : t)
+  return isFinite(n) ? n : null
+}
+
 const ESCALA = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']
 
 /**

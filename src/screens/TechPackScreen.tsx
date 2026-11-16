@@ -13,7 +13,7 @@ import type {
   Project, TechPackDoc, TechPackPage, TechPackPageKind,
   BomRow, PomRow, Annotation, AnnotationCategory, TechPackMeta, ImageRole, FichaDiseno,
 } from '../types/project'
-import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados, tallesDelRango, gradoDe } from '../lib/techpackTemplate'
+import { buildDefaultTechPack, parseTechPack, makePage, PAGE_CATALOG, garmentName, refrescarImagenesAuto, conPaginaEstampados, tallesDelRango, gradoDe, leerPlata } from '../lib/techpackTemplate'
 import { aRgb, aCmyk, nombreDeColor } from '../lib/colores'
 import AnnotationLayer, { type AnnTool } from './AnnotationLayer'
 
@@ -502,9 +502,10 @@ export default function TechPackScreen({ project, designer, snapshot, measures, 
     // no es material (confección, estampado). Una fila sin precio no se cuenta
     // como cero en silencio: se avisa, porque un costo de menos es peor que uno
     // incompleto que dice que lo está.
-    const num = (s: string | undefined) => { const n = Number((s ?? '').trim().replace(/\./g, '').replace(',', '.')); return (s ?? '').trim() === '' || !isFinite(n) ? null : n }
+    const num = leerPlata
     const cant = (s: string | undefined) => { const n = Number((s ?? '').trim().replace(',', '.')); return (s ?? '').trim() === '' || !isFinite(n) ? null : n }
-    const plata = (n: number) => '$ ' + n.toLocaleString('es-AR', { maximumFractionDigits: 2 })
+    // Con centavos, siempre dos: "$ 1.250,5" se lee como un error.
+    const plata = (n: number) => '$ ' + n.toLocaleString('es-AR', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })
     const subtotal = (r: BomRow) => { const c = cant(r.consumo), p = num(r.precio); return c != null && p != null ? c * p : null }
     const materiales = doc.bom.reduce((t, r) => t + (subtotal(r) ?? 0), 0)
     const sinPrecio = doc.bom.filter(r => subtotal(r) == null).length
