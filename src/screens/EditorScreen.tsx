@@ -1684,53 +1684,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const huecoMitadesRef = useRef<number | null>(null)
   useEffect(() => { medidasRef.current = medidas }, [medidas])
   const [openGroups,     setOpenGroups]     = useState<Record<string, boolean>>({})  // grupos de medidas desplegados
-  const [measureEdit,    setMeasureEdit]    = useState(false)  // tiradores de medida sobre el lienzo
-  const measureEditRef = useRef(false)
   const isTee = project.mockupId === 'tshirt'
-  useEffect(() => { measureEditRef.current = measureEdit }, [measureEdit])
-  // Salir del modo tiradores si cambiás de herramienta o de pestaña
-  useEffect(() => { if (tool !== 'select' || rightTab !== 'props') setMeasureEdit(false) }, [tool, rightTab])
-  // Arrastre de los tiradores de medida
-  useEffect(() => {
-    const canvas = fc.current
-    if (!canvas || !measureEdit || tool !== 'select') return
-    const prevSkip = canvas.skipTargetFind, prevSel = canvas.selection
-    canvas.skipTargetFind = true; canvas.selection = false; canvas.defaultCursor = 'pointer'
-    let drag: (typeof TEE_HANDLES)[number] | null = null
-    let raf: number | null = null
-    let pend: { x: number; y: number } | null = null
-    const hitR = () => 16 / (canvas.getZoom() || 1)
-    const onDown = (e: any) => {
-      const f = teeFitRef.current; if (!f) return
-      const p = e.scenePoint; const W = teeWarp(measuresRef.current)
-      // Agarra el handle MÁS CERCANO dentro del radio (no el primero), así dos handles
-      // próximos (p. ej. pecho y manga en la axila) no se "roban" el click.
-      let best = Infinity
-      for (const h of TEE_HANDLES) {
-        const [wx, wy] = W(h.base[0], h.base[1])
-        const d = Math.hypot(p.x - (wx * f.sc + f.ox), p.y - (wy * f.sc + f.oy))
-        if (d < hitR() && d < best) { best = d; drag = h }
-      }
-    }
-    const apply = () => {
-      raf = null
-      const f = teeFitRef.current; if (!drag || !pend || !f) return
-      const fld = MEASURE_FIELDS.find(ff => ff.key === drag!.key)!
-      let v = drag.toMeasure((pend.x - f.ox) / f.sc, (pend.y - f.oy) / f.sc, measuresRef.current)
-      v = Math.round(Math.min(fld.max, Math.max(fld.min, v)) * 10) / 10
-      applyMeasures({ ...measuresRef.current, [drag.key]: v })
-    }
-    const onMove = (e: any) => { if (!drag) return; pend = e.scenePoint; if (raf === null) raf = requestAnimationFrame(apply) }
-    const onUp = () => { drag = null }
-    canvas.on('mouse:down', onDown); canvas.on('mouse:move', onMove); canvas.on('mouse:up', onUp)
-    canvas.requestRenderAll()
-    return () => {
-      canvas.off('mouse:down', onDown); canvas.off('mouse:move', onMove); canvas.off('mouse:up', onUp)
-      canvas.skipTargetFind = prevSkip; canvas.selection = prevSel; canvas.defaultCursor = 'default'
-      if (raf) cancelAnimationFrame(raf)
-      canvas.requestRenderAll()
-    }
-  }, [measureEdit, tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  /* Acá vivían los TIRADORES DE MEDIDA: puntos arrastrables sobre la remera
+     para cambiar largo, ancho, cuello y manga sin tocar los campos. Se sacaron
+     el 2026-11-16 junto con su botón ("Ajustar arrastrando en la remera").
+     Las medidas se editan por los campos de acá abajo, que es donde el
+     diseñador escribe el número que le pide el taller. Si alguna vez vuelven,
+     están en el historial: `git log -S TEE_HANDLES`. */
 
   useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   /* Lo que usa la HERRAMIENTA y lo que muestra el PANEL son dos cosas distintas.
@@ -2121,24 +2081,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       const vpt = (canvas.viewportTransform ?? [1,0,0,1,0,0]) as number[]
       const rs = (canvas.getRetinaScaling?.() ?? 1)
 
-      // Tiradores de medida (puntos arrastrables sobre la remera)
-      if (measureEditRef.current && teeFitRef.current) {
-        const { sc, ox, oy } = teeFitRef.current
-        const W = teeWarp(measuresRef.current)
-        ctx.save(); ctx.setTransform(rs, 0, 0, rs, 0, 0)
-        for (const h of TEE_HANDLES) {
-          const [wx, wy] = W(h.base[0], h.base[1])
-          const scX = wx * sc + ox, scY = wy * sc + oy
-          const cssX = vpt[0] * scX + vpt[2] * scY + vpt[4]
-          const cssY = vpt[1] * scX + vpt[3] * scY + vpt[5]
-          ctx.beginPath(); ctx.arc(cssX, cssY, 6, 0, Math.PI * 2)
-          ctx.fillStyle = '#fff'; ctx.fill()
-          ctx.lineWidth = 2; ctx.strokeStyle = SEL_BLUE; ctx.stroke()
-          ctx.beginPath(); ctx.arc(cssX, cssY, 2, 0, Math.PI * 2); ctx.fillStyle = SEL_BLUE; ctx.fill()
-        }
-        ctx.restore()
-      }
-
       // Guías inteligentes: líneas magenta de alineación mientras se arrastra (estilo Illustrator)
       const g = smartGuides.current
       if (g.v || g.h) {
@@ -2525,6 +2467,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         }
         acomodarFondo()   // lo que el usuario había dejado debajo de la prenda vuelve abajo
         restoreGarmentPaint(design.garment)
+        // El panel también se abre: la prenda ya tiene su tela y su efecto
+        // puestos, y antes el panel decía "Ninguna" y "Sin efecto" igual.
+        reflejarTelaYEfecto(null)
         preloadRawTexturesUsedBy([...revived, ...mockupObjects.current])
 
         // El encuadre va DESPUÉS de reponer la prenda y los objetos: si se
@@ -4599,7 +4544,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // ── Select ───────────────────────────────────────────────────────────────
     if (tool === 'select') {
       const syncProps = (obj: fabric.FabricObject | null) => {
-        if (!obj) { setHasSel(false); setIsText(false); setActiveTexKind(null); setActiveUserTex(null); return }
+        if (!obj) {
+          setHasSel(false); setIsText(false)
+          // Sin selección el panel vuelve a hablar de TODA la prenda, así que
+          // muestra lo que la prenda tiene puesto, no "ninguno".
+          reflejarTelaYEfecto(null)
+          setLineRole(null)
+          return
+        }
         setHasSel(true)
         // Si el objeto no tiene trazo o relleno de color (una imagen, por
         // ejemplo), se deja lo que el panel ya mostraba en vez de inventar un
@@ -4610,17 +4562,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         // Grosor "Mixto" si hay varios objetos seleccionados con distinto strokeWidth
         const sel = (canvas.getActiveObjects?.() ?? []).filter(o => !mockupObjects.current.includes(o))
         setPropSWidthMixed(sel.length > 1 && new Set(sel.map(o => o.strokeWidth ?? 0)).size > 1)
-        // Si el objeto ya tiene una textura, abrir su editor de colores con su paleta
-        // Si la textura guardada ya no existe (proyecto viejo), no se abre su
-        // editor: pedirle la paleta a una textura borrada rompía el panel.
-        const tex = (obj as any)._texture as { kind: TextureKind; colors: string[] } | undefined
-        if (tex && esTexturaValida(tex.kind)) {
-          setActiveTexKind(tex.kind); setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
-        } else setActiveTexKind(null)
-        // La tela de foto también: sin esto la grilla no marcaba la que tiene
-        // puesta lo seleccionado, y "Ninguna" se veía elegida sin serlo.
-        const uTex = (obj as any)._userTex as { id: string } | undefined
-        setActiveUserTex(uTex?.id ?? null)
+        // Tela, estampado y efecto de lo seleccionado, todo por el mismo lado.
+        reflejarTelaYEfecto(obj)
+        // Y qué significa la línea en el flat (contorno, costura, pespunte…):
+        // estaba guardado en el objeto pero el panel no lo marcaba, así que una
+        // línea guardada como costura se abría como si no fuera nada.
+        const rol = (obj as any)._lineRole as LineRole | undefined
+        setLineRole(rol ?? null)
+        lineRoleRef.current = rol ?? null
         // X/Y/W/H de lo que hay seleccionado.
         //
         // Con varios objetos se muestra la caja de TODA la selección, no la del
@@ -5676,6 +5625,42 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.(`${verb} a ${label}`)
   }
 
+  /**
+   * Pone el panel de telas al día con lo que hay DIBUJADO.
+   *
+   * El panel no guarda la verdad: la verdad está en la pieza. Antes el panel
+   * solo se enteraba cuando vos aplicabas algo, así que al cerrar el proyecto
+   * y volver a entrar la prenda se veía con su tela y su efecto pero el panel
+   * decía "Ninguna" y "Sin efecto". Lo mismo al seleccionar una pieza: la tela
+   * se marcaba, el efecto no.
+   *
+   * Sin nada seleccionado el panel pinta TODA la prenda, así que ahí muestra
+   * lo que tiene la prenda — y de la prenda, el cuerpo, que es la pieza grande
+   * y la que uno mira. Si cada pieza tiene algo distinto no hay una sola
+   * respuesta posible, y el cuerpo es la menos sorpresiva.
+   */
+  function reflejarTelaYEfecto(obj: fabric.FabricObject | null) {
+    const o: any = obj
+      ?? mockupObjects.current.find(p => (p as any)._rawBody)
+      ?? fillableGarmentPieces()[0]
+      ?? null
+
+    const tex = o?._texture as { kind: TextureKind; colors: string[] } | undefined
+    // Una textura que ya no existe (proyecto viejo) no abre su editor de
+    // colores: pedirle la paleta a una textura borrada rompía el panel.
+    if (tex && esTexturaValida(tex.kind)) {
+      setActiveTexKind(tex.kind)
+      setTexColors(prev => ({ ...prev, [tex.kind]: tex.colors }))
+    } else setActiveTexKind(null)
+
+    const uTex = o?._userTex as { id: string } | undefined
+    setActiveUserTex(uTex?.id ?? null)
+
+    const eff = o?._effect as { kind: EffectKind; intensity: number } | undefined
+    setActiveEffect(eff?.kind ?? null)
+    if (eff) setEffectIntensity(eff.intensity)
+  }
+
   function applyTexture(kind: TextureKind) {
     telaPedida.current = null        // un estampado también cancela la tela que venía bajando
     const { targets, label } = fillTargets()
@@ -5928,110 +5913,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const minX = Math.min(...r.map(b => b.left)), minY = Math.min(...r.map(b => b.top))
     const maxX = Math.max(...r.map(b => b.left + b.width)), maxY = Math.max(...r.map(b => b.top + b.height))
     return { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
-  }
-
-  // ── Pathfinder (unir / restar / intersecar / excluir) ───────────────────────
-  // npm bloquea polygon-clipping en este entorno, así que se hace por rasterizado:
-  // se compone la silueta de las formas con operaciones de canvas y se re-vectoriza
-  // con imagetracerjs. Funciona con cualquier forma (curvas, texto), bordes apenas blandos.
-  type PathfinderOp = 'unite' | 'subtract' | 'intersect' | 'exclude'
-  function fillLum(c: string): number {
-    let r = 0, g = 0, b = 0
-    const m = c.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i)
-    if (m) { r = +m[1]; g = +m[2]; b = +m[3] }
-    else if (c[0] === '#') { const h = c.slice(1); const n = h.length === 3 ? h.split('').map(x => x + x).join('') : h; r = parseInt(n.slice(0, 2), 16); g = parseInt(n.slice(2, 4), 16); b = parseInt(n.slice(4, 6), 16) }
-    else return 1
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  }
-  async function pathfinder(op: PathfinderOp) {
-    const canvas = fc.current
-    if (!canvas) return
-    const targets = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
-    if (targets.length < 2) return
-    setVectorizing(true)
-    try {
-      // 1. Caja envolvente en coordenadas de escena + supersampling
-      const rects = targets.map(o => o.getBoundingRect())
-      const pad = 4
-      const bx = Math.min(...rects.map(r => r.left)) - pad
-      const by = Math.min(...rects.map(r => r.top)) - pad
-      const bw = Math.max(...rects.map(r => r.left + r.width)) - bx + pad
-      const bh = Math.max(...rects.map(r => r.top + r.height)) - by + pad
-      let scale = Math.min(4, 2200 / Math.max(bw, bh))
-      scale = Math.max(1, scale)
-      const W = Math.max(1, Math.round(bw * scale)), H = Math.max(1, Math.round(bh * scale))
-      const vpt: number[] = [scale, 0, 0, scale, -bx * scale, -by * scale]
-
-      // 2. Silueta negra de cada forma en su propio canvas (orden Z de la escena)
-      const ordered = [...targets].sort((a, z) => canvas.getObjects().indexOf(a) - canvas.getObjects().indexOf(z))
-      const sils = await Promise.all(ordered.map(async o => {
-        const elc = document.createElement('canvas'); elc.width = W; elc.height = H
-        const sc = new fabric.StaticCanvas(elc, { width: W, height: H, enableRetinaScaling: false, renderOnAddRemove: false })
-        sc.viewportTransform = vpt as any
-        const clone = await o.clone()
-        clone.clipPath = undefined
-        clone.set({ fill: '#000', stroke: '#000', strokeWidth: clone.strokeWidth || 0, opacity: 1, shadow: null as any })
-        sc.add(clone); sc.renderAll()
-        const out = document.createElement('canvas'); out.width = W; out.height = H
-        out.getContext('2d')!.drawImage(elc, 0, 0)
-        sc.dispose()
-        return out
-      }))
-
-      // 3. Componer la operación booleana con globalCompositeOperation
-      const res = document.createElement('canvas'); res.width = W; res.height = H
-      const rc = res.getContext('2d')!
-      if (op === 'unite') { sils.forEach(s => rc.drawImage(s, 0, 0)) }
-      else if (op === 'intersect') { rc.drawImage(sils[0], 0, 0); rc.globalCompositeOperation = 'destination-in'; for (let i = 1; i < sils.length; i++) rc.drawImage(sils[i], 0, 0) }
-      else if (op === 'subtract') { rc.drawImage(sils[0], 0, 0); rc.globalCompositeOperation = 'destination-out'; for (let i = 1; i < sils.length; i++) rc.drawImage(sils[i], 0, 0) }
-      else { sils.forEach((s, i) => { rc.globalCompositeOperation = i === 0 ? 'source-over' : 'xor'; rc.drawImage(s, 0, 0) }) }
-
-      // 4. Pasar a negro-sobre-blanco y vectorizar
-      const tr = document.createElement('canvas'); tr.width = W; tr.height = H
-      const tc = tr.getContext('2d')!
-      tc.fillStyle = '#fff'; tc.fillRect(0, 0, W, H)
-      tc.drawImage(res, 0, 0)
-      const imageData = tc.getImageData(0, 0, W, H)
-      const { default: ImageTracer } = await import('imagetracerjs')
-      const svgStr: string = ImageTracer.imagedataToSVG(imageData, {
-        numberofcolors: 2, colorsampling: 0, ltres: 0.5, qtres: 0.5,
-        pathomit: 4, rightangleenhance: true, blurradius: 0, scale: 1,
-      })
-
-      // 5. Quedarse con los contornos oscuros y mapearlos de px → escena
-      const tags = svgStr.match(/<path\b[^>]*>/g) ?? []
-      const darkDs: string[] = []
-      for (const tag of tags) {
-        const dm = tag.match(/\bd="([^"]+)"/); if (!dm) continue
-        const fm = tag.match(/\bfill="([^"]+)"/)
-        if (fillLum(fm?.[1] ?? '#000') < 0.5) darkDs.push(dm[1])
-      }
-      if (!darkDs.length) { setVectorizing(false); return }
-      const sceneD = darkDs.map(d => transformPath(d, (x, y) => [bx + x / scale, by + y / scale])).join(' ')
-
-      // 6. Crear el resultado con el relleno/trazo de la forma de más atrás y reemplazar
-      const base = ordered[0]
-      const result = new fabric.Path(sceneD, {
-        fill: (typeof base.fill === 'string' ? base.fill : null) ?? colorRef.current,
-        stroke: typeof base.stroke === 'string' ? base.stroke : null,
-        strokeWidth: base.strokeWidth ?? 0,
-        strokeUniform: true, fillRule: 'evenodd',
-        selectable: true, evented: true,
-      })
-      if (clipEnabledRef.current && clipPath.current) result.clipPath = clipPath.current
-      canvas.discardActiveObject()
-      targets.forEach(o => canvas.remove(o))
-      canvas.add(result)
-      canvas.setActiveObject(result)
-      undoHistory.current.push({ type: 'erase', removed: targets, added: [result] })
-      redoHistory.current = []
-      canvas.requestRenderAll()
-      setTool('select')
-    } catch (err) {
-      console.error('Pathfinder falló:', err)
-    } finally {
-      setVectorizing(false)
-    }
   }
 
   function applyFontFamily(val: string) {
@@ -6737,8 +6618,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const canvas = fc.current
     if (!canvas) return
     canvas.discardActiveObject()
-    const wasMeasure = measureEditRef.current
-    measureEditRef.current = false  // que no salgan los tiradores en la foto
     canvas.requestRenderAll()
     // Frente y espalda por separado, cada uno a su lugar de la ficha. Antes iba
     // una sola foto con todo: en la chomba, "Frente" mostraba las dos vistas y
@@ -6777,7 +6656,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const espalda = atras.length ? foto(atras, true) : null
     if (vpt) canvas.viewportTransform = vpt
     canvas.requestRenderAll()
-    measureEditRef.current = wasMeasure
     // La remera tiene sus medidas propias; el resto de las prendas
     // parametricas (chomba, pantalon, musculosa, short) tienen las suyas, y
     // tambien van: si no, la tabla de medidas de la ficha sale vacia aunque
@@ -8561,19 +8439,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             return (
             <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
               <div className="label" style={{ marginBottom: 8 }}>Medidas de la prenda (cm)</div>
-              <button
-                onClick={() => setMeasureEdit(v => !v)}
-                title="Arrastrar puntos sobre la remera para cambiar las medidas"
-                style={{
-                  width: '100%', justifyContent: 'center', marginBottom: 10, fontSize: 11,
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                  background: measureEdit ? 'color-mix(in oklch, var(--accent) 16%, var(--surface))' : 'var(--surface)',
-                  border: '1px solid ' + (measureEdit ? 'var(--accent)' : 'var(--line)'),
-                  color: measureEdit ? 'var(--accent)' : 'var(--fg-2)', fontFamily: 'var(--ui)',
-                }}
-              >
-                {measureEdit ? '✋ Arrastrando medidas (tocá para salir)' : '✋ Ajustar arrastrando en la remera'}
-              </button>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {MEASURE_GROUPS.map(g => {
                   const single = g.keys.length === 1
@@ -8886,21 +8751,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
           )}
 
-          {/* Pathfinder (2+ objetos) */}
-          {selKind === 'multi' && (
-            <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--line-soft)' }}>
-              <div className="label" style={{ marginBottom: 8 }}>Pathfinder</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4 }}>
-                <AlignBtn title="Unir"      onClick={() => pathfinder('unite')}><PathfinderGlyph op="unite" /></AlignBtn>
-                <AlignBtn title="Restar frente" onClick={() => pathfinder('subtract')}><PathfinderGlyph op="subtract" /></AlignBtn>
-                <AlignBtn title="Intersecar" onClick={() => pathfinder('intersect')}><PathfinderGlyph op="intersect" /></AlignBtn>
-                <AlignBtn title="Excluir"   onClick={() => pathfinder('exclude')}><PathfinderGlyph op="exclude" /></AlignBtn>
-              </div>
-              <div style={{ fontSize: 'var(--t-label)', color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--ui)' }}>
-                Combina las formas en un trazado nuevo
-              </div>
-            </div>
-          )}
 
           {/* Opciones de polígono / estrella (al estilo Illustrator) */}
           {(tool === 'polygon' || tool === 'star') && (
@@ -10188,18 +10038,6 @@ const MEASURE_GROUPS: { id: string; label: string; keys: (keyof Measures)[] }[] 
   { id: 'manga',  label: 'Manga',                keys: ['largoManga', 'anchoManga'] },
 ]
 
-// Tiradores de medida: punto base en el SVG + cómo convertir su posición a cm.
-const TEE_HANDLES: { key: keyof Measures; base: [number, number]; axis: 'x' | 'y'; toMeasure: (sx: number, sy: number, m: Measures) => number }[] = [
-  // El handle de pecho va sobre el TORSO (x<395), no en la axila, para no solaparse con
-  // los de la manga ni montarse sobre ella al alargarla. Mide el ancho con la escala fP del cuerpo.
-  { key: 'anchoPecho',   base: [380, 150],       axis: 'x', toMeasure: (sx) => (sx - 247.3) / 132.7 * 60 },
-  { key: 'anchoCintura', base: [408.98, 357],    axis: 'x', toMeasure: (sx) => (sx - 247.3) / 161.68 * 63 },
-  { key: 'largoTotal',   base: [247.3, 357],     axis: 'y', toMeasure: (_sx, sy) => 33.8 + (sy - 173) / 5.086 },
-  { key: 'anchoCuello',  base: [292.24, 4.64],   axis: 'x', toMeasure: (sx) => (sx - 247.3) / 44.94 * 18 },
-  { key: 'largoManga',   base: [493.43, 58.94],  axis: 'x', toMeasure: (sx, _sy, m) => { const nUR = 247.3 + 153.65 * (m.anchoPecho / 60); return (sx - nUR) / 92.48 * 18 } },
-  { key: 'anchoManga',   base: [470.28, 177.99], axis: 'y', toMeasure: (_sx, sy) => (sy - 50) / 127.99 * 25 },
-]
-
 // Paths del SVG real (tshirt.svg). El cuerpo es la pieza con relleno (define el recorte).
 // La silueta entera, de una sola pieza. Ya no se dibuja: quedan las tres de
 // abajo, que juntas dan exactamente esto. Se conserva como referencia.
@@ -10962,29 +10800,6 @@ function StrokeStyleIcon({ kind }: { kind: StrokeStyle }) {
   )
 }
 
-function AlignBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button onClick={onClick} title={title} style={{
-      height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
-      color: 'var(--fg-2)', cursor: 'pointer',
-    }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--fg-2)' }}
-    >{children}</button>
-  )
-}
-function PathfinderGlyph({ op }: { op: 'unite' | 'subtract' | 'intersect' | 'exclude' }) {
-  const c = 'currentColor', bg = 'var(--surface)'
-  const r = (x: number, y: number, fill: string, stroke: string) =>
-    <rect x={x} y={y} width={8} height={8} rx={1.3} fill={fill} stroke={stroke} strokeWidth={1.2} />
-  let body: React.ReactNode = null
-  if (op === 'unite')          body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, c, 'none')}</>
-  else if (op === 'intersect') body = <>{r(1.5, 1.5, 'none', c)}{r(5.5, 5.5, 'none', c)}<rect x={5.5} y={5.5} width={4} height={4} fill={c} /></>
-  else if (op === 'subtract')  body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, bg, c)}</>
-  else                         body = <>{r(1.5, 1.5, c, 'none')}{r(5.5, 5.5, c, 'none')}<rect x={5.5} y={5.5} width={4} height={4} fill={bg} /></>
-  return <svg width="15" height="15" viewBox="0 0 15 15">{body}</svg>
-}
 const IconCheck = () => (
   <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 8.5 L6.5 12 L13 4.5" />
