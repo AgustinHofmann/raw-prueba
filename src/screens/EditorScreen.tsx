@@ -1424,7 +1424,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const clipPath      = useRef<fabric.Group | null>(null)
   const undoHistory   = useRef<HistoryEntry[]>([])
   const redoHistory   = useRef<HistoryEntry[]>([])
-  const clipboardBuf  = useRef<fabric.FabricObject | null>(null)
+  /* El portapapeles guarda COPIAS, no los objetos del lienzo.
+   *
+   * Antes guardaba lo que devolvía `getActiveObject()`. Con un solo objeto
+   * andaba de casualidad; con varios, eso es una SELECCIÓN —un objeto especial
+   * que Fabric reutiliza y vacía cuando soltás la selección—, así que al pegar
+   * se clonaba algo que ya no tenía adentro lo que habías copiado. */
+  const clipboardBuf  = useRef<fabric.FabricObject[]>([])
   // Por defecto se dibuja en negro y fino: es lo que se espera de una ficha
   // tecnica, que es linea sobre la prenda y no ilustracion.
   const colorRef      = useRef('#000000')
@@ -5986,33 +5992,58 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         return
       }
 
-      // Ctrl+C — copy
+      /* Ctrl+C — copiar
+       *
+       * Se copia UNO POR UNO y en copias propias. Lo importante es el
+       * `qrDecompose`: adentro de una selección múltiple, el left/top de cada
+       * objeto está en relación al centro de la selección, no al lienzo. La
+       * matriz sí da la posición de verdad, así que se la bajamos a la copia.
+       * Sin eso, pegar dos cosas las mandaba a cualquier lado. */
       if (ctrl && e.key === 'c') {
-        const active = canvas.getActiveObject()
-        if (active && !mockupObjects.current.includes(active)) {
-          clipboardBuf.current = active
-        }
+        const elegidos = canvas.getActiveObjects().filter(o => !mockupObjects.current.includes(o))
+        if (!elegidos.length) return
+        Promise.all(elegidos.map(async o => {
+          const copia = await o.clone()
+          const m = fabric.util.qrDecompose(o.calcTransformMatrix())
+          copia.set({
+            originX: 'center', originY: 'center',
+            left: m.translateX, top: m.translateY,
+            scaleX: m.scaleX, scaleY: m.scaleY,
+            angle: m.angle, skewX: m.skewX, skewY: m.skewY,
+          })
+          copia.setCoords()
+          return copia
+        })).then(copias => { clipboardBuf.current = copias })
         return
       }
 
-      // Ctrl+V — paste Fabric object
+      // Ctrl+V — pegar
       if (ctrl && e.key === 'v') {
         const buf = clipboardBuf.current
-        if (buf) {
-          buf.clone().then((cloned: fabric.FabricObject) => {
-            cloned.set({
-              left: (buf.left ?? 0) + 15,
-              top:  (buf.top  ?? 0) + 15,
+        if (!buf.length) return
+        canvas.discardActiveObject()
+        Promise.all(buf.map(o => o.clone())).then((clones: fabric.FabricObject[]) => {
+          clones.forEach(c => {
+            c.set({
+              left: (c.left ?? 0) + 15,
+              top:  (c.top  ?? 0) + 15,
               selectable: true, evented: true,
             })
-            if (clipPath.current && !(cloned instanceof fabric.IText)) cloned.clipPath = clipPath.current
-            canvas.add(cloned)
-            canvas.setActiveObject(cloned)
-            canvas.requestRenderAll()
-            undoHistory.current.push({ type: 'add', obj: cloned })
-            redoHistory.current = []
+            if (clipEnabledRef.current && clipPath.current && !(c instanceof fabric.IText)) c.clipPath = clipPath.current
+            c.setCoords()
+            canvas.add(c)          // cada objeto entra solo: una selección NO es un objeto
           })
-        }
+          // Un solo paso de deshacer para todo el pegado: pegar tres cosas y
+          // tener que apretar Ctrl+Z tres veces no es lo que uno espera.
+          undoHistory.current.push({ type: 'erase', removed: [], added: clones })
+          redoHistory.current = []
+          canvas.setActiveObject(clones.length === 1
+            ? clones[0]
+            : new fabric.ActiveSelection(clones, { canvas }))
+          canvas.requestRenderAll()
+          markDirty()
+          refreshLayersNow()
+        })
         return
       }
 
@@ -9214,6 +9245,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const pieceList = named.length ? named : pieces
         const grouped = !!garmentGroupObj()
         const t = ctxMenu.target
+        // ¿El clic derecho cayó encima de la prenda? Se mira el PUNTO y no el
+        // objeto: con la prenda bloqueada el clic no devuelve ninguna pieza, y
+        // ahí es justamente cuando hace falta poder elegir una.
+        const punto = ctxMenu.escena
+        const clicSobreLaPrenda = !!punto && pieces.some(p => {
+          try { return p.containsPoint(punto) } catch { return false }
+        })
         return (
           <>
             <div onClick={closeCtx} onContextMenu={e => { e.preventDefault(); closeCtx() }}
@@ -9231,7 +9269,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
               {grouped && !ctxMenu.isGroup && <CtxItem label="Desagrupar prenda" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g); closeCtx() }} />}
 
-              {pieceList.length > 0 && (
+              {/* "Seleccionar pieza" solo cuando el clic derecho cae SOBRE la
+                  prenda. Antes salía siempre —aunque clickearas un dibujo o el
+                  vacío— y el menú se llenaba con una lista de piezas que no
+                  tenían nada que ver con lo que estabas tocando.
+                  No se saca del todo porque es la única forma de llegar a
+                  piezas que no se pueden clickear sueltas, como el fondo del
+                  escote. */}
+              {pieceList.length > 0 && clicSobreLaPrenda && (
                 <>
                   <CtxDivider />
                   <div style={{ padding: '4px 10px 5px', color: 'var(--muted)', fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase' }}>Seleccionar pieza</div>
