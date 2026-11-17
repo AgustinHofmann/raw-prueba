@@ -125,6 +125,19 @@ const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; da
 const cacheFuenteDeTela = new Map<string, { text?: string; colors: string[] }>()
 const cacheFotoOriginal = new Map<string, HTMLImageElement>()
 
+/* La imagen de la tela YA TENIDA, lista para pintar. La clave lleva los colores
+   adentro, asi que el mismo tartan en dos colores son dos entradas distintas:
+   eso es lo que permite que cada pieza tenga su propio color.
+
+   Tambien es compartida entre editores: antes se rehacia en cada cambio de
+   pestana (recolorear un SVG de 290 KB y volver a decodificarlo), y esa era la
+   espera en la que la prenda se veia "basica" un rato. */
+const cacheTelaTenida = new Map<string, HTMLImageElement>()
+const claveTela = (id: string, colores?: string[] | null) => `${id}|${(colores ?? []).join(',')}`
+
+/** Lo que una pieza guarda de su tela: cual, a que escala y con que colores. */
+type TelaDePieza = { id: string; widthCm: number; colors?: string[] }
+
 const PROPS_DEL_MOLDE = ['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']
 
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
@@ -1432,7 +1445,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const cursorRef     = useRef<HTMLDivElement>(null)
   const fontFileRef   = useRef<HTMLInputElement>(null)
   const texFileRef    = useRef<HTMLInputElement>(null)
-  const userTexImages = useRef<Map<string, HTMLImageElement>>(new Map())
+  // Las imagenes de tela viven en `cacheTelaTenida`, afuera del componente.
   const fc            = useRef<fabric.Canvas | null>(null)
   const mockupObjects = useRef<fabric.FabricObject[]>([])
   const clipPath      = useRef<fabric.Group | null>(null)
@@ -1734,10 +1747,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Precarga la imagen de una textura. recomposeFill es síncrono y necesita el
   // <img> ya decodificado, así que hasta que no carga la pieza queda como está.
   function preloadTexImage(id: string, src: string) {
-    if (userTexImages.current.has(id)) return
+    if (cacheTelaTenida.has(claveTela(id))) return
     const img = new Image()
     img.onload = () => {
-      userTexImages.current.set(id, img)
+      cacheTelaTenida.set(claveTela(id), img)
       // Si el diseño guardado ya usaba esta textura, redibujarla ahora.
       const c = fc.current
       if (!c) return
@@ -1784,15 +1797,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return src
   }
 
-  // Deja en userTexImages la imagen de esa tela con los colores elegidos.
-  // Sin colores elegidos usa el archivo tal cual, que es más rápido y no pierde
-  // nada de calidad.
-  async function ensureRawImage(id: string): Promise<boolean> {
+  /**
+   * Deja lista la imagen de esa tela CON ESOS COLORES.
+   *
+   * Los colores vienen de la pieza, no de un ajuste global: por eso son un
+   * parametro y por eso la cache los lleva en la clave. Sin colores usa el
+   * archivo tal cual, que es mas rapido y no pierde nada de calidad.
+   */
+  async function ensureRawImage(id: string, colores?: string[] | null): Promise<boolean> {
     const def = rawTextureById(id)
     if (!def) return false
+    const k = claveTela(id, colores)
+    if (cacheTelaTenida.has(k)) return true
     try {
       const src = await rawSourceOf(def)
-      const chosen = rawPalettes.current[id]
+      const chosen = colores
       const original = !chosen || sameColors(chosen, src.colors)
 
       let img: HTMLImageElement
@@ -1804,30 +1823,47 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         const base = cacheFotoOriginal.get(id) ?? await loadImage(def.url)
         img = await loadImage(tintImage(base, src.colors[0], chosen[0]).toDataURL('image/png'))
       }
-      userTexImages.current.set(id, img)
+      cacheTelaTenida.set(k, img)
       return true
     } catch {
       return false
     }
   }
 
-  // Cambia la paleta de una tela de fábrica y repinta todas las piezas que la usen.
+  /**
+   * Cambia el color de la tela DE LO QUE ESTA ELEGIDO.
+   *
+   * Antes el color era de la TELA: lo cambiabas en el cuello y se te iba el
+   * mismo tartan de la manga, del cuerpo y de cualquier otro proyecto que lo
+   * usara. El color es una decision de cada pieza, asi que ahora viaja con la
+   * pieza (`_userTex.colors`) y se aplica solo a lo que esta seleccionado —o a
+   * toda la prenda si no hay nada elegido, que es la misma regla que el resto
+   * del panel.
+   *
+   * Queda ademas guardado como "el ultimo color que usaste con esta tela", que
+   * es con el que sale la proxima vez que la apliques.
+   */
   function setRawPalette(id: string, colors: string[] | null) {
     if (colors) rawPalettes.current[id] = colors
     else delete rawPalettes.current[id]
-    saveRawPalette(project.id, id, colors)   // el color es de ESTE proyecto
+    saveRawPalette(project.id, id, colors)   // el proximo uso arranca con este color
     setPaletteVersion(v => v + 1)
 
-    ensureRawImage(id).then(ok => {
+    const { targets, label } = fillTargets()
+    const conEstaTela = targets.filter(o => (o as any)._userTex?.id === id)
+    if (!conEstaTela.length) {
+      onToast?.('Elegí una pieza que tenga esa tela para cambiarle el color')
+      return
+    }
+
+    ensureRawImage(id, colors).then(ok => {
       if (!ok) return
       setPaletteVersion(v => v + 1)     // la miniatura sale de la imagen ya recoloreada
-      const c = fc.current
-      if (!c) return
-      c.getObjects().forEach(o => {
-        if ((o as any)._userTex?.id === id) recomposeFill(o)
-      })
-      markDirty()
-      c.requestRenderAll()
+      applyFillToTargets(conEstaTela, o => {
+        const u = (o as any)._userTex as TelaDePieza
+        ;(o as any)._userTex = { ...u, colors: colors ?? undefined }
+        recomposeFill(o)
+      }, 'Color de tela cambiado', label)
     })
   }
 
@@ -1881,18 +1917,30 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function preloadRawTexturesUsedBy(objs: fabric.FabricObject[]) {
     const ids = new Set<string>()
     objs.forEach(o => {
-      const u = (o as any)._userTex as { id: string } | undefined
-      if (u && isRawTexture(u.id) && !userTexImages.current.has(u.id)) ids.add(u.id)
+      const u = (o as any)._userTex as TelaDePieza | undefined
+      // La clave lleva los colores: dos piezas con el mismo tartan en colores
+      // distintos son dos imagenes distintas que hay que preparar.
+      if (u && isRawTexture(u.id) && !cacheTelaTenida.has(claveTela(u.id, u.colors))) {
+        ids.add(JSON.stringify([u.id, u.colors ?? null]))
+      }
     })
-    ids.forEach(id => ensureRawImage(id).then(ok => {
-      const c = fc.current
-      if (!ok || !c) return
-      let touched = false
-      c.getObjects().forEach(o => {
-        if ((o as any)._userTex?.id === id) { recomposeFill(o); touched = true }
+    ids.forEach(clave => {
+      const [id, colores] = JSON.parse(clave) as [string, string[] | null]
+      ensureRawImage(id, colores).then(ok => {
+        const c = fc.current
+        if (!ok || !c) return
+        let touched = false
+        c.getObjects().forEach(o => {
+          const u = (o as any)._userTex as TelaDePieza | undefined
+          // Se repinta SOLO lo que usa esta tela con ESTOS colores: la misma
+          // tela en otro color es otra imagen y la prepara su propia vuelta.
+          if (u && claveTela(u.id, u.colors) === claveTela(id, colores)) {
+            recomposeFill(o); touched = true
+          }
+        })
+        if (touched) c.requestRenderAll()
       })
-      if (touched) c.requestRenderAll()
-    }))
+    })
   }
 
   // Al elegir una tela de fábrica hay que leerle los colores del archivo para
@@ -1912,7 +1960,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     try {
       const t = await importUserTexture(file)
       const img = new Image()
-      img.onload = () => { userTexImages.current.set(t.id, img); applyUserTexture(t) }
+      img.onload = () => { cacheTelaTenida.set(claveTela(t.id), img); applyUserTexture(t) }
       img.src = t.dataUrl
       setUserTextures(prev => [t, ...prev])
     } catch (err) {
@@ -1925,7 +1973,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   async function handleTextureDelete(id: string) {
     if (isRawTexture(id)) return      // las telas de fábrica no se borran
     await deleteUserTexture(id)
-    userTexImages.current.delete(id)
+    cacheTelaTenida.delete(claveTela(id))
     setUserTextures(prev => prev.filter(t => t.id !== id))
     if (activeUserTex === id) setActiveUserTex(null)
   }
@@ -5414,14 +5462,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const tex    = texGuardada && esTexturaValida(texGuardada.kind) ? texGuardada : undefined
     const eff    = (obj as any)._effect  as { kind: EffectKind; intensity: number } | undefined
     const baseCol = (obj as any)._baseColor as string | undefined
-    const uTex   = (obj as any)._userTex as { id: string; widthCm: number } | undefined
+    const uTex   = (obj as any)._userTex as TelaDePieza | undefined
 
     // ── Textura propia del usuario ──
     // Se dibuja A ESCALA REAL: el tile mide exactamente los cm que el usuario
     // declaró que mide la muestra de tela. Así una raya de 1 cm se ve de 1 cm
     // sobre la prenda, y lo que se manda al taller no miente.
     if (uTex) {
-      const img = userTexImages.current.get(uTex.id)
+      const img = cacheTelaTenida.get(claveTela(uTex.id, uTex.colors))
       if (img && img.complete && img.naturalWidth > 0) {
         const pxPerCm = pxPerCmRef.current || 5
         const w = Math.max(8, Math.round(uTex.widthCm * pxPerCm))
@@ -5474,17 +5522,20 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // —la que llegaba tarde pisaba la decisión nueva—, y lo mismo al cambiar
     // de una tela a otra rápido: ganaba la que tardaba más.
     telaPedida.current = t.id
-    const img = userTexImages.current.get(t.id)
+    // El color con el que entra: el ultimo que se uso con esta tela en este
+    // proyecto. De aca en mas el color es de la PIEZA, no de la tela.
+    const colores = isRawTexture(t.id) ? rawPalettes.current[t.id] : undefined
+    const img = cacheTelaTenida.get(claveTela(t.id, colores))
     if (!img) {                                   // precargar y reintentar
       // Las de fábrica pasan por ensureRawImage, que además les aplica los
       // colores elegidos antes de que la tela toque la prenda.
       if (isRawTexture(t.id)) {
-        ensureRawImage(t.id).then(ok => { if (ok && telaPedida.current === t.id) applyUserTexture(t) })
+        ensureRawImage(t.id, colores).then(ok => { if (ok && telaPedida.current === t.id) applyUserTexture(t) })
         return
       }
       const el = new Image()
       el.onload = () => {
-        userTexImages.current.set(t.id, el)
+        cacheTelaTenida.set(claveTela(t.id), el)
         if (telaPedida.current === t.id) applyUserTexture(t)
       }
       el.src = t.dataUrl
@@ -5494,7 +5545,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     applyFillToTargets(targets, o => {
       recordarColorLiso(o)                     // para poder volver con "Ninguna"
       delete (o as any)._texture               // reemplaza al estampado interno
-      ;(o as any)._userTex = { id: t.id, widthCm: t.widthCm }
+      ;(o as any)._userTex = { id: t.id, widthCm: t.widthCm, colors: colores } as TelaDePieza
       recomposeFill(o)
     }, `Tela «${t.name}» aplicada`, label)
     setActiveTexKind(null)
@@ -8923,7 +8974,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   // en memoria, que es la que tiene los colores elegidos. Si no,
                   // la versión chica: abrir esta pestaña no tiene por qué bajar
                   // los archivos grandes.
-                  const thumb = userTexImages.current.get(t.id)?.src
+                  const thumb = cacheTelaTenida.get(claveTela(t.id, rawPalettes.current[t.id]))?.src
                     ?? (t.builtIn ? rawTextureById(t.id)?.thumb : undefined)
                     ?? t.dataUrl
                   return (
@@ -9039,7 +9090,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 const def = rawTextureById(activeUserTex)
                 const src = cacheFuenteDeTela.get(activeUserTex)
                 if (!def || !src) return null
-                const cur = rawPalettes.current[activeUserTex] ?? src.colors
+                /* El color que se muestra es el de la PIEZA que esta elegida
+                   (o el de la prenda, si no hay nada elegido). El ajuste
+                   guardado solo manda cuando la pieza todavia no dice nada:
+                   si no, abrias el panel sobre una manga verde y te mostraba
+                   el color del cuello. */
+                const conEsaTela = fillTargets().targets
+                  .find(o => (o as any)._userTex?.id === activeUserTex)
+                const colorDeLaPieza = (conEsaTela as any)?._userTex?.colors as string[] | undefined
+                /* Si la pieza tiene la tela, manda la pieza: sin colores propios
+                   esta con los del archivo, y mostrar "el ultimo color que usaste"
+                   seria mentir sobre lo que se ve. El ultimo color solo vale
+                   cuando todavia no hay ninguna pieza con esta tela. */
+                const cur = conEsaTela
+                  ? (colorDeLaPieza ?? src.colors)
+                  : (rawPalettes.current[activeUserTex] ?? src.colors)
                 const tocada = !sameColors(cur, src.colors)
                 const porColor = def.kind === 'svg' && src.colors.length > 1
 
