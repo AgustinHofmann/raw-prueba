@@ -75,20 +75,36 @@ export function saveRawWidth(id: string, widthCm: number): void {
 // que el ancho: son pocos y se eligen una vez, no cada vez que abre el programa.
 // Guarda SOLO los colores elegidos; los originales salen siempre del archivo,
 // así una tela que cambie en disco no queda con una paleta vieja pegada.
-const PALETTE_KEY = 'raw-design:texturas-color'
+/* El color de una tela es una decisión DE CADA DISEÑO, no una preferencia del
+   programa. Antes se guardaba en una sola bolsa por tela: teñías el camuflaje
+   de rosa en un proyecto y aparecía rosa en todos los demás que lo usaran.
+   Ahora cada proyecto tiene la suya.
 
-export function loadRawPalettes(): Record<string, string[]> {
+   La bolsa vieja (sin proyecto) se sigue LEYENDO como punto de partida, así
+   los diseños que ya estaban pintados no pierden su color; lo que se guarda de
+   ahora en más va al proyecto y le gana a la vieja. */
+const PALETTE_KEY = 'raw-design:texturas-color'
+const clave = (projectId?: string) => projectId ? `${PALETTE_KEY}:${projectId}` : PALETTE_KEY
+
+function leer(k: string): Record<string, string[]> {
   try {
-    const raw = localStorage.getItem(PALETTE_KEY)
+    const raw = localStorage.getItem(k)
     return raw ? JSON.parse(raw) as Record<string, string[]> : {}
   } catch { return {} }
 }
 
-export function saveRawPalette(id: string, colors: string[] | null): void {
+export function loadRawPalettes(projectId?: string): Record<string, string[]> {
+  const heredadas = leer(PALETTE_KEY)                        // las de antes, comunes
+  if (!projectId) return heredadas
+  return { ...heredadas, ...leer(clave(projectId)) }         // las del proyecto mandan
+}
+
+export function saveRawPalette(projectId: string | undefined, id: string, colors: string[] | null): void {
   try {
-    const all = loadRawPalettes()
+    const k = clave(projectId)
+    const all = leer(k)
     if (colors) all[id] = colors
     else delete all[id]                 // volver al original = no guardar nada
-    localStorage.setItem(PALETTE_KEY, JSON.stringify(all))
+    localStorage.setItem(k, JSON.stringify(all))
   } catch { /* idem */ }
 }

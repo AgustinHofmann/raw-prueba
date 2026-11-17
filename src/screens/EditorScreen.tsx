@@ -111,6 +111,20 @@ const LINE_ROLES: { id: LineRole; label: string; hint: string; width: number; da
    guardarse. Fabric solo serializa lo que conoce, así que hay que nombrárselas.
    Está acá arriba porque se usa en dos lados —al crear la máscara y al reabrir
    el proyecto— y si las dos listas se separan, el molde pierde su pintura. */
+/* Lo que una tela de fábrica trae DE ORIGEN: el texto del SVG y sus colores
+   —o la foto sin teñir—. Depende solo del archivo, nunca del proyecto, así que
+   la caché vive acá afuera y la comparten todos los editores.
+
+   Antes estaba adentro del componente. Como el editor se rehace entero cada vez
+   que cambiás de pestaña, cada vuelta volvía a bajar el archivo (290 KB en los
+   tartanes) y a rasterizarlo para ordenar los colores por área. Medido: el
+   mismo SVG bajado diez veces en tres cambios de pestaña.
+
+   Ojo con lo que NO va acá: la imagen ya teñida depende de los colores que
+   eligió CADA proyecto, así que esa sigue siendo de cada editor. */
+const cacheFuenteDeTela = new Map<string, { text?: string; colors: string[] }>()
+const cacheFotoOriginal = new Map<string, HTMLImageElement>()
+
 const PROPS_DEL_MOLDE = ['_texture', '_effect', '_baseColor', '_userTex', '_corte', '_lineRole']
 
 // Lo que hay que guardar para poder deshacer un cambio de relleno.
@@ -1552,9 +1566,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // Los colores elegidos viven en un ref y no en estado porque los lee código
   // asíncrono (bajar el SVG, reteñir la foto): con estado quedaría leyendo el
   // valor viejo. paletteVersion es lo único que existe para redibujar la UI.
-  const rawPalettes = useRef<Record<string, string[]>>(loadRawPalettes())
-  const rawSource   = useRef(new Map<string, { text?: string; colors: string[] }>())
-  const rawPhotos   = useRef(new Map<string, HTMLImageElement>())
+  const rawPalettes = useRef<Record<string, string[]>>(loadRawPalettes(project.id))
+  // rawSource / rawPhotos viven AFUERA del componente (ver arriba del archivo):
+  // el editor se rehace entero cada vez que cambias de pestana, y con la cache
+  // adentro eso significaba volver a bajar y volver a analizar la misma tela.
   const [paletteVersion, setPaletteVersion] = useState(0)
   const [texImporting,  setTexImporting]  = useState(false)
   const [texError,      setTexError]      = useState<string | null>(null)
@@ -1752,7 +1767,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // rellenos, ordenados por cuánta tela ocupa cada uno; de una foto sale un solo
   // color, el dominante, porque una foto no tiene colores separables.
   async function rawSourceOf(def: { id: string; url: string; kind: 'svg' | 'photo' }) {
-    const cached = rawSource.current.get(def.id)
+    const cached = cacheFuenteDeTela.get(def.id)
     if (cached) return cached
 
     let src: { text?: string; colors: string[] }
@@ -1762,10 +1777,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       src = { text, colors: await sortColorsByArea(def.url, found) }
     } else {
       const img = await loadImage(def.url)
-      rawPhotos.current.set(def.id, img)      // el original, para poder reteñir siempre desde él
+      cacheFotoOriginal.set(def.id, img)      // el original, para poder reteñir siempre desde él
       src = { colors: [dominantColor(img)] }
     }
-    rawSource.current.set(def.id, src)
+    cacheFuenteDeTela.set(def.id, src)
     return src
   }
 
@@ -1786,7 +1801,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       } else if (def.kind === 'svg') {
         img = await loadImage(svgToDataUrl(recolorSvg(src.text!, src.colors, chosen)))
       } else {
-        const base = rawPhotos.current.get(id) ?? await loadImage(def.url)
+        const base = cacheFotoOriginal.get(id) ?? await loadImage(def.url)
         img = await loadImage(tintImage(base, src.colors[0], chosen[0]).toDataURL('image/png'))
       }
       userTexImages.current.set(id, img)
@@ -1800,7 +1815,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function setRawPalette(id: string, colors: string[] | null) {
     if (colors) rawPalettes.current[id] = colors
     else delete rawPalettes.current[id]
-    saveRawPalette(id, colors)
+    saveRawPalette(project.id, id, colors)   // el color es de ESTE proyecto
     setPaletteVersion(v => v + 1)
 
     ensureRawImage(id).then(ok => {
@@ -1884,7 +1899,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   // poder mostrar la paleta. Se hace una sola vez por tela y queda cacheado.
   useEffect(() => {
     if (!activeUserTex || !isRawTexture(activeUserTex)) return
-    if (rawSource.current.has(activeUserTex)) return
+    if (cacheFuenteDeTela.has(activeUserTex)) return
     const def = rawTextureById(activeUserTex)
     if (def) rawSourceOf(def).then(() => setPaletteVersion(v => v + 1))
   }, [activeUserTex])
@@ -7169,6 +7184,16 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.getObjects().forEach(obj => {
       if (mockupObjects.current.includes(obj)) return
       if (obj instanceof fabric.IText) return  // el texto nunca se recorta
+      /* ⚠️ Estas dos excepciones faltaban acá, y son las mismas que ya tenía
+         `rebuildGarmentClip`. Sin ellas, tocar el interruptor:
+         · le pisaba el molde a un grupo con MÁSCARA de recorte, así que el
+           dibujo pasaba a recortarse contra la remera — "recorta donde no
+           tiene que recortar";
+         · le ponía el recorte a lo que estaba DEBAJO de la prenda, que queda
+           recortado y encima tapado: invisible por partida doble, que es la
+           imagen que "desaparecía". */
+      if ((obj as any)._mascara) return   // tiene su propio molde: no se pisa
+      if ((obj as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
       obj.clipPath = next ? (clipPath.current ?? undefined) : undefined
       // Fabric cachea el render del objeto; sin marcar dirty reusa la versión recortada
       obj.dirty = true
@@ -8823,7 +8848,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                 Las telas con foto se aplican a escala real; los estampados se
                 pueden recolorear.
               </p>
-              <div key={paletteVersion} className="swatches">
+              {/* La clave lleva un nombre adelante a propósito. Antes acá y en
+                  el editor de color de abajo iba `key={paletteVersion}` pelado:
+                  dos hermanos con la MISMA clave. React avisaba por consola
+                  ("Non-unique keys may cause children to be duplicated") y lo
+                  que se veía era justamente eso: al cambiar el color de una
+                  tela se duplicaba la grilla entera. */}
+              <div key={`telas-${paletteVersion}`} className="swatches">
                 {/* "Ninguna" va PRIMERA y siempre: poner una tela era un camino
                     de ida —no había forma de volver al color liso— y eso se
                     nota recién cuando ya te arrepentiste. */}
@@ -9006,14 +9037,14 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
                   uno. Una foto no: se reteñe entera desde un solo color. */}
               {activeUserTex && isRawTexture(activeUserTex) && (() => {
                 const def = rawTextureById(activeUserTex)
-                const src = rawSource.current.get(activeUserTex)
+                const src = cacheFuenteDeTela.get(activeUserTex)
                 if (!def || !src) return null
                 const cur = rawPalettes.current[activeUserTex] ?? src.colors
                 const tocada = !sameColors(cur, src.colors)
                 const porColor = def.kind === 'svg' && src.colors.length > 1
 
                 return (
-                  <div key={paletteVersion} className="sec">
+                  <div key={`color-tela-${paletteVersion}`} className="sec">
                     <div className="label" style={{ marginBottom: 10 }}>Color · {def.name}</div>
 
                     {/* Color principal: el que más tela ocupa. Al cambiarlo, el
