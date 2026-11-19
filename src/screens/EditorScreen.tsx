@@ -1675,7 +1675,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   const [fontFilter,     setFontFilter]     = useState('')
   const [fontLoading,    setFontLoading]    = useState(false)
   const [vectorizing,    setVectorizing]    = useState(false)
-  const [clipEnabled,    setClipEnabled]    = useState(true)
   const [layersVersion,  setLayersVersion]  = useState(0)  // bump to force layer-panel re-render on visibility/lock changes
   const [ctxMenu,        setCtxMenu]        = useState<null | { x: number; y: number; target: fabric.FabricObject | null; escena?: fabric.Point; isGroup: boolean; isMulti: boolean }>(null)
   const [mockupLocked,   setMockupLocked]   = useState(true)
@@ -1723,7 +1722,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
      diseñador escribe el número que le pide el taller. Si alguna vez vuelven,
      están en el historial: `git log -S TEE_HANDLES`. */
 
-  useEffect(() => { clipEnabledRef.current = clipEnabled }, [clipEnabled])
   /* Lo que usa la HERRAMIENTA y lo que muestra el PANEL son dos cosas distintas.
      -------------------------------------------------------------------------
      Antes eran la misma: el color del trazado, el relleno y el grosor vivían en
@@ -5627,8 +5625,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   function applyFillToTargets(targets: fabric.FabricObject[], mut: (o: fabric.FabricObject) => void, verb: string, label: string) {
     const canvas = fc.current
     if (!canvas) return
-    // El fondo del escote se pinta solo si es LO seleccionado: elegido desde
-    // "Seleccionar pieza". Mezclado con otras cosas (seleccionar todo) se saca,
+    // El fondo del escote se pinta solo si es LO seleccionado: elegido desde el
+    // panel de capas. Mezclado con otras cosas (seleccionar todo) se saca,
     // para que siga al cuerpo como el revés de la tela.
     if (targets.length > 1) targets = targets.filter(o => !(o as any)._rawInner)
     if (!targets.length) { onToast?.('No hay nada para pintar — elegí una pieza o creá una figura'); return }
@@ -6028,6 +6026,28 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
         e.preventDefault()
         if (e.shiftKey) ungroupSelection()
         else groupSelection()
+        return
+      }
+
+      // Ctrl+A — seleccionar todo, LA PRENDA INCLUIDA.
+      //
+      // Es la primera mitad de "seleccionar todo y agrupar": como la prenda
+      // arranca trabada, sin destrabarla acá las piezas quedarían afuera de la
+      // selección y el Ctrl+G siguiente agruparía solo los dibujos.
+      if (ctrl && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        setTool('select')
+        setMockupLocked(false); mockupLockedRef.current = false
+        canvas.discardActiveObject()
+        const todo = canvas.getObjects()
+          .filter(o => o.visible !== false && !(o as any)._locked)
+        todo.forEach(o => o.set({ selectable: true, evented: true }))
+        if (!todo.length) return
+        canvas.setActiveObject(todo.length === 1
+          ? todo[0]
+          : new fabric.ActiveSelection(todo, { canvas }))
+        canvas.requestRenderAll()
+        refreshLayersNow()
         return
       }
 
@@ -7238,32 +7258,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     applyMeasures(next)
   }
 
-  // ── Clip toggle: mostrar/ocultar lo que está fuera de la remera ──────────────
-  function toggleClip() {
-    const canvas = fc.current
-    if (!canvas) return
-    const next = !clipEnabled
-    setClipEnabled(next)
-    clipEnabledRef.current = next
-    canvas.getObjects().forEach(obj => {
-      if (mockupObjects.current.includes(obj)) return
-      if (obj instanceof fabric.IText) return  // el texto nunca se recorta
-      /* ⚠️ Estas dos excepciones faltaban acá, y son las mismas que ya tenía
-         `rebuildGarmentClip`. Sin ellas, tocar el interruptor:
-         · le pisaba el molde a un grupo con MÁSCARA de recorte, así que el
-           dibujo pasaba a recortarse contra la remera — "recorta donde no
-           tiene que recortar";
-         · le ponía el recorte a lo que estaba DEBAJO de la prenda, que queda
-           recortado y encima tapado: invisible por partida doble, que es la
-           imagen que "desaparecía". */
-      if ((obj as any)._mascara) return   // tiene su propio molde: no se pisa
-      if ((obj as any)._fondo) return     // está debajo de la prenda: no se recorta contra ella
-      obj.clipPath = next ? (clipPath.current ?? undefined) : undefined
-      // Fabric cachea el render del objeto; sin marcar dirty reusa la versión recortada
-      obj.dirty = true
-    })
-    canvas.requestRenderAll()
-  }
+  // ── Recorte a la prenda ─────────────────────────────────────────────────────
+  // Ya no hay interruptor: el recorte está siempre puesto. `clipEnabledRef`
+  // queda porque todo el resto del archivo lo consulta antes de colgarle el
+  // molde a un objeto nuevo.
 
   // ── Bloqueo del mockup ───────────────────────────────────────────────────────
   function toggleMockupLock() {
@@ -7397,21 +7395,39 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     canvas.requestRenderAll()
   }
 
+  /**
+   * Agrupar (Ctrl+G). Agrupar es UNO SOLO: no hay botón aparte para la prenda.
+   *
+   * Antes las piezas de la prenda se sacaban de la selección, así que
+   * "seleccionar todo y agrupar" dejaba la remera afuera y hacía falta un
+   * segundo botón ("Agrupar prenda") para juntarla. Ahora las piezas entran
+   * como cualquier otro objeto, y si entre lo elegido hay alguna, el grupo que
+   * sale ES la prenda: se marca con `_garmentGroup`, que es lo que hace que el
+   * recorte la siga al moverla, que la máscara de recorte no se la trague y que
+   * el panel de capas la llame "Prenda".
+   */
   function groupSelection() {
     const canvas = fc.current
     if (!canvas) return
     const active = canvas.getActiveObject()
     if (!active || active.type !== 'activeselection') return
     const children = (active as fabric.ActiveSelection).getObjects()
-      .filter(o => !mockupObjects.current.includes(o))
     if (children.length < 2) return
+    const llevaPrenda = children.some(o => mockupObjects.current.includes(o))
     canvas.discardActiveObject()  // restaura coords absolutas
     const group = makeGroup(children)
+    if (llevaPrenda) {
+      ;(group as any)._garmentGroup = true
+      // La prenda queda destrabada: si no, al desagrupar las piezas volverían
+      // al lienzo sin poder tocarlas.
+      setMockupLocked(false); mockupLockedRef.current = false
+    }
     canvas.setActiveObject(group)
     undoHistory.current.push({ type: 'group', children, group })
     redoHistory.current = []
     canvas.requestRenderAll()
     refreshLayersNow()
+    if (llevaPrenda) onToast?.('Prenda agrupada')
   }
 
   function ungroupSelection() {
@@ -7788,47 +7804,10 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     onToast?.((group as any)._garmentGroup ? 'Prenda desagrupada' : 'Desagrupado')
   }
 
-  // ¿La prenda está agrupada en una "madre"?
-  function garmentGroupObj(): fabric.Group | null {
-    const canvas = fc.current
-    return (canvas?.getObjects().find(o => (o as any)._garmentGroup) as fabric.Group) ?? null
-  }
-
-  // Agrupa TODAS las piezas de la prenda en un único grupo "madre".
-  function groupGarment() {
-    const canvas = fc.current
-    if (!canvas || garmentGroupObj()) return
-    const pieces = mockupObjects.current.filter(o => canvas.getObjects().includes(o))
-    if (pieces.length < 2) return
-    setMockupLocked(false); mockupLockedRef.current = false
-    canvas.discardActiveObject()
-    pieces.forEach(o => o.set({ selectable: true, evented: true }))
-    const group = makeGroup(pieces)
-    ;(group as any)._garmentGroup = true
-    canvas.setActiveObject(group)
-    undoHistory.current.push({ type: 'group', children: pieces, group })
-    redoHistory.current = []
-    canvas.requestRenderAll()
-    refreshLayersNow()
-    onToast?.('Prenda agrupada — click derecho para elegir una pieza')
-  }
-
-  // Selecciona una pieza puntual de la prenda (desde el menú contextual). Si la
-  // prenda está agrupada, primero la desagrupa para poder editar la pieza sola.
-  function selectPieceFromMenu(piece: fabric.FabricObject) {
-    const canvas = fc.current
-    if (!canvas) return
-    const g = garmentGroupObj()
-    if (g && g.getObjects().includes(piece)) dissolveGroup(g)
-    setMockupLocked(false); mockupLockedRef.current = false
-    setTool('select')
-    piece.set({ selectable: true, evented: true })
-    canvas.setActiveObject(piece)
-    setSelectedObj(piece)
-    canvas.requestRenderAll()
-    refreshLayersNow()
-    onToast?.(`${pieceNameOf(piece, 'Pieza')} seleccionada`)
-  }
+  // La prenda se agrupa con el Ctrl+G de siempre (ver `groupSelection`): se
+  // selecciona todo y se agrupa. No hay botón ni atajo propio de la prenda, ni
+  // "Seleccionar pieza" en el click derecho — para una pieza sola se usa el
+  // panel de capas, con el candado de la prenda abierto.
 
   // ── Menú contextual (click derecho) ──────────────────────────────────────────
   function openContextMenu(e: React.MouseEvent) {
@@ -8196,25 +8175,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             </div>
           )}
 
-          {/* Toggle: recortar / mostrar lo que está fuera de la remera */}
-          <button
-            onClick={toggleClip}
-            title={clipEnabled ? 'Mostrar lo que está fuera de la remera' : 'Recortar a la remera (ocultar lo de afuera)'}
-            style={{
-              position: 'absolute', top: 14, left: 14, zIndex: 20,
-              display: 'flex', alignItems: 'center', gap: 7,
-              background: 'var(--bg)',
-              border: '1px solid ' + (clipEnabled ? 'var(--line)' : 'var(--accent)'),
-              borderRadius: 'var(--radius)', padding: '6px 12px', cursor: 'pointer',
-              fontFamily: 'var(--ui)', fontSize: 11,
-              color: clipEnabled ? 'var(--fg-2)' : 'var(--accent)',
-              boxShadow: 'var(--shadow-lg)',
-              transition: 'all 0.15s var(--ease)',
-            }}
-          >
-            <span style={{ fontSize: 13 }}>{clipEnabled ? '✂️' : '👁'}</span>
-            <span>{clipEnabled ? 'Recortado a la remera' : 'Mostrando todo'}</span>
-          </button>
+          {/* El botón "Recortado a la remera / Mostrando todo" se saco: el
+              recorte a la prenda queda siempre puesto (`clipEnabledRef`). */}
           {vectorizing && (
             <div style={{
               position: 'absolute', inset: 0, zIndex: 50,
@@ -8449,16 +8411,6 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
             {selKind === 'group' && (
               <button className="btn btn-ghost" onClick={ungroupSelection} style={{ justifyContent: 'center', fontSize: 12 }}>
                 ⊟ Desagrupar <span style={{ color: 'var(--muted)', marginLeft: 6 }}>Ctrl+Shift+G</span>
-              </button>
-            )}
-            {mockupObjects.current.length > 1 && !garmentGroupObj() && (
-              <button className="btn btn-ghost" onClick={groupGarment} style={{ justifyContent: 'center', fontSize: 12 }}>
-                ⊞ Agrupar prenda
-              </button>
-            )}
-            {garmentGroupObj() && (
-              <button className="btn btn-ghost" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g) }} style={{ justifyContent: 'center', fontSize: 12 }}>
-                ⊟ Desagrupar prenda
               </button>
             )}
           </div>
@@ -9349,18 +9301,74 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       )}
 
       {ctxMenu && (() => {
-        const pieces = mockupObjects.current
-        const named = pieces.filter(p => !/^Pieza/.test(pieceNameOf(p, 'Pieza')))
-        const pieceList = named.length ? named : pieces
-        const grouped = !!garmentGroupObj()
         const t = ctxMenu.target
-        // ¿El clic derecho cayó encima de la prenda? Se mira el PUNTO y no el
-        // objeto: con la prenda bloqueada el clic no devuelve ninguna pieza, y
-        // ahí es justamente cuando hace falta poder elegir una.
-        const punto = ctxMenu.escena
-        const clicSobreLaPrenda = !!punto && pieces.some(p => {
-          try { return p.containsPoint(punto) } catch { return false }
-        })
+
+        /* Los ítems se arman en una LISTA, no sueltos en el JSX.
+           Al sacar "Seleccionar pieza" el click derecho sobre la prenda se
+           quedaba sin nada que ofrecer y salía una cajita vacía de 196×12 px
+           (medido). Con la lista, si no hay ítems no se dibuja el menú. */
+        const items: React.ReactNode[] = []
+        const divisor = () => { if (items.length) items.push(<CtxDivider key={`d${items.length}`} />) }
+
+        if (ctxMenu.isMulti) {
+          items.push(<CtxItem key="agrupar" label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />)
+          items.push(<CtxItem key="mascara" label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { void hacerMascara(); closeCtx() }} />)
+        }
+        if (t && (t as any)._mascara) {
+          items.push(<CtxItem key="soltar" label="Soltar máscara de recorte" hint="Ctrl+Alt+7" onClick={() => { soltarMascara(); closeCtx() }} />)
+        }
+        if (ctxMenu.isGroup) {
+          items.push(<CtxItem key="desagrupar" label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />)
+        }
+
+        /* Acá iban "Agrupar/Desagrupar prenda" y la lista "Seleccionar pieza":
+           se sacaron a propósito. Agrupar es uno solo (Ctrl+G, seleccionando
+           todo) y para una pieza suelta está el panel de capas, con el candado
+           de la prenda abierto. */
+
+        // Dividir con este trazo: solo aparece si el trazo cruza alguna pieza
+        // de lado a lado, o sea si de verdad la parte en dos. El trazo puede
+        // ser el objeto seleccionado o simplemente el que pasa por donde se
+        // hizo clic derecho.
+        const trazo = (t && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup))
+          ? t : trazoEn(ctxMenu.escena)
+        const corte = trazo ? trazoDivide(trazo) : null
+        if (trazo && corte) {
+          // Si el trazo cruza varias piezas hay que preguntar el alcance: no es
+          // lo mismo partir toda la remera que solo el cuerpo.
+          const varias = piezasQueDivide(corte).length > 1
+          const pieza = varias ? piezaEn(ctxMenu.escena) : null
+          const keyPieza = pieza ? (pieza as any)._pieceKey as string | undefined : undefined
+          divisor()
+          items.push(<CtxItem key="dividir" label={varias ? 'Dividir toda la prenda acá' : 'Dividir la prenda acá'}
+            hint="para pintar cada lado"
+            onClick={() => { dividirPrendaCon(trazo); closeCtx() }} />)
+          if (varias && keyPieza) {
+            items.push(<CtxItem key="dividir-una" label={`Dividir solo ${(pieza as any)._pieceName ?? 'esta pieza'}`}
+              hint="el resto queda entero"
+              onClick={() => { dividirPrendaCon(trazo, keyPieza); closeCtx() }} />)
+          }
+        }
+
+        if (hayCortes) {
+          divisor()
+          items.push(<CtxItem key="quitar-cortes" label="Quitar las divisiones" onClick={() => { quitarCortes(); closeCtx() }} />)
+        }
+
+        if (t && !ctxMenu.isMulti && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup)) {
+          divisor()
+          items.push(<CtxItem key="eliminar" label="Eliminar" danger onClick={() => { const c = fc.current; if (c && t) { c.remove(t); undoHistory.current.push({ type: 'remove', obj: t }); redoHistory.current = []; c.discardActiveObject(); c.requestRenderAll(); refreshLayersNow() } closeCtx() }} />)
+        }
+
+        if (!items.length) {
+          // Nada que ofrecer: no se dibuja el menú y se suelta el estado en el
+          // tick siguiente, así un cambio posterior (un Ctrl+Z que repone las
+          // divisiones) no lo hace aparecer de la nada en el lugar viejo. El
+          // `m === ctxMenu` evita cerrar un menú más nuevo.
+          void Promise.resolve().then(() => setCtxMenu(m => (m === ctxMenu ? null : m)))
+          return null
+        }
+
         return (
           <>
             <div onClick={closeCtx} onContextMenu={e => { e.preventDefault(); closeCtx() }}
@@ -9371,72 +9379,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
               background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
               padding: 5, boxShadow: 'var(--shadow-lg)', fontFamily: 'var(--ui)', fontSize: 'var(--t-md)',
             }}>
-              {ctxMenu.isMulti && <CtxItem label="Agrupar selección" hint="Ctrl+G" onClick={() => { groupSelection(); closeCtx() }} />}
-              {ctxMenu.isMulti && <CtxItem label="Crear máscara de recorte" hint="Ctrl+7" onClick={() => { void hacerMascara(); closeCtx() }} />}
-              {t && (t as any)._mascara && <CtxItem label="Soltar máscara de recorte" hint="Ctrl+Alt+7" onClick={() => { soltarMascara(); closeCtx() }} />}
-              {ctxMenu.isGroup && <CtxItem label="Desagrupar" hint="Ctrl+Shift+G" onClick={() => { if (t) ungroupTarget(t as fabric.Group); closeCtx() }} />}
-              {!grouped && pieces.length > 1 && <CtxItem label="Agrupar prenda" onClick={() => { groupGarment(); closeCtx() }} />}
-              {grouped && !ctxMenu.isGroup && <CtxItem label="Desagrupar prenda" onClick={() => { const g = garmentGroupObj(); if (g) ungroupTarget(g); closeCtx() }} />}
-
-              {/* "Seleccionar pieza" solo cuando el clic derecho cae SOBRE la
-                  prenda. Antes salía siempre —aunque clickearas un dibujo o el
-                  vacío— y el menú se llenaba con una lista de piezas que no
-                  tenían nada que ver con lo que estabas tocando.
-                  No se saca del todo porque es la única forma de llegar a
-                  piezas que no se pueden clickear sueltas, como el fondo del
-                  escote. */}
-              {pieceList.length > 0 && clicSobreLaPrenda && (
-                <>
-                  <CtxDivider />
-                  <div style={{ padding: '4px 10px 5px', color: 'var(--muted)', fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase' }}>Seleccionar pieza</div>
-                  {pieceList.map((p, i) => (
-                    <CtxItem key={i} icon={getLayerIcon(p)} label={pieceNameOf(p, `Pieza ${i + 1}`)}
-                      onClick={() => { selectPieceFromMenu(p); closeCtx() }} />
-                  ))}
-                </>
-              )}
-
-              {/* Dividir con este trazo: solo aparece si el trazo cruza alguna
-                  pieza de lado a lado, o sea si de verdad la parte en dos. */}
-              {(() => {
-                // El trazo puede ser el objeto seleccionado o simplemente el que
-                // pasa por donde se hizo clic derecho.
-                const trazo = (t && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup))
-                  ? t : trazoEn(ctxMenu.escena)
-                if (!trazo) return null
-                const corte = trazoDivide(trazo)
-                if (!corte) return null
-                // Si el trazo cruza varias piezas hay que preguntar el alcance:
-                // no es lo mismo partir toda la remera que solo el cuerpo.
-                const varias = piezasQueDivide(corte).length > 1
-                const pieza = varias ? piezaEn(ctxMenu.escena) : null
-                const keyPieza = pieza ? (pieza as any)._pieceKey as string | undefined : undefined
-                return (
-                  <>
-                    <CtxDivider />
-                    <CtxItem label={varias ? 'Dividir toda la prenda acá' : 'Dividir la prenda acá'}
-                      hint="para pintar cada lado"
-                      onClick={() => { dividirPrendaCon(trazo); closeCtx() }} />
-                    {varias && keyPieza && (
-                      <CtxItem label={`Dividir solo ${(pieza as any)._pieceName ?? 'esta pieza'}`}
-                        hint="el resto queda entero"
-                        onClick={() => { dividirPrendaCon(trazo, keyPieza); closeCtx() }} />
-                    )}
-                  </>
-                )
-              })()}
-              {hayCortes && (
-                <>
-                  <CtxDivider />
-                  <CtxItem label="Quitar las divisiones" onClick={() => { quitarCortes(); closeCtx() }} />
-                </>
-              )}
-              {t && !ctxMenu.isMulti && !mockupObjects.current.includes(t) && !((t as any)._garmentGroup) && (
-                <>
-                  <CtxDivider />
-                  <CtxItem label="Eliminar" danger onClick={() => { const c = fc.current; if (c && t) { c.remove(t); undoHistory.current.push({ type: 'remove', obj: t }); redoHistory.current = []; c.discardActiveObject(); c.requestRenderAll(); refreshLayersNow() } closeCtx() }} />
-                </>
-              )}
+              {items}
             </div>
           </>
         )
