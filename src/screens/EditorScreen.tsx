@@ -4180,8 +4180,21 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       // del píxel pintado (prenda, imagen, textura…).
       const sampleAt = (e: fabric.TPointerEventInfo): Record<string, any> | null => {
         const over = e.target
+        /* ⚠️ Copiar la apariencia del objeto vale SOLO si el objeto TIENE un
+           color propio que lo represente.
+           Una IMAGEN y un VECTOR importado (que entra como grupo) no lo
+           tienen, y Fabric igual les pone `fill: rgb(0,0,0)` por defecto. Como
+           eso es un string valido, el gotero se lo creia y devolvia NEGRO en
+           vez del color que estabas apuntando: eso era "el gotero no funciona
+           con las imagenes ni los vectores".
+           Para esos hay que leer el PIXEL, que es lo que se esta viendo. */
+        const tipo = over?.type ?? ''
+        const sinColorPropio = tipo === 'image' || tipo === 'group' || tipo === 'activeselection'
+        const relleno = typeof over?.fill === 'string' ? over.fill.trim() : ''
+        const tieneColorPropio = !sinColorPropio && !!relleno
+          && relleno !== 'none' && relleno !== 'transparent'
         if (over && over !== previewObj && !mockupObjects.current.includes(over)
-            && typeof over.fill === 'string') {
+            && tieneColorPropio) {
           return { fill: over.fill, stroke: over.stroke, strokeWidth: over.strokeWidth }
         }
         const [px, py] = puntoLienzo(e)
