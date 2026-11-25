@@ -23,6 +23,8 @@ import PageTransition from './components/PageTransition'
 import Spotlight from './components/Spotlight'
 
 type Route = 'onboard' | 'home' | 'library' | 'export' | 'editor' | 'techpack'
+/** Lo que el editor le presta a la barra de arriba. */
+type EditorActions = { save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void }
 export type Theme = 'dark' | 'light' | 'illustrator'
 
 export default function App() {
@@ -59,7 +61,20 @@ export default function App() {
   const activeRef = useRef<Project | null>(null)
   activeRef.current = activeProject
 
-  const editorActionsRef = useRef<{ save: () => void; export: () => void; importImage: (f: File) => void; placeImage: (f: File) => void; techpack: () => void } | null>(null)
+  // Las acciones de la barra (Guardar, Exportar, Importar…) de CADA editor, por
+  // id de proyecto. Ahora hay un editor montado por pestaña, así que una sola
+  // referencia no alcanza: el último en montarse pisaba a los demás y los
+  // botones terminaban hablándole a una pestaña que no se estaba viendo.
+  const editorActions = useRef(new Map<string, EditorActions>())
+  const accionesActivas = () => {
+    const id = activeRef.current?.id
+    return id ? editorActions.current.get(id) ?? null : null
+  }
+  // Estable (el editor está memoizado): cada editor se anota con su id.
+  const registrarAcciones = useCallback((a: EditorActions | null, projectId: string) => {
+    if (a) editorActions.current.set(projectId, a)
+    else   editorActions.current.delete(projectId)
+  }, [])
 
   // Aplica y persiste el tema (dark = por defecto, sin atributo)
   useEffect(() => {
@@ -150,7 +165,9 @@ export default function App() {
   }, [sincronizar])
 
   const go = (r: Route) => setRoute(r)
-  const showToast = (msg: string) => setToast(msg)
+  // Estable: se la pasamos al editor, que está memoizado. Una función nueva en
+  // cada render le rompería el memo y volvería a renderizar todos los editores.
+  const showToast = useCallback((msg: string) => setToast(msg), [])
 
   async function openProject(p: Project) {
     // Si ya hay un tab de editor para este proyecto, reusá su versión en memoria (tiene canvas)
@@ -185,8 +202,11 @@ export default function App() {
 
   // Abre (o reenfoca y refresca) la pestaña de ficha técnica del proyecto activo,
   // en paralelo con el editor. La llama EditorScreen vía onOpenTechPack.
-  async function openTechPackTab(snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno | null = null) {
-    const base = activeProject
+  //
+  // Estable (`useCallback`): el editor está memoizado — ver el comentario de
+  // `showToast`. Por eso lee el proyecto de `activeRef` y no del render.
+  const openTechPackTab = useCallback(async (snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno | null = null) => {
+    const base = activeRef.current
     if (!base) return
     // Carga lazy del documento guardado
     let project = base
@@ -210,8 +230,8 @@ export default function App() {
       return [...prev, { kind: 'techpack', project, snapshot, measures, ficha }]
     })
     setActive(project)
-    go('techpack')
-  }
+    setRoute('techpack')
+  }, [showToast])
 
   // Persiste el documento de ficha técnica del proyecto activo
   async function handleSaveTechPack(doc: TechPackDoc) {
@@ -382,16 +402,15 @@ export default function App() {
   // Devuelve si el proyecto llegó realmente a la base. El editor lo usa para no
   // cantar "Guardado ✓" cuando en verdad falló: antes salían los dos carteles a
   // la vez y el diseñador se iba creyendo que su trabajo estaba a salvo.
-  async function handleSave(thumbnail: string, canvasJson: string, deQuien?: Project): Promise<boolean> {
-    // Siempre sobre el proyecto de ahora: el editor puede estar llamando con una
-    // version vieja de esta funcion (ver activeRef), y lo unico que aporta el
-    // editor son el dibujo y la miniatura — el nombre, la carpeta y el resto del
-    // proyecto son de la app, no suyos.
+  const handleSave = useCallback(async (thumbnail: string, canvasJson: string, deQuien?: Project): Promise<boolean> => {
+    // El editor manda SIEMPRE su propio proyecto en `deQuien`, y esa es la
+    // referencia buena: hay un editor montado por pestaña, así que el
+    // autoguardado de una que no se ve puede dispararse mientras mirás otra.
+    // Sin esto, el dibujo de un proyecto terminaba adentro de otro.
     //
-    // Salvo cuando el editor se cierra con un guardado pendiente: ahí manda su
-    // propio proyecto, porque al cambiar de pestaña el activo ya es el NUEVO
-    // cuando el editor viejo se desmonta, y guardar sobre activeRef metía el
-    // dibujo de un proyecto adentro de otro.
+    // `activeRef` queda de respaldo para quien llame sin decir de quién es. Lo
+    // único que aporta el editor son el dibujo y la miniatura: el nombre, la
+    // carpeta y el resto del proyecto son de la app, no suyos.
     const base = deQuien ?? activeRef.current
     if (!base) return false
     const updated = { ...base, thumbnail, canvasJson, updatedAt: Date.now() }
@@ -408,13 +427,13 @@ export default function App() {
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
     setOpenTabs(prev => prev.map(t => t.project.id === updated.id ? { ...t, project: updated } : t))
     return true
-  }
+  }, [user, showToast])
 
-  function handleSaveComplete() {
+  const handleSaveComplete = useCallback(() => {
     setSaved(true)
     setTimeout(() => setSaved(false), 2200)
     showToast('Guardado ✓')
-  }
+  }, [showToast])
 
   async function handleRename(name: string) {
     const base = activeRef.current
@@ -431,6 +450,9 @@ export default function App() {
   // El editor se mantiene montado debajo de la ficha técnica para no perder el
   // lienzo/undo al alternar entre ambas pestañas del mismo proyecto.
   const hasEditorTab = activeProject != null && openTabs.some(t => t.kind === 'editor' && t.project.id === activeProject.id)
+  // Todas las pestañas de editor: cada una tiene su propio editor montado (ver
+  // más abajo, donde se dibujan).
+  const editorTabs = openTabs.filter((t): t is Extract<Tab, { kind: 'editor' }> => t.kind === 'editor')
 
   // Red de seguridad: si la ruta pide editor pero no hay editor que mostrar, no
   // se dibuja nada y queda la pantalla en blanco. Antes que eso, volver al
@@ -485,11 +507,11 @@ export default function App() {
           onTabClose={closeTab}
           onTabReorder={reorderTabs}
           onNewProject={() => setShowSheet(true)}
-          onSave={() => editorActionsRef.current?.save()}
-          onExport={() => editorActionsRef.current?.export()}
-          onImportImage={(f: File) => editorActionsRef.current?.importImage(f)}
-          onPlaceImage={(f: File) => editorActionsRef.current?.placeImage(f)}
-          onTechPack={() => editorActionsRef.current?.techpack()}
+          onSave={() => accionesActivas()?.save()}
+          onExport={() => accionesActivas()?.export()}
+          onImportImage={(f: File) => accionesActivas()?.importImage(f)}
+          onPlaceImage={(f: File) => accionesActivas()?.placeImage(f)}
+          onTechPack={() => accionesActivas()?.techpack()}
           onRename={handleRename}
           onProfileOpen={() => setShowProfile(true)}
           onIniciarSesion={cloudEnabled ? () => setShowAuth(true) : undefined}
@@ -518,21 +540,36 @@ export default function App() {
         {route === 'export'   && exportProject && (
           <ExportScreen project={exportProject} onGo={go} onBack={() => go('home')} />
         )}
-        {(route === 'editor' || route === 'techpack') && activeProject && hasEditorTab && (
-          <div style={{ display: route === 'techpack' ? 'none' : 'contents' }}>
+        {/* UN editor por pestaña abierta, todos montados a la vez.
+            ──────────────────────────────────────────────────────────────────
+            Antes había uno solo, con `key={activeProject.id}`: cambiar de
+            pestaña lo DESMONTABA y lo volvía a armar de cero — se veía la
+            prenda básica unos segundos y había que esperar a que se rehiciera
+            el molde, las telas y el dibujo. Ahora el editor de cada pestaña
+            queda vivo y los que no se miran se esconden con `display:none`,
+            así volver es instantáneo. También quedan vivos al ir a Inicio.
+
+            El que no se ve no escucha el teclado ni el pegar (se fija en el
+            DOM, ver `estaALaVista` en el editor) y su autoguardado escribe
+            sobre SU proyecto, no sobre el activo.
+
+            Los editores van memoizados y todo lo que les llega mantiene su
+            identidad, así que cambiar de pestaña NO los vuelve a renderizar:
+            lo único que cambia es el `display` de estos div. */}
+        {editorTabs.map(t => (
+          <div key={t.project.id}
+            style={{ display: route === 'editor' && activeProject?.id === t.project.id ? 'contents' : 'none' }}>
             <EditorScreen
-              key={activeProject.id}
-              project={activeProject}
+              project={t.project}
               designer={designerName}
               onSave={handleSave}
-              saved={saved}
               onSaveComplete={handleSaveComplete}
-              onActionsReady={a => { editorActionsRef.current = a }}
+              onActionsReady={registrarAcciones}
               onOpenTechPack={openTechPackTab}
               onToast={showToast}
             />
           </div>
-        )}
+        ))}
         {route === 'techpack' && techPackTab && (
           <TechPackScreen
             key={'tp:' + techPackTab.project.id}

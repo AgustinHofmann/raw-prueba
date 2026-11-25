@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import React, { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import * as fabric from 'fabric'
 import { Project, type FichaDiseno } from '../types/project'
 import { aRgb, aHex as rgbAHex } from '../lib/colores'
@@ -66,9 +66,10 @@ interface Props {
   // cantaba "Guardado" aunque hubiera fallado. `deQuien` va solo al cerrarse
   // el editor: ahi el proyecto activo de la app ya puede ser otro.
   onSave: (thumbnail: string, canvasJson: string, deQuien?: Project) => Promise<boolean>
-  saved: boolean
   onSaveComplete: () => void
-  onActionsReady: (a: EditorActions | null) => void
+  // Lleva el id del proyecto porque hay un editor montado por pestaña: la app
+  // guarda las acciones de cada uno por separado y usa las del que se ve.
+  onActionsReady: (a: EditorActions | null, projectId: string) => void
   onOpenTechPack: (snapshot: string, measures: Record<string, number> | null, ficha: FichaDiseno) => void
   onToast?: (msg: string) => void
 }
@@ -1439,7 +1440,22 @@ function NumberField({
   )
 }
 
-export default function EditorScreen({ project, onSave, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
+function EditorScreen({ project, onSave, onSaveComplete, onActionsReady, onOpenTechPack, onToast }: Props) {
+  /**
+   * ¿Es ESTA la pestaña que se está viendo?
+   *
+   * Hay un editor montado por pestaña abierta y los que no se miran quedan
+   * escondidos con `display:none`, para que volver sea instantáneo en vez de
+   * rehacer la prenda entera. Pero siguen vivos, y los atajos de teclado y el
+   * pegar van a `window`: le llegan a todos. Por eso cada manejador global
+   * pregunta esto antes de hacer nada.
+   *
+   * Se mira el DOM en vez de recibirlo como prop a propósito: una prop obliga a
+   * volver a renderizar los editores en cada cambio de pestaña, y son enormes
+   * (medido: ~95 ms entre los dos). `offsetParent` es null cuando el elemento
+   * —o alguno de sus padres— está en `display:none`.
+   */
+  function estaALaVista() { return !!canvasAreaRef.current?.offsetParent }
   const canvasEl      = useRef<HTMLCanvasElement>(null)
   const canvasAreaRef = useRef<HTMLElement>(null)
   const cursorRef     = useRef<HTMLDivElement>(null)
@@ -1980,8 +1996,9 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
   useEffect(() => {
     const handleSaveRef = () => handleSave()
     const handleExportRef = () => handleExport()
-    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack })
-    return () => onActionsReady(null)
+    const id = project.id
+    onActionsReady({ save: handleSaveRef, export: handleExportRef, importImage: handleImportPng, placeImage: handlePlaceImage, techpack: openTechPack }, id)
+    return () => onActionsReady(null, id)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
@@ -2677,6 +2694,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     return () => { cancelled = true; canvasAlive.current = false; ro?.disconnect(); canvas.off('after:render', onAfterRender); canvas.off('mouse:over', onMouseOver); canvas.off('mouse:out', onMouseOut); canvas.dispose() }
   }, [project.mockupId, intentoMolde])
 
+  // Volver a una pestaña escondida no necesita nada especial: mientras no se la
+  // mira el área mide 0×0 y el observador de tamaño de acá arriba se saltea esos
+  // avisos a propósito (si no, achicaría el lienzo a cero); al volver, el mismo
+  // observador avisa con la medida real y repone el tamaño si cambió.
+
   // ── Zoom (rueda) y pan (botón medio) ───────────────────────────────────────
   useEffect(() => {
     const area = canvasAreaRef.current
@@ -2708,11 +2730,13 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       return a instanceof fabric.IText && (a as fabric.IText).isEditing
     }
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!estaALaVista()) return
       if (e.code !== 'Space' || isTyping()) return
       e.preventDefault()
       if (!spaceDown) { spaceDown = true; if (!midPan) area.style.cursor = 'grab' }
     }
     const onKeyUp = (e: KeyboardEvent) => {
+      if (!estaALaVista()) return
       if (e.code !== 'Space') return
       spaceDown = false
       if (!midPan) area.style.cursor = ''
@@ -3533,6 +3557,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
 
       const onKey = (e: KeyboardEvent) => {
+        if (!estaALaVista()) return
         if (e.key === 'Enter' || e.key === 'Escape') commit()
         if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEditAnchorIdx !== null && anchors.length === 0) {
           e.preventDefault()
@@ -3939,6 +3964,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       }
 
       const onKey = (e: KeyboardEvent) => {
+        if (!estaALaVista()) return
         if ((e.key === 'Delete' || e.key === 'Backspace') && selectedAnchorIdx !== null) {
           e.preventDefault()
           deleteAnchorAt(selectedAnchorIdx)
@@ -4575,7 +4601,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
       canvas.defaultCursor = 'zoom-in'
       // Alt aleja en vez de acercar, y el cursor lo dice antes del clic: si el
       // modo solo se descubre apretando, no es un modo, es una sorpresa.
-      const alt = (e: KeyboardEvent) => { canvas.defaultCursor = e.altKey ? 'zoom-out' : 'zoom-in' }
+      const alt = (e: KeyboardEvent) => { if (estaALaVista()) canvas.defaultCursor = e.altKey ? 'zoom-out' : 'zoom-in' }
       window.addEventListener('keydown', alt)
       window.addEventListener('keyup',   alt)
       offs.push(() => {
@@ -5963,6 +5989,8 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const onKey = (e: KeyboardEvent) => {
       const canvas = fc.current
       if (!canvas) return
+      // Hay un editor montado por pestaña: el que no se ve no escucha el teclado.
+      if (!estaALaVista()) return
 
       const ae = document.activeElement as HTMLElement | null
       const inField = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)
@@ -6348,6 +6376,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     const onPaste = (e: ClipboardEvent) => {
       const canvas = fc.current
       if (!canvas) return
+      if (!estaALaVista()) return   // la imagen va a la pestaña que se ve, no a todas
       const items = e.clipboardData?.items
       if (!items) return
       for (const item of Array.from(items)) {
@@ -6446,7 +6475,11 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // versiones a la vez y que gane la que conteste última.
     if (guardando.current) { markDirty(); return }
     guardando.current = true
-    try { await onSave(payload.thumbnail, payload.canvasJson) }
+    // Siempre con `deQuien`: hay un editor vivo por pestaña, así que el autoguardado
+    // de una pestaña de atrás puede dispararse mientras mirás OTRO proyecto. Sin
+    // esto, la app guardaba contra el proyecto activo y le metía adentro el dibujo
+    // del otro.
+    try { await onSave(payload.thumbnail, payload.canvasJson, projectRef.current) }
     finally { guardando.current = false }
   }
 
@@ -6613,7 +6646,7 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     // Se espera al guardado de verdad. Avisar "Guardado ✓" antes de que la base
     // conteste hacía que el cartel de error y el de éxito salieran juntos, y el
     // diseñador se iba pensando que su trabajo estaba a salvo.
-    if (await onSave(payload.thumbnail, payload.canvasJson)) onSaveComplete()
+    if (await onSave(payload.thumbnail, payload.canvasJson, projectRef.current)) onSaveComplete()
   }
 
   function handleExport() {
@@ -9387,6 +9420,18 @@ export default function EditorScreen({ project, onSave, onSaveComplete, onAction
     </div>
   )
 }
+
+/* Memoizado a propósito.
+ *
+ * Hay un editor montado por pestaña abierta. Sin esto, cualquier cambio en la
+ * app —cambiar de pestaña, un cartel, guardar— volvía a renderizar TODOS los
+ * editores, y el árbol de cada uno es enorme (paneles, barras, capas, telas).
+ * Medido con dos pestañas: 95 ms de trabajo bloqueante en cada cambio.
+ *
+ * Para que sirva, las funciones que le pasa App tienen que mantener su
+ * identidad (están con `useCallback`): si se rearman en cada render, la
+ * comparación da distinto y el memo no sirve de nada. */
+export default memo(EditorScreen)
 
 // Ítem y separador del menú contextual
 function CtxItem({ label, hint, icon, danger, onClick }: { label: string; hint?: string; icon?: string; danger?: boolean; onClick: () => void }) {
